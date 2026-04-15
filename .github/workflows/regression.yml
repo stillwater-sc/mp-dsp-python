@@ -10,6 +10,7 @@ on:
 
 env:
   BUILD_TYPE: Release
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   regression:
@@ -44,30 +45,10 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install dependencies
-        run: pip install nanobind numpy matplotlib pytest pytest-xdist
-
-      - name: Configure and build
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
-          cmake --build build --config ${{ env.BUILD_TYPE }}
+        run: pip install numpy matplotlib pytest pytest-xdist
 
       - name: Install package
         run: pip install -e .
 
       - name: Run full test suite
         run: pytest tests/ -v --tb=long -x
-
-      - name: Run CSV script tests (no nanobind needed)
-        run: |
-          python -m pytest tests/ -v -k "csv or plot" --tb=long || echo "No CSV tests yet (expected in Phase 1+)"
-
-      - name: Verify notebooks execute
-        run: |
-          pip install nbconvert ipykernel
-          for nb in notebooks/*.ipynb; do
-            if [ -f "$nb" ]; then
-              echo "Executing $nb..."
-              jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=120 "$nb" || echo "Notebook $nb failed (may need bindings)"
-            fi
-          done
-        shell: bash
