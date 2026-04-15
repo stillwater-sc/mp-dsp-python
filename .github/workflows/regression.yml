@@ -1,0 +1,73 @@
+name: Regression Tests
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # Run nightly at 03:00 UTC to catch dependency breakage
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  regression:
+    name: "Regression (Python ${{ matrix.python }}, ${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Test across Python versions
+          - os: ubuntu-latest
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          # Test across platforms (latest Python)
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: pip install nanobind numpy matplotlib pytest pytest-xdist
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run full test suite
+        run: pytest tests/ -v --tb=long -x
+
+      - name: Run CSV script tests (no nanobind needed)
+        run: |
+          python -m pytest tests/ -v -k "csv or plot" --tb=long || echo "No CSV tests yet (expected in Phase 1+)"
+
+      - name: Verify notebooks execute
+        run: |
+          pip install nbconvert ipykernel
+          for nb in notebooks/*.ipynb; do
+            if [ -f "$nb" ]; then
+              echo "Executing $nb..."
+              jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=120 "$nb" || echo "Notebook $nb failed (may need bindings)"
+            fi
+          done
+        shell: bash

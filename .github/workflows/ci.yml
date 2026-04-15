@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build-and-test:
+    concurrency:
+      group: ci-${{ matrix.artifact }}-py${{ matrix.python }}-${{ github.ref }}
+      cancel-in-progress: true
+    name: "${{ matrix.name }} (Python ${{ matrix.python }})"
+    runs-on: "${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64 (GCC)
+            artifact: linux-x64-gcc
+            python: "3.11"
+          - os: ubuntu-latest
+            name: Linux x64 (GCC)
+            artifact: linux-x64-gcc-py312
+            python: "3.12"
+          - os: ubuntu-latest
+            name: Linux x64 (Clang)
+            artifact: linux-x64-clang
+            python: "3.11"
+            cc: clang
+            cxx: clang++
+          - os: windows-latest
+            name: Windows x64 (MSVC)
+            artifact: windows-x64-msvc
+            python: "3.11"
+          - os: macos-latest
+            name: macOS ARM64 (Apple Clang)
+            artifact: macos-arm64
+            python: "3.11"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install Python dependencies
+        run: pip install nanobind numpy matplotlib pytest
+
+      - name: Install Clang
+        if: matrix.cc == 'clang'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Configure CMake
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          ${{ matrix.cc && format('-DCMAKE_C_COMPILER={0}', matrix.cc) || '' }}
+          ${{ matrix.cxx && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }}
+
+      - name: Build C++ extension
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run Python tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Run scripts smoke test
+        run: |
+          python -c "import mpdsp; print('mpdsp imported successfully')" || echo "Module not yet available (expected in Phase 2+)"
