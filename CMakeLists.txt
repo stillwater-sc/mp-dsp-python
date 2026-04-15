@@ -4,7 +4,22 @@ project(mp-dsp-python LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Python
+# Find Python — prefer the local .venv if it exists.
+# This lets CMake GUI users avoid setting Python_EXECUTABLE manually.
+if(NOT Python_EXECUTABLE)
+  # Check for .venv in the source directory
+  if(WIN32)
+    set(_VENV_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe")
+  else()
+    set(_VENV_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+  endif()
+  if(EXISTS "${_VENV_PYTHON}")
+    set(Python_EXECUTABLE "${_VENV_PYTHON}" CACHE FILEPATH
+        "Python interpreter (auto-detected from .venv)")
+    message(STATUS "Auto-detected Python venv: ${_VENV_PYTHON}")
+  endif()
+endif()
+
 find_package(Python 3.9
   REQUIRED COMPONENTS Interpreter Development.Module
 )
@@ -105,7 +120,6 @@ if(MTL5_FOUND)
 else()
   set(_MTL5_CANDIDATES
     "${CMAKE_CURRENT_SOURCE_DIR}/../mtl5"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../universal/mtl5"
   )
   set(_MTL5_FOUND FALSE)
   foreach(_DIR IN LISTS _MTL5_CANDIDATES)
