@@ -75,41 +75,37 @@ if(NOT _DSP_FOUND)
 endif()
 
 # Find or fetch Universal (header-only)
-find_package(universal CONFIG QUIET)
-if(universal_FOUND)
-  message(STATUS "Found Universal via find_package")
-  target_link_libraries(sw_dsp INTERFACE universal::universal)
-else()
-  set(_UNI_CANDIDATES
-    "${CMAKE_CURRENT_SOURCE_DIR}/../universal"
-  )
-  set(_UNI_FOUND FALSE)
-  foreach(_DIR IN LISTS _UNI_CANDIDATES)
-    if(EXISTS "${_DIR}/include/sw/universal/number/cfloat/cfloat.hpp")
-      message(STATUS "Found Universal at: ${_DIR}")
-      target_include_directories(sw_dsp INTERFACE
-        "${_DIR}/include"
-        "${_DIR}/include/sw"
-      )
-      set(_UNI_FOUND TRUE)
-      break()
-    endif()
-  endforeach()
-
-  if(NOT _UNI_FOUND)
-    message(STATUS "Universal not found locally, fetching from GitHub")
-    include(FetchContent)
-    FetchContent_Declare(universal
-      GIT_REPOSITORY https://github.com/stillwater-sc/universal.git
-      GIT_TAG main
-      GIT_SHALLOW TRUE
-    )
-    FetchContent_Populate(universal)
+# Prefer peer directory over find_package — the installed Universal cmake
+# config has a known bug that sets CMAKE_CXX_STANDARD=14 globally.
+set(_UNI_CANDIDATES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../universal"
+)
+set(_UNI_FOUND FALSE)
+foreach(_DIR IN LISTS _UNI_CANDIDATES)
+  if(EXISTS "${_DIR}/include/sw/universal/number/cfloat/cfloat.hpp")
+    message(STATUS "Found Universal at: ${_DIR}")
     target_include_directories(sw_dsp INTERFACE
-      "${universal_SOURCE_DIR}/include"
-      "${universal_SOURCE_DIR}/include/sw"
+      "${_DIR}/include"
+      "${_DIR}/include/sw"
     )
+    set(_UNI_FOUND TRUE)
+    break()
   endif()
+endforeach()
+
+if(NOT _UNI_FOUND)
+  message(STATUS "Universal not found locally, fetching from GitHub")
+  include(FetchContent)
+  FetchContent_Declare(universal
+    GIT_REPOSITORY https://github.com/stillwater-sc/universal.git
+    GIT_TAG main
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_Populate(universal)
+  target_include_directories(sw_dsp INTERFACE
+    "${universal_SOURCE_DIR}/include"
+    "${universal_SOURCE_DIR}/include/sw"
+  )
 endif()
 
 # Find or fetch MTL5 (header-only)
