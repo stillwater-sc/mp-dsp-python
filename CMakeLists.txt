@@ -4,20 +4,50 @@ project(mp-dsp-python LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Python and nanobind
+# Find Python
 find_package(Python 3.9
   REQUIRED COMPONENTS Interpreter Development.Module
 )
+
+# Find nanobind — try multiple discovery methods:
+# 1. User-provided -Dnanobind_DIR=...
+# 2. Auto-discover from Python: python -m nanobind --cmake_dir
+# 3. CMAKE_PREFIX_PATH
+if(NOT nanobind_DIR)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+    OUTPUT_VARIABLE _NB_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _NB_RESULT
+  )
+  if(_NB_RESULT EQUAL 0 AND EXISTS "${_NB_DIR}")
+    set(nanobind_DIR "${_NB_DIR}" CACHE PATH "nanobind cmake dir (auto-detected)")
+    message(STATUS "Auto-detected nanobind at: ${_NB_DIR}")
+  endif()
+endif()
+
 find_package(nanobind CONFIG REQUIRED)
 
 # Find or fetch mixed-precision-dsp (header-only)
-# Try local peer directory first, then FetchContent
-set(DSP_PEER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dsp")
-if(EXISTS "${DSP_PEER_DIR}/include/sw/dsp/dsp.hpp")
-  message(STATUS "Found mixed-precision-dsp at: ${DSP_PEER_DIR}")
-  add_library(sw_dsp INTERFACE)
-  target_include_directories(sw_dsp INTERFACE "${DSP_PEER_DIR}/include")
-else()
+# Try peer directory (../dsp or ../mixed-precision-dsp), then FetchContent
+add_library(sw_dsp INTERFACE)
+
+set(_DSP_CANDIDATES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../dsp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../mixed-precision-dsp"
+)
+set(_DSP_FOUND FALSE)
+foreach(_DIR IN LISTS _DSP_CANDIDATES)
+  if(EXISTS "${_DIR}/include/sw/dsp/dsp.hpp")
+    message(STATUS "Found mixed-precision-dsp at: ${_DIR}")
+    target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
+    set(_DSP_FOUND TRUE)
+    break()
+  endif()
+endforeach()
+
+if(NOT _DSP_FOUND)
   message(STATUS "mixed-precision-dsp not found locally, fetching from GitHub")
   include(FetchContent)
   FetchContent_Declare(dsp
@@ -26,7 +56,6 @@ else()
     GIT_SHALLOW TRUE
   )
   FetchContent_Populate(dsp)
-  add_library(sw_dsp INTERFACE)
   target_include_directories(sw_dsp INTERFACE "${dsp_SOURCE_DIR}/include")
 endif()
 
@@ -36,14 +65,23 @@ if(universal_FOUND)
   message(STATUS "Found Universal via find_package")
   target_link_libraries(sw_dsp INTERFACE universal::universal)
 else()
-  set(UNIVERSAL_PEER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../universal")
-  if(EXISTS "${UNIVERSAL_PEER_DIR}/include/sw/universal/universal")
-    message(STATUS "Found Universal at: ${UNIVERSAL_PEER_DIR}")
-    target_include_directories(sw_dsp INTERFACE
-      "${UNIVERSAL_PEER_DIR}/include"
-      "${UNIVERSAL_PEER_DIR}/include/sw"
-    )
-  else()
+  set(_UNI_CANDIDATES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../universal"
+  )
+  set(_UNI_FOUND FALSE)
+  foreach(_DIR IN LISTS _UNI_CANDIDATES)
+    if(EXISTS "${_DIR}/include/sw/universal/universal")
+      message(STATUS "Found Universal at: ${_DIR}")
+      target_include_directories(sw_dsp INTERFACE
+        "${_DIR}/include"
+        "${_DIR}/include/sw"
+      )
+      set(_UNI_FOUND TRUE)
+      break()
+    endif()
+  endforeach()
+
+  if(NOT _UNI_FOUND)
     message(STATUS "Universal not found locally, fetching from GitHub")
     include(FetchContent)
     FetchContent_Declare(universal
@@ -65,11 +103,21 @@ if(MTL5_FOUND)
   message(STATUS "Found MTL5 via find_package")
   target_link_libraries(sw_dsp INTERFACE MTL5::mtl5)
 else()
-  set(MTL5_PEER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../mtl5")
-  if(EXISTS "${MTL5_PEER_DIR}/include/mtl/mtl.hpp")
-    message(STATUS "Found MTL5 at: ${MTL5_PEER_DIR}")
-    target_include_directories(sw_dsp INTERFACE "${MTL5_PEER_DIR}/include")
-  else()
+  set(_MTL5_CANDIDATES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../mtl5"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../universal/mtl5"
+  )
+  set(_MTL5_FOUND FALSE)
+  foreach(_DIR IN LISTS _MTL5_CANDIDATES)
+    if(EXISTS "${_DIR}/include/mtl/mtl.hpp")
+      message(STATUS "Found MTL5 at: ${_DIR}")
+      target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
+      set(_MTL5_FOUND TRUE)
+      break()
+    endif()
+  endforeach()
+
+  if(NOT _MTL5_FOUND)
     message(STATUS "MTL5 not found locally, fetching from GitHub")
     include(FetchContent)
     FetchContent_Declare(mtl5
@@ -90,11 +138,6 @@ nanobind_add_module(_core
   src/spectral_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
-target_compile_definitions(_core PRIVATE
-  # Suppress Universal warnings in binding code
-  $<$<CXX_COMPILER_ID:GNU>:>
-  $<$<CXX_COMPILER_ID:Clang>:>
-)
 
 # Install the module into the Python package
 install(TARGETS _core LIBRARY DESTINATION mpdsp)
