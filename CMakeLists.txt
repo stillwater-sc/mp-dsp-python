@@ -153,9 +153,13 @@ nanobind_add_module(_core
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 
-# C++20 is required for sw::dsp concepts. nanobind_add_module may not
-# propagate the project-level CMAKE_CXX_STANDARD to the target.
-target_compile_features(_core PRIVATE cxx_std_20)
+# C++20 is required for sw::dsp and MTL5 concepts.
+# nanobind sets cxx_std_17 PUBLIC; we need to override to C++20.
+# Use both target_compile_features AND explicit flags for MSVC.
+target_compile_features(_core PUBLIC cxx_std_20)
+if(MSVC)
+  target_compile_options(_core PRIVATE /std:c++20)
+endif()
 
 # Install the module into the Python package
 install(TARGETS _core LIBRARY DESTINATION mpdsp)
