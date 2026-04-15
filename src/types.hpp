@@ -6,9 +6,10 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #if __has_include(<bit>)
-#include <bit>
+#include <bit>  // required by Universal on MSVC
 #endif
 
 // Universal number types

@@ -105,6 +105,8 @@ void bind_quantization(nb::module_& m) {
 	m.def("max_absolute_error", [](np_array_ro ref, np_array_ro test) {
 		auto vr = numpy_to_vec(ref);
 		auto vt = numpy_to_vec(test);
+		if (vr.size() != vt.size() || vr.size() == 0)
+			throw std::invalid_argument("max_absolute_error: vectors must have same non-zero length");
 		double max_err = 0;
 		for (std::size_t i = 0; i < vr.size(); ++i) {
 			double err = std::abs(vr[i] - vt[i]);
@@ -117,6 +119,8 @@ void bind_quantization(nb::module_& m) {
 	m.def("max_relative_error", [](np_array_ro ref, np_array_ro test) {
 		auto vr = numpy_to_vec(ref);
 		auto vt = numpy_to_vec(test);
+		if (vr.size() != vt.size() || vr.size() == 0)
+			throw std::invalid_argument("max_relative_error: vectors must have same non-zero length");
 		double max_ref = 0, max_err = 0;
 		for (std::size_t i = 0; i < vr.size(); ++i) {
 			if (std::abs(vr[i]) > max_ref) max_ref = std::abs(vr[i]);

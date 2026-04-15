@@ -33,7 +33,7 @@ class TestADC:
         assert err_half > err_float
 
     def test_adc_posit(self):
-        """ADC through posit<16,1> should work."""
+        """ADC through posit_full config (posit<16,1> samples) should work."""
         sig = mpdsp.sine(1000, frequency=440.0, sample_rate=44100.0)
         q = mpdsp.adc(sig, dtype="posit_full")
         assert q.shape == sig.shape
@@ -61,7 +61,7 @@ class TestSQNR:
         assert sqnr_half < sqnr_float
 
     def test_sqnr_posit_vs_half(self):
-        """posit<16,1> should have higher SQNR than half (same bit width)."""
+        """posit_full (posit<16,1> ADC) should have higher SQNR than half."""
         sig = mpdsp.sine(10000, frequency=440.0, sample_rate=44100.0)
         sqnr_posit = mpdsp.measure_sqnr_db(sig, "posit_full")
         sqnr_half = mpdsp.measure_sqnr_db(sig, "half")
