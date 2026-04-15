@@ -10,10 +10,12 @@ namespace nb = nanobind;
 // Forward declarations for sub-module binders
 void bind_signals(nb::module_& m);
 void bind_quantization(nb::module_& m);
+void bind_spectral(nb::module_& m);
 
 NB_MODULE(_core, m) {
 	m.doc() = "mpdsp C++ core: mixed-precision DSP bindings via nanobind";
 
 	bind_signals(m);
 	bind_quantization(m);
+	bind_spectral(m);
 }

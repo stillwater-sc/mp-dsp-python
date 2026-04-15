@@ -21,6 +21,8 @@ try:
         # Quantization
         adc, sqnr_db, measure_sqnr_db,
         max_absolute_error, max_relative_error,
+        # Spectral
+        fft, fft_magnitude_db, ifft, periodogram, psd, spectrogram,
         # Introspection
         available_dtypes,
     )
@@ -33,7 +35,7 @@ try:
     from mpdsp.plotting import (
         plot_signal, plot_spectrum, plot_signal_and_spectrum,
         plot_quantization_comparison, plot_sqnr_comparison,
-        plot_window_comparison,
+        plot_window_comparison, plot_spectrogram, plot_psd,
     )
     HAS_PLOT = True
 except ImportError:

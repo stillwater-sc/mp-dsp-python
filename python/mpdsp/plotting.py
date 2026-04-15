@@ -262,3 +262,69 @@ def plot_window_comparison(window_funcs, N=256, title="Window Comparison"):
     fig.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout()
     return fig
+
+
+def plot_spectrogram(times, freqs, magnitude_db, title="Spectrogram",
+                     vmin=-80, vmax=0, ax=None):
+    """Plot a spectrogram from mpdsp.spectrogram() output.
+
+    Parameters
+    ----------
+    times : numpy.ndarray
+        Time axis (seconds).
+    freqs : numpy.ndarray
+        Frequency axis (Hz).
+    magnitude_db : numpy.ndarray
+        2D magnitude array [n_frames x n_freqs] in dB.
+    title : str
+        Plot title.
+    vmin, vmax : float
+        Color scale limits (dB).
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+    """
+    _require_matplotlib()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 4))
+
+    im = ax.pcolormesh(times, freqs, magnitude_db.T, shading="auto",
+                       cmap="inferno", vmin=vmin, vmax=vmax)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_title(title)
+    plt.colorbar(im, ax=ax, label="Magnitude (dB)")
+    return ax
+
+
+def plot_psd(freqs, power, title="Power Spectral Density", ax=None, **kwargs):
+    """Plot power spectral density from mpdsp.psd() output.
+
+    Parameters
+    ----------
+    freqs : numpy.ndarray
+        Frequency axis (Hz).
+    power : numpy.ndarray
+        Power values.
+    title : str
+        Plot title.
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+    """
+    _require_matplotlib()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 3))
+
+    ax.semilogy(freqs, power, **kwargs)
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Power")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    return ax
