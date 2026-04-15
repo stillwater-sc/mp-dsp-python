@@ -54,7 +54,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install Python dependencies
-        run: pip install numpy matplotlib pytest
+        run: pip install numpy matplotlib pandas pytest
 
       - name: Install package
         run: pip install -e .
