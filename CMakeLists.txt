@@ -144,6 +144,12 @@ else()
   endif()
 endif()
 
+# Re-enforce C++20 after all find_package calls.
+# Universal's cmake config sets CMAKE_CXX_STANDARD=14 globally, overriding
+# our project-level setting. Force it back to 20.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # Build the nanobind module
 nanobind_add_module(_core
   src/bindings.cpp
