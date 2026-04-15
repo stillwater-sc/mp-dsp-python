@@ -85,7 +85,7 @@ else()
   )
   set(_UNI_FOUND FALSE)
   foreach(_DIR IN LISTS _UNI_CANDIDATES)
-    if(EXISTS "${_DIR}/include/sw/universal/universal")
+    if(EXISTS "${_DIR}/include/sw/universal/number/cfloat/cfloat.hpp")
       message(STATUS "Found Universal at: ${_DIR}")
       target_include_directories(sw_dsp INTERFACE
         "${_DIR}/include"
