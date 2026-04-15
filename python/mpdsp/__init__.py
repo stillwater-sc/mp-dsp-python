@@ -27,3 +27,14 @@ try:
     HAS_CORE = True
 except ImportError:
     HAS_CORE = False
+
+# Plotting (requires matplotlib)
+try:
+    from mpdsp.plotting import (
+        plot_signal, plot_spectrum, plot_signal_and_spectrum,
+        plot_quantization_comparison, plot_sqnr_comparison,
+        plot_window_comparison,
+    )
+    HAS_PLOT = True
+except ImportError:
+    HAS_PLOT = False
