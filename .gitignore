@@ -39,3 +39,13 @@
 
 # debug information files
 *.dwo
+
+# venv
+.venv
+
+# Build
+build/
+
+# Python
+*/__pycache__/*
+*/*/__pycache__/*
