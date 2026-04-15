@@ -98,6 +98,8 @@ void bind_spectral(nb::module_& m) {
 	// IFFT: (real, imag) → real signal
 	m.def("ifft", [](np_array_ro real_part, np_array_ro imag_part) {
 		std::size_t n = real_part.shape(0);
+		if (n != imag_part.shape(0))
+			throw std::invalid_argument("ifft: real and imag arrays must have same length");
 		mtl::vec::dense_vector<std::complex<double>> spectrum(n);
 		const double* re = real_part.data();
 		const double* im = imag_part.data();
