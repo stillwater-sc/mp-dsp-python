@@ -22,5 +22,15 @@ mpdsp.plot_window_comparison({
     "Kaiser (8)": lambda N: mpdsp.kaiser(N, beta=8.0),
 })
 
+# Chirp + spectrogram
+chirp = mpdsp.chirp(44100, f_start=100, f_end=5000, sample_rate=44100)
+times, freqs, mag = mpdsp.spectrogram(chirp, sample_rate=44100,
+                                       window_size=1024, hop_size=256)
+mpdsp.plot_spectrogram(times, freqs, mag, title="Chirp Spectrogram")
+
+# PSD of the sine
+freqs, power = mpdsp.psd(sig, sample_rate=44100.0)
+mpdsp.plot_psd(freqs, power, title="PSD: 440 Hz Sine")
+
 plt.show()
 
