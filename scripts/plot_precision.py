@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+from typing import Optional
 import os
 import sys
 
@@ -25,7 +26,7 @@ def load_frequency_response(csv_dir: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def plot_magnitude_response(df: pd.DataFrame, output_dir: str | None = None):
+def plot_magnitude_response(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Magnitude response: one subplot per filter family."""
     families = df["filter_family"].unique()
     types = df["arith_type"].unique()
@@ -72,7 +73,7 @@ def plot_magnitude_response(df: pd.DataFrame, output_dir: str | None = None):
         plt.show()
 
 
-def plot_phase_response(df: pd.DataFrame, output_dir: str | None = None):
+def plot_phase_response(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Phase response: one subplot per filter family."""
     families = df["filter_family"].unique()
     types = df["arith_type"].unique()
@@ -116,7 +117,7 @@ def plot_phase_response(df: pd.DataFrame, output_dir: str | None = None):
         plt.show()
 
 
-def plot_magnitude_error(df: pd.DataFrame, output_dir: str | None = None):
+def plot_magnitude_error(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Magnitude error vs reference: one subplot per filter family."""
     families = df["filter_family"].unique()
     types = [t for t in df["arith_type"].unique() if t != "double"]

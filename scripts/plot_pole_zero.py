@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+from typing import Optional
 import os
 import sys
 
@@ -35,7 +36,7 @@ def draw_unit_circle(ax):
     ax.set_aspect("equal")
 
 
-def plot_pole_zero(df: pd.DataFrame, output_dir: str | None = None):
+def plot_pole_zero(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Pole-zero diagrams: one subplot per filter family."""
     families = df["filter_family"].unique()
     types = df["arith_type"].unique()
@@ -113,7 +114,7 @@ def plot_pole_zero(df: pd.DataFrame, output_dir: str | None = None):
         plt.show()
 
 
-def plot_displacement_summary(df: pd.DataFrame, output_dir: str | None = None):
+def plot_displacement_summary(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Bar chart of maximum pole displacement per filter family × type."""
     df_no_ref = df[df["arith_type"] != "double"]
     summary = df_no_ref.groupby(["filter_family", "arith_type"])["displacement"].max()

@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+from typing import Optional
 import os
 import sys
 
@@ -23,7 +24,7 @@ def load_metrics(csv_dir: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def plot_sqnr_heatmap(df: pd.DataFrame, output_dir: str | None = None):
+def plot_sqnr_heatmap(df: pd.DataFrame, output_dir: Optional[str] = None):
     """SQNR heatmap: filter families (rows) x arithmetic types (columns)."""
     # Pivot to matrix form
     pivot = df.pivot_table(index="filter_family", columns="arith_type",
@@ -72,7 +73,7 @@ def plot_sqnr_heatmap(df: pd.DataFrame, output_dir: str | None = None):
         plt.show()
 
 
-def plot_sqnr_bar_chart(df: pd.DataFrame, output_dir: str | None = None):
+def plot_sqnr_bar_chart(df: pd.DataFrame, output_dir: Optional[str] = None):
     """Grouped bar chart: SQNR per filter family, bars per arithmetic type."""
     # Exclude double (inf SQNR dominates the scale)
     df_no_ref = df[df["arith_type"] != "double"].copy()
@@ -115,7 +116,7 @@ def plot_sqnr_bar_chart(df: pd.DataFrame, output_dir: str | None = None):
         plt.show()
 
 
-def plot_precision_cost_frontier(df: pd.DataFrame, output_dir: str | None = None):
+def plot_precision_cost_frontier(df: pd.DataFrame, output_dir: Optional[str] = None):
     """SQNR vs bits-per-sample across all filter families.
 
     Each point is one (filter_family, arith_type) cell. This reveals
