@@ -46,6 +46,7 @@ Documentation = "https://github.com/stillwater-sc/mixed-precision-dsp"
 [tool.scikit-build]
 cmake.build-type = "Release"
 wheel.packages = ["python/mpdsp"]
+wheel.install-dir = "mpdsp"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
