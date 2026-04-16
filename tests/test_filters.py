@@ -200,6 +200,9 @@ LP_HP_FAMILIES = [
     ("legendre", {},
         lambda kind, **kw: getattr(mpdsp, f"legendre_{kind}")(
             order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0, **kw)),
+    ("elliptic", {"ripple_db": 1.0, "rolloff": 1.0},
+        lambda kind, **kw: getattr(mpdsp, f"elliptic_{kind}")(
+            order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0, **kw)),
 ]
 
 
@@ -242,6 +245,9 @@ BP_BS_FAMILIES = [
             order=4, sample_rate=SAMPLE_RATE, center_freq=1500.0, width_freq=800.0, **kw)),
     ("legendre", {},
         lambda kind, **kw: getattr(mpdsp, f"legendre_{kind}")(
+            order=4, sample_rate=SAMPLE_RATE, center_freq=1500.0, width_freq=800.0, **kw)),
+    ("elliptic", {"ripple_db": 1.0, "rolloff": 1.0},
+        lambda kind, **kw: getattr(mpdsp, f"elliptic_{kind}")(
             order=4, sample_rate=SAMPLE_RATE, center_freq=1500.0, width_freq=800.0, **kw)),
 ]
 
@@ -290,6 +296,22 @@ class TestParameterValidation:
         with pytest.raises(ValueError):
             mpdsp.butterworth_bandpass(order=9, sample_rate=SAMPLE_RATE,
                                        center_freq=1500.0, width_freq=800.0)
+
+    def test_elliptic_rolloff_out_of_range_raises(self):
+        # Upstream validates rolloff is in [0.1, 5.0] — it's a selectivity
+        # parameter, not a stopband dB. Values outside the range used to
+        # produce NaN coefficients; they now raise.
+        with pytest.raises(ValueError):
+            mpdsp.elliptic_lowpass(order=4, sample_rate=SAMPLE_RATE,
+                                   cutoff=1000.0, ripple_db=1.0, rolloff=0.0)
+        with pytest.raises(ValueError):
+            mpdsp.elliptic_lowpass(order=4, sample_rate=SAMPLE_RATE,
+                                   cutoff=1000.0, ripple_db=1.0, rolloff=10.0)
+
+    def test_elliptic_requires_positive_ripple(self):
+        with pytest.raises(ValueError):
+            mpdsp.elliptic_lowpass(order=4, sample_rate=SAMPLE_RATE,
+                                   cutoff=1000.0, ripple_db=0.0, rolloff=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +389,8 @@ ALL_FILTERS = [
     lambda: mpdsp.bessel_bandstop(order=4, sample_rate=SAMPLE_RATE,
                                    center_freq=1500.0, width_freq=800.0),
     lambda: mpdsp.legendre_lowpass(order=3, sample_rate=SAMPLE_RATE, cutoff=1500.0),
+    lambda: mpdsp.elliptic_highpass(order=4, sample_rate=SAMPLE_RATE,
+                                     cutoff=1000.0, ripple_db=1.0, rolloff=1.0),
     lambda: mpdsp.rbj_allpass(sample_rate=SAMPLE_RATE, center_freq=1000.0),
 ]
 

@@ -6,9 +6,8 @@
 // vary per the dtype key (shared with quantization bindings).
 //
 // Families covered:
-//   - Butterworth, Chebyshev I/II, Bessel, Legendre: LP/HP/BP/BS
+//   - Butterworth, Chebyshev I/II, Bessel, Legendre, Elliptic: LP/HP/BP/BS
 //   - RBJ: LP/HP/BP/BS/allpass/lowshelf/highshelf (single biquad each)
-// Elliptic is deferred — upstream dsp#50 (NaN bug).
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -24,6 +23,7 @@
 #include <sw/dsp/filter/iir/butterworth.hpp>
 #include <sw/dsp/filter/iir/chebyshev1.hpp>
 #include <sw/dsp/filter/iir/chebyshev2.hpp>
+#include <sw/dsp/filter/iir/elliptic.hpp>
 #include <sw/dsp/filter/iir/legendre.hpp>
 #include <sw/dsp/filter/iir/rbj.hpp>
 
@@ -541,6 +541,64 @@ void bind_filters(nb::module_& m) {
 				order, sr, center_freq, width_freq);
 		}, nb::arg(A_ORDER), nb::arg(A_SR), nb::arg(A_CTR), nb::arg(A_WID),
 		"Design a Legendre bandstop filter.");
+
+	// =======================================================================
+	// Elliptic (Cauer) — equiripple passband and stopband. Takes ripple_db
+	// and a selectivity parameter 'rolloff' in [0.1, 5.0]. Upstream validates
+	// both; higher rolloff gives a steeper transition with more stopband ripple.
+	// =======================================================================
+
+	m.def("elliptic_lowpass",
+		[](int order, double sr, double cutoff, double ripple_db, double rolloff) {
+			const char* n = "elliptic_lowpass";
+			check_order(order, kMaxOrderLPHP, n);
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			return make_from_design<iir::EllipticLowPass<kMaxOrderLPHP>>(
+				order, sr, cutoff, ripple_db, rolloff);
+		}, nb::arg(A_ORDER), nb::arg(A_SR), nb::arg(A_CUT),
+		   nb::arg("ripple_db"), nb::arg("rolloff") = 1.0,
+		"Design an Elliptic (Cauer) lowpass filter — equiripple in both "
+		"passband and stopband. rolloff in [0.1, 5.0] controls transition "
+		"selectivity (higher = steeper).");
+
+	m.def("elliptic_highpass",
+		[](int order, double sr, double cutoff, double ripple_db, double rolloff) {
+			const char* n = "elliptic_highpass";
+			check_order(order, kMaxOrderLPHP, n);
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			return make_from_design<iir::EllipticHighPass<kMaxOrderLPHP>>(
+				order, sr, cutoff, ripple_db, rolloff);
+		}, nb::arg(A_ORDER), nb::arg(A_SR), nb::arg(A_CUT),
+		   nb::arg("ripple_db"), nb::arg("rolloff") = 1.0,
+		"Design an Elliptic highpass filter. rolloff in [0.1, 5.0].");
+
+	m.def("elliptic_bandpass",
+		[](int order, double sr, double center_freq, double width_freq,
+		   double ripple_db, double rolloff) {
+			const char* n = "elliptic_bandpass";
+			check_order(order, kMaxOrderBPBS, n);
+			check_sample_rate(sr, n);
+			check_bp_band(center_freq, width_freq, sr, n);
+			return make_from_design<iir::EllipticBandPass<kMaxOrderBPBS>>(
+				order, sr, center_freq, width_freq, ripple_db, rolloff);
+		}, nb::arg(A_ORDER), nb::arg(A_SR), nb::arg(A_CTR), nb::arg(A_WID),
+		   nb::arg("ripple_db"), nb::arg("rolloff") = 1.0,
+		"Design an Elliptic bandpass filter.");
+
+	m.def("elliptic_bandstop",
+		[](int order, double sr, double center_freq, double width_freq,
+		   double ripple_db, double rolloff) {
+			const char* n = "elliptic_bandstop";
+			check_order(order, kMaxOrderBPBS, n);
+			check_sample_rate(sr, n);
+			check_bp_band(center_freq, width_freq, sr, n);
+			return make_from_design<iir::EllipticBandStop<kMaxOrderBPBS>>(
+				order, sr, center_freq, width_freq, ripple_db, rolloff);
+		}, nb::arg(A_ORDER), nb::arg(A_SR), nb::arg(A_CTR), nb::arg(A_WID),
+		   nb::arg("ripple_db"), nb::arg("rolloff") = 1.0,
+		"Design an Elliptic bandstop filter.");
 
 	// =======================================================================
 	// RBJ Audio EQ Cookbook — single biquad per variant, no 'order' parameter.

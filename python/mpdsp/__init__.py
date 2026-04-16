@@ -35,6 +35,8 @@ try:
         bessel_bandpass, bessel_bandstop,
         legendre_lowpass, legendre_highpass,
         legendre_bandpass, legendre_bandstop,
+        elliptic_lowpass, elliptic_highpass,
+        elliptic_bandpass, elliptic_bandstop,
         rbj_lowpass, rbj_highpass,
         rbj_bandpass, rbj_bandstop,
         rbj_allpass, rbj_lowshelf, rbj_highshelf,
