@@ -606,36 +606,62 @@ void bind_filters(nb::module_& m) {
 
 	m.def("rbj_lowpass",
 		[](double sr, double cutoff, double q) {
+			const char* n = "rbj_lowpass";
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			check_positive(q, n, "q");
 			return make_from_rbj<rbj::LowPass<>>(sr, cutoff, q);
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("q") = 0.7071,
 		"RBJ biquad lowpass. q ~ 0.7071 gives a Butterworth-like response.");
 
 	m.def("rbj_highpass",
 		[](double sr, double cutoff, double q) {
+			const char* n = "rbj_highpass";
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			check_positive(q, n, "q");
 			return make_from_rbj<rbj::HighPass<>>(sr, cutoff, q);
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("q") = 0.7071,
 		"RBJ biquad highpass.");
 
 	m.def("rbj_bandpass",
 		[](double sr, double center_freq, double bandwidth) {
+			const char* n = "rbj_bandpass";
+			check_sample_rate(sr, n);
+			check_frequency(center_freq, sr, n, "center_freq");
+			check_positive(bandwidth, n, "bandwidth");
 			return make_from_rbj<rbj::BandPass<>>(sr, center_freq, bandwidth);
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("bandwidth") = 1.0,
 		"RBJ biquad bandpass. bandwidth is in octaves.");
 
 	m.def("rbj_bandstop",
 		[](double sr, double center_freq, double bandwidth) {
+			const char* n = "rbj_bandstop";
+			check_sample_rate(sr, n);
+			check_frequency(center_freq, sr, n, "center_freq");
+			check_positive(bandwidth, n, "bandwidth");
 			return make_from_rbj<rbj::BandStop<>>(sr, center_freq, bandwidth);
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("bandwidth") = 1.0,
 		"RBJ biquad bandstop (notch). bandwidth is in octaves.");
 
 	m.def("rbj_allpass",
 		[](double sr, double center_freq, double q) {
+			const char* n = "rbj_allpass";
+			check_sample_rate(sr, n);
+			check_frequency(center_freq, sr, n, "center_freq");
+			check_positive(q, n, "q");
 			return make_from_rbj<rbj::AllPass<>>(sr, center_freq, q);
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("q") = 0.7071,
 		"RBJ biquad allpass — unit magnitude, phase shift only.");
 
+	// Shelf filters: gain_db is intentionally not validated — any real value
+	// is meaningful (0 dB is a legal unity shelf, negative values cut).
 	m.def("rbj_lowshelf",
 		[](double sr, double cutoff, double gain_db, double slope) {
+			const char* n = "rbj_lowshelf";
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			check_positive(slope, n, "slope");
 			return make_from_rbj<rbj::LowShelf<>>(sr, cutoff, gain_db, slope);
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("gain_db"),
 		   nb::arg("slope") = 1.0,
@@ -643,6 +669,10 @@ void bind_filters(nb::module_& m) {
 
 	m.def("rbj_highshelf",
 		[](double sr, double cutoff, double gain_db, double slope) {
+			const char* n = "rbj_highshelf";
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			check_positive(slope, n, "slope");
 			return make_from_rbj<rbj::HighShelf<>>(sr, cutoff, gain_db, slope);
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("gain_db"),
 		   nb::arg("slope") = 1.0,

@@ -81,21 +81,17 @@ class TestFrequencyResponse:
 
 
 class TestProcessing:
-    def _sine(self, freq, n=4096):
-        t = np.arange(n) / SAMPLE_RATE
-        return np.sin(2.0 * np.pi * freq * t)
-
     def test_process_shape_preserved(self):
         filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
-        sig = self._sine(200.0)
+        sig = _sine(200.0)
         y = filt.process(sig)
         assert y.shape == sig.shape
         assert y.dtype == np.float64
 
     def test_lowpass_passes_low_rejects_high(self):
         filt = mpdsp.butterworth_lowpass(order=6, sample_rate=SAMPLE_RATE, cutoff=1000.0)
-        low = self._sine(200.0)
-        high = self._sine(3000.0)
+        low = _sine(200.0)
+        high = _sine(3000.0)
         # Skip transient so steady-state amplitude is meaningful.
         skip = 512
         y_low = filt.process(low)[skip:]
@@ -106,14 +102,14 @@ class TestProcessing:
 
     def test_dtype_reference_matches_double(self):
         filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
-        sig = self._sine(300.0)
+        sig = _sine(300.0)
         a = filt.process(sig, dtype="reference")
         b = filt.process(sig, dtype="double")
         np.testing.assert_array_equal(a, b)
 
     def test_dtype_dispatch_differs_from_reference(self):
         filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
-        sig = self._sine(300.0)
+        sig = _sine(300.0)
         ref = filt.process(sig, dtype="reference")
         low = filt.process(sig, dtype="half")
         # Reduced-precision arithmetic should introduce measurable error.
@@ -124,7 +120,7 @@ class TestProcessing:
 
     def test_unknown_dtype_raises(self):
         filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
-        sig = self._sine(300.0)
+        sig = _sine(300.0)
         with pytest.raises(Exception):
             filt.process(sig, dtype="not_a_real_dtype")
 
@@ -373,6 +369,20 @@ class TestRBJ:
     def test_invalid_sample_rate_raises(self):
         with pytest.raises(ValueError):
             mpdsp.rbj_lowpass(sample_rate=-1.0, cutoff=1000.0)
+
+    def test_non_positive_q_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.rbj_lowpass(sample_rate=SAMPLE_RATE, cutoff=1000.0, q=0.0)
+
+    def test_non_positive_bandwidth_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.rbj_bandpass(sample_rate=SAMPLE_RATE, center_freq=1000.0,
+                               bandwidth=-1.0)
+
+    def test_non_positive_slope_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.rbj_lowshelf(sample_rate=SAMPLE_RATE, cutoff=1000.0,
+                               gain_db=6.0, slope=0.0)
 
 
 # ---------------------------------------------------------------------------
