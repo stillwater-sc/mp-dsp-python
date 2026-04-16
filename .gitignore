@@ -45,6 +45,7 @@
 
 # Build
 build/
+build_*/
 
 # Python
 */__pycache__/*

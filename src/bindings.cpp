@@ -11,6 +11,7 @@ namespace nb = nanobind;
 void bind_signals(nb::module_& m);
 void bind_quantization(nb::module_& m);
 void bind_spectral(nb::module_& m);
+void bind_filters(nb::module_& m);
 
 NB_MODULE(_core, m) {
 	m.doc() = "mpdsp C++ core: mixed-precision DSP bindings via nanobind";
@@ -18,4 +19,5 @@ NB_MODULE(_core, m) {
 	bind_signals(m);
 	bind_quantization(m);
 	bind_spectral(m);
+	bind_filters(m);
 }

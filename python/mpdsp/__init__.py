@@ -23,6 +23,8 @@ try:
         max_absolute_error, max_relative_error,
         # Spectral
         fft, fft_magnitude_db, ifft, periodogram, psd, spectrogram,
+        # Filters
+        IIRFilter, butterworth_lowpass, butterworth_highpass,
         # Introspection
         available_dtypes,
     )
