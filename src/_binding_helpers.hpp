@@ -30,9 +30,11 @@
 #include "types.hpp"
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>  // for std::forward used in make_impl_for_dtype
 
 namespace mpdsp::bindings {
 
@@ -68,6 +70,14 @@ inline np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
 
 inline np_f64_2d make_f64_2d_array(std::size_t rows, std::size_t cols,
                                    double*& out_ptr) {
+	// Reject oversized dimensions that would wrap rows * cols past SIZE_MAX
+	// and silently produce a too-small allocation. Image generators take
+	// rows/cols from Python, so adversarial or mistyped values can reach
+	// here directly.
+	if (cols != 0 && rows > std::numeric_limits<std::size_t>::max() / cols) {
+		throw std::overflow_error(
+			"make_f64_2d_array: rows * cols overflows size_t");
+	}
 	std::size_t total = rows * cols;
 	auto buf = std::unique_ptr<double[]>(new double[total]);
 	double* data = buf.get();

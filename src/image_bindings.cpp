@@ -53,6 +53,16 @@ static sw::dsp::BorderMode parse_border(const std::string& name) {
 		" (expected constant, replicate, reflect, reflect_101, or wrap)");
 }
 
+// Validate that image dimensions from the Python boundary are positive.
+// Zero-sized generators are well-defined but rarely useful; reject early
+// to avoid constructing empty NumPy arrays that surprise callers.
+static void check_dims(std::size_t rows, std::size_t cols, const char* name) {
+	if (rows == 0 || cols == 0) {
+		throw std::invalid_argument(
+			std::string(name) + ": rows and cols must be positive");
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Dtype dispatcher for free-function processors.
 //
@@ -115,6 +125,7 @@ void bind_image(nb::module_& m) {
 	m.def("checkerboard",
 		[](std::size_t rows, std::size_t cols, std::size_t block_size,
 		   double low, double high) {
+			check_dims(rows, cols, "checkerboard");
 			auto img = sw::dsp::checkerboard<double>(rows, cols, block_size,
 			                                         low, high);
 			return mat_to_numpy(img);
@@ -127,6 +138,7 @@ void bind_image(nb::module_& m) {
 	m.def("gaussian_blob",
 		[](std::size_t rows, std::size_t cols, double sigma,
 		   double amplitude) {
+			check_dims(rows, cols, "gaussian_blob");
 			if (!(sigma > 0.0)) {
 				throw std::invalid_argument(
 					"gaussian_blob: sigma must be positive");
@@ -141,6 +153,7 @@ void bind_image(nb::module_& m) {
 
 	m.def("gradient_horizontal",
 		[](std::size_t rows, std::size_t cols, double start, double end) {
+			check_dims(rows, cols, "gradient_horizontal");
 			auto img = sw::dsp::gradient_horizontal<double>(rows, cols,
 			                                                start, end);
 			return mat_to_numpy(img);

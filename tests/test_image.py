@@ -37,6 +37,11 @@ class TestCheckerboard:
         with pytest.raises(ValueError):
             mpdsp.checkerboard(4, 4, block_size=0)
 
+    @pytest.mark.parametrize("rows,cols", [(0, 4), (4, 0), (0, 0)])
+    def test_zero_dims_rejected(self, rows, cols):
+        with pytest.raises(ValueError):
+            mpdsp.checkerboard(rows, cols, block_size=2)
+
 
 class TestGaussianBlob:
     def test_shape(self):
@@ -63,6 +68,11 @@ class TestGaussianBlob:
         with pytest.raises(ValueError):
             mpdsp.gaussian_blob(8, 8, sigma=-1.0)
 
+    @pytest.mark.parametrize("rows,cols", [(0, 4), (4, 0)])
+    def test_zero_dims_rejected(self, rows, cols):
+        with pytest.raises(ValueError):
+            mpdsp.gaussian_blob(rows, cols, sigma=1.0)
+
 
 class TestGradientHorizontal:
     def test_shape(self):
@@ -80,6 +90,11 @@ class TestGradientHorizontal:
         img = mpdsp.gradient_horizontal(2, 3, start=10.0, end=20.0)
         assert img[0, 0] == 10.0
         assert img[0, -1] == 20.0
+
+    @pytest.mark.parametrize("rows,cols", [(0, 5), (5, 0)])
+    def test_zero_dims_rejected(self, rows, cols):
+        with pytest.raises(ValueError):
+            mpdsp.gradient_horizontal(rows, cols)
 
 
 # ---------------------------------------------------------------------------
