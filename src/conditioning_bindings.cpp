@@ -17,6 +17,7 @@
 #include <sw/dsp/conditioning/compressor.hpp>
 #include <sw/dsp/conditioning/envelope.hpp>
 
+#include "_binding_helpers.hpp"
 #include "types.hpp"
 
 #include <cstddef>
@@ -26,54 +27,13 @@
 
 namespace nb = nanobind;
 
+// Pull shared NumPy typedefs and helpers into this TU's namespace.
+using mpdsp::bindings::np_f64;
+using mpdsp::bindings::np_f64_ro;
+using mpdsp::bindings::make_f64_array;
+using mpdsp::bindings::make_impl_for_dtype;
+
 namespace {
-
-using np_f64    = nb::ndarray<nb::numpy, double>;
-// c_contig: force nanobind to deliver a C-contiguous buffer (copying if the
-// caller passed a slice or non-contiguous view). Without this, signal.data()
-// would walk the original memory linearly and produce wrong results on any
-// strided input such as sig[::2].
-using np_f64_ro = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_contig>;
-
-static np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
-	auto buf = std::unique_ptr<double[]>(new double[n]);
-	double* data = buf.get();
-	nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<double*>(p); });
-	// Ownership transfers to the capsule only after it has been constructed
-	// successfully, so a throw from the capsule ctor won't leak the buffer.
-	buf.release();
-	out_ptr = data;
-	std::size_t shape[1] = { n };
-	return np_f64(data, 1, shape, owner);
-}
-
-// Shared dispatcher: maps ArithConfig → a concrete Impl<T> inheriting from
-// Base, for any class template Impl and interface Base. Every conditioning
-// wrapper in this file shares the same set of supported dtypes, so one
-// switch covers all four. If a future class constraint (e.g. AGC's
-// DspOrderedField) excludes a dtype, that factory can drop back to a
-// hand-written switch without disturbing this helper.
-template <template<class> class Impl, class Base>
-static std::unique_ptr<Base>
-make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<Impl<double>>();
-	case ArithConfig::gpu_baseline: return std::make_unique<Impl<float>>();
-	case ArithConfig::ml_hw:        return std::make_unique<Impl<half_>>();
-	case ArithConfig::cf24_config:  return std::make_unique<Impl<cf24>>();
-	case ArithConfig::half_config:  return std::make_unique<Impl<half_>>();
-	case ArithConfig::posit_full:   return std::make_unique<Impl<p32>>();
-	case ArithConfig::tiny_posit:   return std::make_unique<Impl<tiny_posit_t>>();
-	}
-	// Surface additions to the ArithConfig enum instead of silently falling
-	// through to a default impl.
-	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
-}
 
 // Type-erased interface. Python always sees double-precision I/O; the
 // internal arithmetic happens in whatever T the concrete impl chose.
