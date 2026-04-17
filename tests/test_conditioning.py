@@ -1,4 +1,4 @@
-"""Tests for signal-conditioning bindings (scaffold: PeakEnvelope)."""
+"""Tests for signal-conditioning bindings: PeakEnvelope, RMSEnvelope, Compressor, AGC."""
 
 import numpy as np
 import pytest
@@ -306,17 +306,26 @@ class TestCompressor:
         assert np.all(out == 0.0)
 
     def test_soft_knee_smooths_transition(self):
-        """At threshold exactly, a hard-knee compressor yields one gain; a
-        soft-knee compressor yields a different (smoother) gain."""
+        """A soft-knee compressor applies gain reduction gradually through the
+        knee region around the threshold. At exactly the threshold amplitude,
+        the hard-knee compressor applies 0 dB of reduction while the soft-knee
+        compressor applies some — so soft-knee output is measurably quieter.
+        """
         hard = mpdsp.Compressor(**self._params(threshold_db=-6.0, knee_db=0.0))
-        soft = mpdsp.Compressor(**self._params(threshold_db=-6.0, knee_db=6.0))
-        # Drive both with a tone exactly at threshold amplitude (~0.5).
-        t = np.arange(4096) / SAMPLE_RATE
+        soft = mpdsp.Compressor(**self._params(threshold_db=-6.0, knee_db=12.0))
+        # Drive both with a tone exactly at threshold amplitude (0.5 => -6 dBFS).
+        t = np.arange(8192) / SAMPLE_RATE
         sig = 0.5 * np.sin(2 * np.pi * 200 * t)
         h = hard.process_block(sig)
         s = soft.process_block(sig)
-        # Both should do *something*, and the outputs should differ.
-        assert not np.allclose(h, s)
+        # Compare steady-state RMS after the envelope has converged.
+        tail = slice(4096, None)
+        h_rms = float(np.sqrt(np.mean(h[tail] ** 2)))
+        s_rms = float(np.sqrt(np.mean(s[tail] ** 2)))
+        assert s_rms < h_rms - 0.005, (
+            f"expected soft-knee RMS < hard-knee RMS at threshold "
+            f"(hard={h_rms:.4f}, soft={s_rms:.4f})"
+        )
 
     @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline", "half", "posit_full"])
     def test_process_runs_under_each_dtype(self, dtype):
@@ -338,16 +347,16 @@ class TestAGC:
         agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5)
         assert agc.dtype == "reference"
 
+    @pytest.mark.parametrize("param", [
+        "sample_rate", "target_level", "window_ms", "max_gain",
+    ])
     @pytest.mark.parametrize("bad", [-1.0, 0.0])
-    def test_invalid_params_raise(self, bad):
+    def test_invalid_params_raise(self, param, bad):
+        kwargs = dict(sample_rate=SAMPLE_RATE, target_level=0.5,
+                      window_ms=100.0, max_gain=100.0)
+        kwargs[param] = bad
         with pytest.raises(ValueError):
-            mpdsp.AGC(sample_rate=bad, target_level=0.5)
-        with pytest.raises(ValueError):
-            mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=bad)
-        with pytest.raises(ValueError):
-            mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5, window_ms=bad)
-        with pytest.raises(ValueError):
-            mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5, max_gain=bad)
+            mpdsp.AGC(**kwargs)
 
     def test_boost_quiet_signal(self):
         """A quiet input should be amplified toward the target level (up to

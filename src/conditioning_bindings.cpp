@@ -47,6 +47,34 @@ static np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
 	return np_f64(data, 1, shape, owner);
 }
 
+// Shared dispatcher: maps ArithConfig → a concrete Impl<T> inheriting from
+// Base, for any class template Impl and interface Base. Every conditioning
+// wrapper in this file shares the same set of supported dtypes, so one
+// switch covers all four. If a future class constraint (e.g. AGC's
+// DspOrderedField) excludes a dtype, that factory can drop back to a
+// hand-written switch without disturbing this helper.
+template <template<class> class Impl, class Base>
+static std::unique_ptr<Base>
+make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::half_;
+	using mpdsp::p32;
+	using tiny_posit_t = sw::universal::posit<8, 2>;
+	switch (config) {
+	case ArithConfig::reference:    return std::make_unique<Impl<double>>();
+	case ArithConfig::gpu_baseline: return std::make_unique<Impl<float>>();
+	case ArithConfig::ml_hw:        return std::make_unique<Impl<half_>>();
+	case ArithConfig::cf24_config:  return std::make_unique<Impl<cf24>>();
+	case ArithConfig::half_config:  return std::make_unique<Impl<half_>>();
+	case ArithConfig::posit_full:   return std::make_unique<Impl<p32>>();
+	case ArithConfig::tiny_posit:   return std::make_unique<Impl<tiny_posit_t>>();
+	}
+	// Surface additions to the ArithConfig enum instead of silently falling
+	// through to a default impl.
+	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
+}
+
 // Type-erased interface. Python always sees double-precision I/O; the
 // internal arithmetic happens in whatever T the concrete impl chose.
 struct IPeakEnvelopeImpl {
@@ -76,24 +104,8 @@ struct PeakEnvelopeImpl : IPeakEnvelopeImpl {
 
 static std::unique_ptr<IPeakEnvelopeImpl>
 make_peak_envelope_impl(mpdsp::ArithConfig config) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p16;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<PeakEnvelopeImpl<double>>();
-	case ArithConfig::gpu_baseline: return std::make_unique<PeakEnvelopeImpl<float>>();
-	case ArithConfig::ml_hw:        return std::make_unique<PeakEnvelopeImpl<half_>>();
-	case ArithConfig::cf24_config:  return std::make_unique<PeakEnvelopeImpl<cf24>>();
-	case ArithConfig::half_config:  return std::make_unique<PeakEnvelopeImpl<half_>>();
-	case ArithConfig::posit_full:   return std::make_unique<PeakEnvelopeImpl<p32>>();
-	case ArithConfig::tiny_posit:   return std::make_unique<PeakEnvelopeImpl<tiny_posit_t>>();
-	}
-	// If a new ArithConfig enumerator is added without extending the switch,
-	// surface it instead of silently dispatching to double.
-	throw std::invalid_argument("PeakEnvelope: unsupported ArithConfig");
+	return make_impl_for_dtype<PeakEnvelopeImpl, IPeakEnvelopeImpl>(
+		config, "PeakEnvelope");
 }
 
 } // namespace
@@ -178,21 +190,8 @@ struct RMSEnvelopeImpl : IRMSEnvelopeImpl {
 
 static std::unique_ptr<IRMSEnvelopeImpl>
 make_rms_envelope_impl(mpdsp::ArithConfig config) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<RMSEnvelopeImpl<double>>();
-	case ArithConfig::gpu_baseline: return std::make_unique<RMSEnvelopeImpl<float>>();
-	case ArithConfig::ml_hw:        return std::make_unique<RMSEnvelopeImpl<half_>>();
-	case ArithConfig::cf24_config:  return std::make_unique<RMSEnvelopeImpl<cf24>>();
-	case ArithConfig::half_config:  return std::make_unique<RMSEnvelopeImpl<half_>>();
-	case ArithConfig::posit_full:   return std::make_unique<RMSEnvelopeImpl<p32>>();
-	case ArithConfig::tiny_posit:   return std::make_unique<RMSEnvelopeImpl<tiny_posit_t>>();
-	}
-	throw std::invalid_argument("RMSEnvelope: unsupported ArithConfig");
+	return make_impl_for_dtype<RMSEnvelopeImpl, IRMSEnvelopeImpl>(
+		config, "RMSEnvelope");
 }
 
 } // namespace
@@ -274,21 +273,8 @@ struct CompressorImpl : ICompressorImpl {
 
 static std::unique_ptr<ICompressorImpl>
 make_compressor_impl(mpdsp::ArithConfig config) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<CompressorImpl<double>>();
-	case ArithConfig::gpu_baseline: return std::make_unique<CompressorImpl<float>>();
-	case ArithConfig::ml_hw:        return std::make_unique<CompressorImpl<half_>>();
-	case ArithConfig::cf24_config:  return std::make_unique<CompressorImpl<cf24>>();
-	case ArithConfig::half_config:  return std::make_unique<CompressorImpl<half_>>();
-	case ArithConfig::posit_full:   return std::make_unique<CompressorImpl<p32>>();
-	case ArithConfig::tiny_posit:   return std::make_unique<CompressorImpl<tiny_posit_t>>();
-	}
-	throw std::invalid_argument("Compressor: unsupported ArithConfig");
+	return make_impl_for_dtype<CompressorImpl, ICompressorImpl>(
+		config, "Compressor");
 }
 
 } // namespace
@@ -381,21 +367,12 @@ struct AGCImpl : IAGCImpl {
 
 static std::unique_ptr<IAGCImpl>
 make_agc_impl(mpdsp::ArithConfig config) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<AGCImpl<double>>();
-	case ArithConfig::gpu_baseline: return std::make_unique<AGCImpl<float>>();
-	case ArithConfig::ml_hw:        return std::make_unique<AGCImpl<half_>>();
-	case ArithConfig::cf24_config:  return std::make_unique<AGCImpl<cf24>>();
-	case ArithConfig::half_config:  return std::make_unique<AGCImpl<half_>>();
-	case ArithConfig::posit_full:   return std::make_unique<AGCImpl<p32>>();
-	case ArithConfig::tiny_posit:   return std::make_unique<AGCImpl<tiny_posit_t>>();
-	}
-	throw std::invalid_argument("AGC: unsupported ArithConfig");
+	// Note: AGC's underlying concept is DspOrderedField (narrower than
+	// DspField). All 7 pre-instantiated ArithConfig dtypes satisfy it
+	// today. If a future dtype is added that's DspField-only, this call
+	// must drop back to a hand-written switch that omits the offending
+	// case, keeping the shared dispatcher for the other three wrappers.
+	return make_impl_for_dtype<AGCImpl, IAGCImpl>(config, "AGC");
 }
 
 } // namespace
