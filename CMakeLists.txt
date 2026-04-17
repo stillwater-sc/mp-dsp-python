@@ -153,6 +153,7 @@ nanobind_add_module(_core
   src/quantization_bindings.cpp
   src/spectral_bindings.cpp
   src/filter_bindings.cpp
+  src/conditioning_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 

@@ -43,6 +43,8 @@ try:
         FIRFilter, fir_filter,
         fir_lowpass, fir_highpass,
         fir_bandpass, fir_bandstop,
+        # Conditioning
+        PeakEnvelope,
         # Introspection
         available_dtypes,
     )
