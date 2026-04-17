@@ -476,6 +476,13 @@ public:
 			throw std::invalid_argument(
 				"LMSFilter: num_taps must be > 0");
 		}
+		// !(x > 0.0) catches non-positive values and NaN uniformly. A
+		// non-positive step size either never adapts (0) or silently diverges
+		// (negative); NaN poisons the weights on the first sample.
+		if (!(step_size > 0.0)) {
+			throw std::invalid_argument(
+				"LMSFilter: step_size must be positive");
+		}
 		impl_ = make_adaptive_impl<sw::dsp::LMSFilter>(
 			mpdsp::parse_config(dtype), "LMSFilter", num_taps, step_size);
 		dtype_ = dtype;
@@ -489,6 +496,10 @@ public:
 		if (num_taps == 0) {
 			throw std::invalid_argument(
 				"NLMSFilter: num_taps must be > 0");
+		}
+		if (!(step_size > 0.0)) {
+			throw std::invalid_argument(
+				"NLMSFilter: step_size must be positive");
 		}
 		if (!(epsilon > 0.0)) {
 			throw std::invalid_argument(

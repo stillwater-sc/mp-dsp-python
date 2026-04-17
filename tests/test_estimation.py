@@ -275,6 +275,11 @@ class TestLMSFilter:
         with pytest.raises(ValueError):
             mpdsp.LMSFilter(num_taps=0, step_size=0.01)
 
+    @pytest.mark.parametrize("bad_step", [0.0, -0.01, float("nan")])
+    def test_non_positive_or_nan_step_size_raises(self, bad_step):
+        with pytest.raises(ValueError):
+            mpdsp.LMSFilter(num_taps=4, step_size=bad_step)
+
     def test_unknown_dtype_raises(self):
         with pytest.raises(ValueError):
             mpdsp.LMSFilter(num_taps=4, step_size=0.01, dtype="not_a_dtype")
@@ -336,6 +341,11 @@ class TestNLMSFilter:
     def test_zero_num_taps_raises(self):
         with pytest.raises(ValueError):
             mpdsp.NLMSFilter(num_taps=0, step_size=0.5)
+
+    @pytest.mark.parametrize("bad_step", [0.0, -0.5, float("nan")])
+    def test_non_positive_or_nan_step_size_raises(self, bad_step):
+        with pytest.raises(ValueError):
+            mpdsp.NLMSFilter(num_taps=4, step_size=bad_step)
 
     def test_non_positive_epsilon_raises(self):
         with pytest.raises(ValueError):
