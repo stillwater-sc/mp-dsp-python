@@ -30,9 +30,10 @@ class TestPeakEnvelopeConstruction:
                                   dtype="half")
         assert env.dtype == "half"
 
-    def test_invalid_sample_rate_raises(self):
+    @pytest.mark.parametrize("bad_sr", [-1.0, 0.0])
+    def test_invalid_sample_rate_raises(self, bad_sr):
         with pytest.raises(ValueError):
-            mpdsp.PeakEnvelope(sample_rate=-1.0,
+            mpdsp.PeakEnvelope(sample_rate=bad_sr,
                                 attack_ms=5.0, release_ms=50.0)
 
     def test_non_positive_attack_raises(self):
@@ -40,8 +41,15 @@ class TestPeakEnvelopeConstruction:
             mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,
                                 attack_ms=0.0, release_ms=50.0)
 
+    @pytest.mark.parametrize("bad_release", [0.0, -1.0])
+    def test_non_positive_release_raises(self, bad_release):
+        with pytest.raises(ValueError):
+            mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,
+                                attack_ms=5.0, release_ms=bad_release)
+
     def test_unknown_dtype_raises(self):
-        with pytest.raises(Exception):
+        # parse_config throws std::invalid_argument -> ValueError in Python.
+        with pytest.raises(ValueError):
             mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,
                                 attack_ms=5.0, release_ms=50.0,
                                 dtype="not_a_dtype")
@@ -83,6 +91,24 @@ class TestPeakEnvelopeBehavior:
         out = env.process_block(sig)
         assert out.shape == sig.shape
         assert out.dtype == np.float64
+
+    def test_process_block_accepts_strided_input(self):
+        """A non-contiguous view (e.g. sig[::2]) must produce the same output
+        as feeding a contiguous copy. The c_contig constraint on the binding
+        asks nanobind to copy strided inputs transparently — this test pins
+        that behavior so a future relaxation of the constraint would fail
+        loudly rather than silently walk the underlying buffer linearly."""
+        sig = _step_signal(n=2048, onset=256)
+        view = sig[::2]
+        copy = view.copy()
+
+        env_view = mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,
+                                       attack_ms=5.0, release_ms=50.0)
+        env_copy = mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,
+                                       attack_ms=5.0, release_ms=50.0)
+        out_view = env_view.process_block(view)
+        out_copy = env_copy.process_block(copy)
+        np.testing.assert_array_equal(out_view, out_copy)
 
     def test_envelope_tracks_step_onset(self):
         env = mpdsp.PeakEnvelope(sample_rate=SAMPLE_RATE,

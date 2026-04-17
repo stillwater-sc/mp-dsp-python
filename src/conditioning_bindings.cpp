@@ -27,12 +27,20 @@ namespace nb = nanobind;
 namespace {
 
 using np_f64    = nb::ndarray<nb::numpy, double>;
-using np_f64_ro = nb::ndarray<nb::numpy, const double, nb::ndim<1>>;
+// c_contig: force nanobind to deliver a C-contiguous buffer (copying if the
+// caller passed a slice or non-contiguous view). Without this, signal.data()
+// would walk the original memory linearly and produce wrong results on any
+// strided input such as sig[::2].
+using np_f64_ro = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_contig>;
 
 static np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
-	auto* data = new double[n];
-	out_ptr = data;
+	auto buf = std::unique_ptr<double[]>(new double[n]);
+	double* data = buf.get();
 	nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<double*>(p); });
+	// Ownership transfers to the capsule only after it has been constructed
+	// successfully, so a throw from the capsule ctor won't leak the buffer.
+	buf.release();
+	out_ptr = data;
 	std::size_t shape[1] = { n };
 	return np_f64(data, 1, shape, owner);
 }
@@ -81,7 +89,9 @@ make_peak_envelope_impl(mpdsp::ArithConfig config) {
 	case ArithConfig::posit_full:   return std::make_unique<PeakEnvelopeImpl<p32>>();
 	case ArithConfig::tiny_posit:   return std::make_unique<PeakEnvelopeImpl<tiny_posit_t>>();
 	}
-	return std::make_unique<PeakEnvelopeImpl<double>>();
+	// If a new ArithConfig enumerator is added without extending the switch,
+	// surface it instead of silently dispatching to double.
+	throw std::invalid_argument("PeakEnvelope: unsupported ArithConfig");
 }
 
 } // namespace
@@ -110,7 +120,15 @@ public:
 		std::size_t n = signal.shape(0);
 		double* out_ptr = nullptr;
 		auto arr = make_f64_array(n, out_ptr);
-		impl_->process_block(signal.data(), out_ptr, n);
+		const double* in_ptr = signal.data();
+		// The processing loop touches no Python state, so drop the GIL
+		// across the hot path. We can't use nb::call_guard at the .def()
+		// site because make_f64_array creates Python objects (capsule +
+		// ndarray) — those require the GIL held.
+		{
+			nb::gil_scoped_release release;
+			impl_->process_block(in_ptr, out_ptr, n);
+		}
 		return arr;
 	}
 
@@ -142,7 +160,8 @@ void bind_conditioning(nb::module_& m) {
 		.def("process_block", &PyPeakEnvelope::process_block,
 		     nb::arg("signal"),
 		     "Process a 1D NumPy float64 signal. Returns the envelope trace "
-		     "(same length as the input).")
+		     "(same length as the input). The per-sample loop releases the "
+		     "GIL internally so other Python threads can run.")
 		.def("value", &PyPeakEnvelope::value,
 		     "Current envelope value without consuming a sample.")
 		.def("reset", &PyPeakEnvelope::reset,
