@@ -24,7 +24,22 @@ try:
         # Spectral
         fft, fft_magnitude_db, ifft, periodogram, psd, spectrogram,
         # Filters
-        IIRFilter, butterworth_lowpass, butterworth_highpass,
+        IIRFilter,
+        butterworth_lowpass, butterworth_highpass,
+        butterworth_bandpass, butterworth_bandstop,
+        chebyshev1_lowpass, chebyshev1_highpass,
+        chebyshev1_bandpass, chebyshev1_bandstop,
+        chebyshev2_lowpass, chebyshev2_highpass,
+        chebyshev2_bandpass, chebyshev2_bandstop,
+        bessel_lowpass, bessel_highpass,
+        bessel_bandpass, bessel_bandstop,
+        legendre_lowpass, legendre_highpass,
+        legendre_bandpass, legendre_bandstop,
+        elliptic_lowpass, elliptic_highpass,
+        elliptic_bandpass, elliptic_bandstop,
+        rbj_lowpass, rbj_highpass,
+        rbj_bandpass, rbj_bandstop,
+        rbj_allpass, rbj_lowshelf, rbj_highshelf,
         # Introspection
         available_dtypes,
     )
