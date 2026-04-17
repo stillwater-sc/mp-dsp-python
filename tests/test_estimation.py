@@ -172,6 +172,13 @@ class TestKalmanControl:
         with pytest.raises(ValueError):
             kf.predict(np.array([1.0]))
 
+    def test_set_B_no_ctrl_dim_raises_clearly(self):
+        """Assigning B on a filter constructed without ctrl_dim should raise
+        a targeted error rather than a confusing 'expected Nx0' shape error."""
+        kf = mpdsp.KalmanFilter(state_dim=2, meas_dim=1)  # ctrl_dim=0 default
+        with pytest.raises(ValueError, match="ctrl_dim=0"):
+            kf.B = np.array([[1.0], [0.0]])
+
     def test_predict_with_control_wrong_length_raises(self):
         kf = mpdsp.KalmanFilter(state_dim=2, meas_dim=1, ctrl_dim=1)
         with pytest.raises(ValueError):

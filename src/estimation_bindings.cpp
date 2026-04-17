@@ -208,13 +208,16 @@ struct KalmanImpl : IKalmanImpl {
 	void predict() override { inner.predict(); }
 
 	void predict_with_control(np_f64_ro u) override {
-		mtl::vec::dense_vector<T> uv(u.shape(0));
+		// Size the temporary from the expected dim rather than u.shape(0) so
+		// numpy_to_vec's size check is a meaningful backstop to the outer
+		// PyKalmanFilter validation rather than a tautology.
+		mtl::vec::dense_vector<T> uv(inner.ctrl_dim());
 		numpy_to_vec(u, uv, "u");
 		inner.predict(uv);
 	}
 
 	void update(np_f64_ro z) override {
-		mtl::vec::dense_vector<T> zv(z.shape(0));
+		mtl::vec::dense_vector<T> zv(inner.meas_dim());
 		numpy_to_vec(z, zv, "z");
 		inner.update(zv);
 	}
@@ -264,7 +267,14 @@ public:
 	void set_Q(np_f64_2d_ro a) { impl_->set_Q(a); }
 	void set_R(np_f64_2d_ro a) { impl_->set_R(a); }
 	void set_P(np_f64_2d_ro a) { impl_->set_P(a); }
-	void set_B(np_f64_2d_ro a) { impl_->set_B(a); }
+	void set_B(np_f64_2d_ro a) {
+		if (ctrl_dim() == 0) {
+			throw std::invalid_argument(
+				"KalmanFilter.B: filter was constructed with ctrl_dim=0; "
+				"reconstruct with ctrl_dim>0 to set a control matrix");
+		}
+		impl_->set_B(a);
+	}
 	void set_state(np_f64_ro v) { impl_->set_state(v); }
 
 	void predict() { impl_->predict(); }
