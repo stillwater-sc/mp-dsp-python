@@ -47,6 +47,7 @@ try:
         PeakEnvelope, RMSEnvelope, Compressor, AGC,
         # Estimation
         KalmanFilter,
+        LMSFilter, NLMSFilter, RLSFilter,
         # Introspection
         available_dtypes,
     )

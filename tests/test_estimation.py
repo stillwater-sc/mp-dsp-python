@@ -1,4 +1,4 @@
-"""Tests for state-estimation bindings (scaffold: KalmanFilter)."""
+"""Tests for state-estimation bindings: KalmanFilter, LMSFilter, NLMSFilter, RLSFilter."""
 
 import numpy as np
 import pytest
@@ -243,3 +243,223 @@ class TestKalmanDtypeDispatch:
         # But should still be close — within a few percent of the reference.
         err = np.max(np.abs(ref - posit)) / (np.max(np.abs(ref)) + 1e-12)
         assert err < 0.05
+
+
+# ---------------------------------------------------------------------------
+# Adaptive filters — shared test fixtures.
+# ---------------------------------------------------------------------------
+
+
+def _sysid_signals(true_taps, n=4000, seed=0):
+    """Generate (x, d) signals for a system-identification task where the
+    unknown system is an FIR with `true_taps`. Returns contiguous float64
+    arrays of length n each."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(n)
+    d = np.convolve(x, true_taps, mode="full")[:n]
+    return x, d
+
+
+# ---------------------------------------------------------------------------
+# LMSFilter
+# ---------------------------------------------------------------------------
+
+
+class TestLMSFilter:
+    def test_default_dtype(self):
+        f = mpdsp.LMSFilter(num_taps=4, step_size=0.01)
+        assert f.dtype == "reference"
+        assert f.num_taps == 4
+
+    def test_zero_num_taps_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.LMSFilter(num_taps=0, step_size=0.01)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.LMSFilter(num_taps=4, step_size=0.01, dtype="not_a_dtype")
+
+    def test_process_returns_tuple(self):
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
+        y, e = f.process(1.0, 0.5)
+        assert isinstance(y, float)
+        assert isinstance(e, float)
+
+    def test_weights_shape(self):
+        f = mpdsp.LMSFilter(num_taps=5, step_size=0.01)
+        w = f.weights
+        assert w.shape == (5,)
+        assert w.dtype == np.float64
+        # Weights start at zero.
+        assert np.all(w == 0.0)
+
+    def test_process_block_shapes(self):
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
+        x, d = _sysid_signals([0.3, 0.5, 0.2], n=128)
+        ys, es = f.process_block(x, d)
+        assert ys.shape == (128,)
+        assert es.shape == (128,)
+
+    def test_process_block_length_mismatch_raises(self):
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.01)
+        with pytest.raises(ValueError):
+            f.process_block(np.zeros(10), np.zeros(11))
+
+    def test_converges_to_known_system(self):
+        """LMS should recover a known unknown-system FIR given enough samples."""
+        true_taps = np.array([0.3, 0.5, 0.2])
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
+        x, d = _sysid_signals(true_taps, n=2000)
+        f.process_block(x, d)
+        np.testing.assert_allclose(f.weights, true_taps, atol=0.01)
+
+    def test_reset_clears_weights(self):
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
+        x, d = _sysid_signals([0.3, 0.5, 0.2], n=500)
+        f.process_block(x, d)
+        assert np.max(np.abs(f.weights)) > 0.1
+        f.reset()
+        assert np.all(f.weights == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# NLMSFilter
+# ---------------------------------------------------------------------------
+
+
+class TestNLMSFilter:
+    def test_default_dtype(self):
+        f = mpdsp.NLMSFilter(num_taps=4, step_size=0.5)
+        assert f.dtype == "reference"
+        assert f.num_taps == 4
+
+    def test_zero_num_taps_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.NLMSFilter(num_taps=0, step_size=0.5)
+
+    def test_non_positive_epsilon_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.NLMSFilter(num_taps=4, step_size=0.5, epsilon=0.0)
+
+    def test_converges_to_known_system(self):
+        true_taps = np.array([0.3, 0.5, 0.2])
+        f = mpdsp.NLMSFilter(num_taps=3, step_size=0.5)
+        x, d = _sysid_signals(true_taps, n=2000)
+        f.process_block(x, d)
+        np.testing.assert_allclose(f.weights, true_taps, atol=0.01)
+
+    def test_handles_large_input_stably(self):
+        """NLMS's normalization is its reason to exist: identical step_size
+        that would diverge on LMS at large input amplitudes should track
+        stably with NLMS."""
+        true_taps = np.array([0.4, 0.3])
+        x, d = _sysid_signals(true_taps, n=2000)
+        x_loud = 50.0 * x   # 50x amplitude
+        d_loud = 50.0 * d
+        f = mpdsp.NLMSFilter(num_taps=2, step_size=0.5)
+        f.process_block(x_loud, d_loud)
+        # Even at huge amplitude NLMS converges close to the truth.
+        np.testing.assert_allclose(f.weights, true_taps, atol=0.05)
+
+
+# ---------------------------------------------------------------------------
+# RLSFilter
+# ---------------------------------------------------------------------------
+
+
+class TestRLSFilter:
+    def test_default_dtype(self):
+        f = mpdsp.RLSFilter(num_taps=4)
+        assert f.dtype == "reference"
+        assert f.num_taps == 4
+
+    def test_zero_num_taps_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.RLSFilter(num_taps=0)
+
+    def test_forgetting_factor_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.RLSFilter(num_taps=4, forgetting_factor=0.0)
+        with pytest.raises(ValueError):
+            mpdsp.RLSFilter(num_taps=4, forgetting_factor=1.5)
+
+    def test_non_positive_delta_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.RLSFilter(num_taps=4, delta=0.0)
+
+    def test_converges_to_known_system(self):
+        true_taps = np.array([0.3, 0.5, 0.2])
+        f = mpdsp.RLSFilter(num_taps=3, forgetting_factor=0.99)
+        x, d = _sysid_signals(true_taps, n=500)  # short — RLS is fast
+        f.process_block(x, d)
+        np.testing.assert_allclose(f.weights, true_taps, atol=1e-3)
+
+    def test_reset_clears_state(self):
+        f = mpdsp.RLSFilter(num_taps=3)
+        x, d = _sysid_signals([0.3, 0.5, 0.2], n=200)
+        f.process_block(x, d)
+        assert np.max(np.abs(f.weights)) > 0.1
+        f.reset()
+        assert np.all(f.weights == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# RLS vs LMS — acceptance criterion from issue #6.
+# ---------------------------------------------------------------------------
+
+
+def test_rls_converges_faster_than_lms():
+    """RLS uses a matrix update and should reach low error in far fewer
+    samples than LMS. Count how many samples it takes each to get the
+    weight error below a fixed tolerance."""
+    true_taps = np.array([0.3, 0.5, 0.2])
+
+    def iters_to_converge(filt, x, d, tol=0.02):
+        xs, ds = x.copy(), d.copy()
+        for i in range(len(xs)):
+            filt.process(float(xs[i]), float(ds[i]))
+            if np.max(np.abs(np.asarray(filt.weights) - true_taps)) < tol:
+                return i + 1
+        return len(xs)
+
+    x, d = _sysid_signals(true_taps, n=5000, seed=1)
+    lms_iters = iters_to_converge(mpdsp.LMSFilter(num_taps=3, step_size=0.05),
+                                  x, d)
+    rls_iters = iters_to_converge(mpdsp.RLSFilter(num_taps=3,
+                                                   forgetting_factor=0.99),
+                                  x, d)
+    assert rls_iters < lms_iters, (
+        f"expected RLS to converge faster than LMS "
+        f"(LMS={lms_iters}, RLS={rls_iters})"
+    )
+    # Stronger assertion: RLS should be dramatically faster, not merely 1
+    # iteration fewer. Factor of 3 is a conservative expectation on this
+    # well-conditioned sysid.
+    assert rls_iters * 3 < lms_iters
+
+
+# ---------------------------------------------------------------------------
+# Dtype dispatch (adaptive filters).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [
+    "reference", "gpu_baseline", "ml_hw", "cf24", "half", "posit_full",
+])
+@pytest.mark.parametrize("ctor", [
+    lambda dt: mpdsp.LMSFilter(num_taps=3, step_size=0.05, dtype=dt),
+    lambda dt: mpdsp.NLMSFilter(num_taps=3, step_size=0.5, dtype=dt),
+    lambda dt: mpdsp.RLSFilter(num_taps=3, forgetting_factor=0.99, dtype=dt),
+], ids=["lms", "nlms", "rls"])
+def test_adaptive_filter_runs_under_each_dtype(ctor, dtype):
+    """Every dtype must instantiate, process one sample, and return finite
+    values. tiny_posit is excluded because its precision floor (< 4 bits of
+    fraction at typical weight magnitudes) can't meaningfully represent the
+    update step and the test would be checking noise rather than arithmetic.
+    """
+    f = ctor(dtype)
+    x, d = _sysid_signals([0.3, 0.5, 0.2], n=64)
+    ys, es = f.process_block(x, d)
+    assert ys.shape == x.shape
+    assert np.all(np.isfinite(ys))
+    assert np.all(np.isfinite(es))
