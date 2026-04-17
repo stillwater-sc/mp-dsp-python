@@ -463,3 +463,117 @@ def test_adaptive_filter_runs_under_each_dtype(ctor, dtype):
     assert ys.shape == x.shape
     assert np.all(np.isfinite(ys))
     assert np.all(np.isfinite(es))
+
+
+# ---------------------------------------------------------------------------
+# Estimation Python helpers (mpdsp.estimation).
+# ---------------------------------------------------------------------------
+
+
+class TestEstimationHelpers:
+    def test_plot_kalman_tracking_returns_figure(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.estimation import plot_kalman_tracking
+
+        n = 50
+        truth = 0.5 * np.arange(n)
+        measurements = truth + np.random.default_rng(0).normal(0, 0.1, n)
+        estimates = np.column_stack([truth, np.full(n, 0.5)])  # [pos, vel]
+        fig = plot_kalman_tracking(truth, measurements, estimates,
+                                   title="test")
+        assert fig is not None
+        assert len(fig.axes) == 1
+        plt.close(fig)
+
+    def test_plot_kalman_tracking_with_covariance_band(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.estimation import plot_kalman_tracking
+
+        n = 30
+        truth = np.zeros(n)
+        measurements = np.zeros(n)
+        estimates = np.zeros((n, 2))
+        # Decreasing variance — typical Kalman convergence
+        covariances = np.stack([np.eye(2) * (1.0 / (i + 1)) for i in range(n)])
+        fig = plot_kalman_tracking(truth, measurements, estimates,
+                                   covariances=covariances)
+        plt.close(fig)
+
+    def test_plot_kalman_tracking_wrong_covariance_shape_raises(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        from mpdsp.estimation import plot_kalman_tracking
+
+        n = 10
+        with pytest.raises(ValueError):
+            plot_kalman_tracking(np.zeros(n), np.zeros(n), np.zeros((n, 2)),
+                                 covariances=np.ones((n, 3, 3)))  # wrong dim
+
+    def test_plot_adaptive_convergence_single_filter(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.estimation import plot_adaptive_convergence
+
+        trace = np.random.default_rng(0).normal(0, 0.1, (100, 3))
+        fig = plot_adaptive_convergence(trace,
+                                         true_weights=np.array([0.3, 0.5, 0.2]))
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_adaptive_convergence_multiple_filters(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.estimation import plot_adaptive_convergence
+
+        rng = np.random.default_rng(0)
+        traces = [rng.normal(0, 0.1, (50, 3)), rng.normal(0, 0.1, (50, 3))]
+        fig = plot_adaptive_convergence(traces, labels=["LMS", "RLS"])
+        plt.close(fig)
+
+    def test_plot_adaptive_convergence_label_count_mismatch_raises(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        from mpdsp.estimation import plot_adaptive_convergence
+
+        traces = [np.zeros((10, 2)), np.zeros((10, 2))]
+        with pytest.raises(ValueError):
+            plot_adaptive_convergence(traces, labels=["only_one"])
+
+    def test_plot_adaptive_convergence_true_weights_length_mismatch_raises(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        from mpdsp.estimation import plot_adaptive_convergence
+
+        trace = np.zeros((10, 3))
+        with pytest.raises(ValueError):
+            plot_adaptive_convergence(trace,
+                                       true_weights=np.array([0.1, 0.2]))
+
+    def test_collect_adaptive_weights_shape(self):
+        from mpdsp.estimation import collect_adaptive_weights
+        f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
+        x, d = _sysid_signals([0.3, 0.5, 0.2], n=100)
+        trace = collect_adaptive_weights(f, x, d, record_every=10)
+        # 100 samples / 10 = 10 records
+        assert trace.shape == (10, 3)
+
+    def test_collect_adaptive_weights_converges(self):
+        from mpdsp.estimation import collect_adaptive_weights
+        f = mpdsp.RLSFilter(num_taps=3, forgetting_factor=0.99)
+        x, d = _sysid_signals([0.3, 0.5, 0.2], n=500)
+        trace = collect_adaptive_weights(f, x, d, record_every=50)
+        # Final recorded weights should match the true taps.
+        np.testing.assert_allclose(trace[-1], [0.3, 0.5, 0.2], atol=1e-3)
