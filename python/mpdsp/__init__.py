@@ -69,3 +69,11 @@ except ImportError:
 # Filter helpers (pure Python; requires mpdsp._core; plotting needs matplotlib)
 if HAS_CORE:
     from mpdsp.filters import compare_filters, plot_filter_comparison
+
+# Estimation helpers (pure Python; plotting needs matplotlib)
+if HAS_CORE:
+    from mpdsp.estimation import (
+        plot_kalman_tracking,
+        plot_adaptive_convergence,
+        collect_adaptive_weights,
+    )
