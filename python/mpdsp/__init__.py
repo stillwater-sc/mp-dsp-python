@@ -45,6 +45,8 @@ try:
         fir_bandpass, fir_bandstop,
         # Conditioning
         PeakEnvelope, RMSEnvelope, Compressor, AGC,
+        # Estimation
+        KalmanFilter,
         # Introspection
         available_dtypes,
     )
