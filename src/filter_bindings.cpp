@@ -16,9 +16,14 @@
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
+#include <sw/dsp/analysis/condition.hpp>
+#include <sw/dsp/analysis/sensitivity.hpp>
+#include <sw/dsp/analysis/stability.hpp>
 #include <sw/dsp/filter/biquad/biquad.hpp>
 #include <sw/dsp/filter/biquad/cascade.hpp>
 #include <sw/dsp/filter/biquad/state.hpp>
+#include <sw/dsp/filter/fir/fir_design.hpp>
+#include <sw/dsp/filter/fir/fir_filter.hpp>
 #include <sw/dsp/filter/iir/bessel.hpp>
 #include <sw/dsp/filter/iir/butterworth.hpp>
 #include <sw/dsp/filter/iir/chebyshev1.hpp>
@@ -26,6 +31,7 @@
 #include <sw/dsp/filter/iir/elliptic.hpp>
 #include <sw/dsp/filter/iir/legendre.hpp>
 #include <sw/dsp/filter/iir/rbj.hpp>
+#include <sw/dsp/windows/windows.hpp>
 
 #include "types.hpp"
 
@@ -72,6 +78,9 @@ static void process_dispatch(const CascadeD& cascade,
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
 	using mpdsp::half_;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using tiny_posit_t = sw::universal::posit<8, 2>;
 	switch (config) {
 	case ArithConfig::reference:
 		process_typed<double, double>(cascade, in, out, n); break;
@@ -84,9 +93,9 @@ static void process_dispatch(const CascadeD& cascade,
 	case ArithConfig::half_config:
 		process_typed<half_, half_>(cascade, in, out, n); break;
 	case ArithConfig::posit_full:
+		process_typed<p32, p16>(cascade, in, out, n); break;
 	case ArithConfig::tiny_posit:
-		throw std::invalid_argument(
-			"posit dtypes for filter.process are not yet enabled");
+		process_typed<tiny_posit_t, tiny_posit_t>(cascade, in, out, n); break;
 	}
 }
 
@@ -218,9 +227,214 @@ public:
 		}
 		return arr;
 	}
+
+	// --- Extended diagnostics --------------------------------------------
+
+	double stability_margin() const {
+		return sw::dsp::stability_margin(cascade);
+	}
+
+	double condition_number(int num_freqs) const {
+		return sw::dsp::cascade_condition_number(cascade, num_freqs);
+	}
+
+	double worst_case_sensitivity(double epsilon) const {
+		return sw::dsp::worst_case_sensitivity(cascade, epsilon);
+	}
+
+	// Pole displacement: quantize each coefficient through the target dtype
+	// (double -> T -> double) and measure how far the resulting poles move.
+	// This captures the dominant quantization effect (coefficient precision);
+	// pole extraction is done in double on both cascades.
+	double pole_displacement(const std::string& dtype) const;
+};
+
+// ---------------------------------------------------------------------------
+// PyFIRFilter: opaque handle wrapping a double-precision tap vector.
+// ---------------------------------------------------------------------------
+
+class PyFIRFilter {
+public:
+	mtl::vec::dense_vector<double> taps;
+
+	int num_taps() const { return static_cast<int>(taps.size()); }
+
+	// Taps as a NumPy float64 array (copied).
+	np_f64 coefficients() const {
+		std::size_t n = taps.size();
+		double* out_ptr = nullptr;
+		auto arr = make_f64_array(n, out_ptr);
+		for (std::size_t i = 0; i < n; ++i) out_ptr[i] = taps[i];
+		return arr;
+	}
+
+	// Impulse response of length `length` — the taps padded (or truncated).
+	np_f64 impulse_response(int length) const {
+		if (length <= 0) {
+			throw std::invalid_argument(
+				"impulse_response: length must be positive");
+		}
+		std::size_t n = static_cast<std::size_t>(length);
+		double* out_ptr = nullptr;
+		auto arr = make_f64_array(n, out_ptr);
+		std::size_t copy_n = std::min(n, taps.size());
+		for (std::size_t i = 0; i < copy_n; ++i) out_ptr[i] = taps[i];
+		for (std::size_t i = copy_n; i < n; ++i) out_ptr[i] = 0.0;
+		return arr;
+	}
+
+	// H(e^{j2*pi*f}) = sum_n taps[n] * exp(-j * 2*pi*f * n).
+	np_c128 frequency_response(np_f64_ro normalized_freqs) const {
+		std::size_t n = normalized_freqs.shape(0);
+		std::complex<double>* out_ptr = nullptr;
+		auto arr = make_c128_array(n, out_ptr);
+		const double* f = normalized_freqs.data();
+		std::size_t N = taps.size();
+		for (std::size_t k = 0; k < n; ++k) {
+			std::complex<double> acc{};
+			double w = 2.0 * 3.14159265358979323846 * f[k];
+			for (std::size_t i = 0; i < N; ++i) {
+				acc += taps[i] * std::exp(std::complex<double>(0.0, -w * static_cast<double>(i)));
+			}
+			out_ptr[k] = acc;
+		}
+		return arr;
+	}
+
+	np_f64 process(np_f64_ro signal, const std::string& dtype) const;
 };
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// FIR type-dispatched processing. Each call spins up a fresh FIRFilter with
+// taps cast to StateScalar (== CoeffScalar here). This matches the IIR
+// pattern: the Python-facing filter object is stateless across process() calls.
+// ---------------------------------------------------------------------------
+
+template <typename StateScalar, typename SampleScalar>
+static void fir_process_typed(const mtl::vec::dense_vector<double>& taps_d,
+                              const double* in, double* out, std::size_t n) {
+	mtl::vec::dense_vector<StateScalar> taps(taps_d.size());
+	for (std::size_t i = 0; i < taps_d.size(); ++i) {
+		taps[i] = static_cast<StateScalar>(taps_d[i]);
+	}
+	sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar> filt(taps);
+	for (std::size_t i = 0; i < n; ++i) {
+		SampleScalar x = static_cast<SampleScalar>(in[i]);
+		out[i] = static_cast<double>(filt.process(x));
+	}
+}
+
+static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
+                                 const double* in, double* out, std::size_t n,
+                                 mpdsp::ArithConfig config) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::half_;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using tiny_posit_t = sw::universal::posit<8, 2>;
+	switch (config) {
+	case ArithConfig::reference:
+		fir_process_typed<double, double>(taps_d, in, out, n); break;
+	case ArithConfig::gpu_baseline:
+		fir_process_typed<float, float>(taps_d, in, out, n); break;
+	case ArithConfig::ml_hw:
+		fir_process_typed<float, half_>(taps_d, in, out, n); break;
+	case ArithConfig::cf24_config:
+		fir_process_typed<cf24, cf24>(taps_d, in, out, n); break;
+	case ArithConfig::half_config:
+		fir_process_typed<half_, half_>(taps_d, in, out, n); break;
+	case ArithConfig::posit_full:
+		fir_process_typed<p32, p16>(taps_d, in, out, n); break;
+	case ArithConfig::tiny_posit:
+		fir_process_typed<tiny_posit_t, tiny_posit_t>(taps_d, in, out, n); break;
+	}
+}
+
+// Build a window of the requested kind (name matches signal_bindings.cpp).
+static mtl::vec::dense_vector<double>
+make_window(const std::string& name, std::size_t N, double kaiser_beta) {
+	using namespace sw::dsp;
+	if (name == "hamming")     return hamming_window<double>(N);
+	if (name == "hanning")     return hanning_window<double>(N);
+	if (name == "blackman")    return blackman_window<double>(N);
+	if (name == "rectangular") return rectangular_window<double>(N);
+	if (name == "flat_top")    return flat_top_window<double>(N);
+	if (name == "kaiser")      return kaiser_window<double>(N, kaiser_beta);
+	throw std::invalid_argument("Unknown window: " + name +
+		" (expected hamming, hanning, blackman, rectangular, flat_top, kaiser)");
+}
+
+// Common FIR parameter validation shared by the design functions below.
+static void check_num_taps(int n, const char* name) {
+	if (n < 1) {
+		throw std::invalid_argument(std::string(name) +
+			": num_taps must be positive");
+	}
+}
+
+} // namespace
+
+np_f64 PyFIRFilter::process(np_f64_ro signal, const std::string& dtype) const {
+	std::size_t n = signal.shape(0);
+	double* out_ptr = nullptr;
+	auto arr = make_f64_array(n, out_ptr);
+	auto config = mpdsp::parse_config(dtype);
+	fir_process_dispatch(taps, signal.data(), out_ptr, n, config);
+	return arr;
+}
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Coefficient quantization for pole-displacement analysis.
+// Round-trips each coefficient through target type T (double -> T -> double)
+// so pole extraction can use the existing double-precision cascade machinery.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static double round_trip(double v) {
+	return static_cast<double>(static_cast<T>(v));
+}
+
+template <typename T>
+static CascadeD quantize_cascade(const CascadeD& src) {
+	CascadeD dst;
+	dst.set_num_stages(src.num_stages());
+	for (int i = 0; i < src.num_stages(); ++i) {
+		const auto& s = src.stage(i);
+		auto& d = dst.stage(i);
+		d.b0 = round_trip<T>(s.b0);
+		d.b1 = round_trip<T>(s.b1);
+		d.b2 = round_trip<T>(s.b2);
+		d.a1 = round_trip<T>(s.a1);
+		d.a2 = round_trip<T>(s.a2);
+	}
+	return dst;
+}
+
+static double pole_displacement_dispatch(const CascadeD& src,
+                                         mpdsp::ArithConfig config) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::half_;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using tiny_posit_t = sw::universal::posit<8, 2>;
+	CascadeD quantized;
+	switch (config) {
+	case ArithConfig::reference:    return 0.0;  // no quantization
+	case ArithConfig::gpu_baseline: quantized = quantize_cascade<float>(src); break;
+	case ArithConfig::ml_hw:        quantized = quantize_cascade<half_>(src); break;
+	case ArithConfig::cf24_config:  quantized = quantize_cascade<cf24>(src); break;
+	case ArithConfig::half_config:  quantized = quantize_cascade<half_>(src); break;
+	case ArithConfig::posit_full:   quantized = quantize_cascade<p32>(src); break;
+	case ArithConfig::tiny_posit:   quantized = quantize_cascade<tiny_posit_t>(src); break;
+	}
+	return sw::dsp::pole_displacement(src, quantized);
+}
 
 // ---------------------------------------------------------------------------
 // Design factories. DesignT is a class with .setup(...) and .cascade().
@@ -252,6 +466,11 @@ static PyIIRFilter make_from_rbj(SetupArgs... args) {
 
 } // namespace
 
+double PyIIRFilter::pole_displacement(const std::string& dtype) const {
+	auto config = mpdsp::parse_config(dtype);
+	return pole_displacement_dispatch(cascade, config);
+}
+
 // ---------------------------------------------------------------------------
 // Module registration.
 // ---------------------------------------------------------------------------
@@ -275,7 +494,21 @@ void bind_filters(nb::module_& m) {
 		.def("frequency_response", &PyIIRFilter::frequency_response,
 		     nb::arg("normalized_freqs"),
 		     "Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). "
-		     "Returns complex128.");
+		     "Returns complex128.")
+		.def("stability_margin", &PyIIRFilter::stability_margin,
+		     "1 - max(|pole|). Positive = stable, 0 = marginal, < 0 = unstable.")
+		.def("condition_number", &PyIIRFilter::condition_number,
+		     nb::arg("num_freqs") = 256,
+		     "Worst-case relative change in |H| per coefficient perturbation "
+		     "across stages. Higher = more sensitive to coefficient quantization.")
+		.def("worst_case_sensitivity", &PyIIRFilter::worst_case_sensitivity,
+		     nb::arg("epsilon") = 1e-8,
+		     "Worst-case |d(max_pole_radius)/d(coeff)| across stages, "
+		     "computed by finite differences.")
+		.def("pole_displacement", &PyIIRFilter::pole_displacement,
+		     nb::arg("dtype"),
+		     "Max pole displacement when coefficients are quantized through "
+		     "the target dtype (see available_dtypes). Returns 0 for 'reference'.");
 
 	namespace iir = sw::dsp::iir;
 	namespace rbj = sw::dsp::iir::rbj;
@@ -677,4 +910,120 @@ void bind_filters(nb::module_& m) {
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("gain_db"),
 		   nb::arg("slope") = 1.0,
 		"RBJ biquad high shelf. gain_db is the high-frequency shelf gain.");
+
+	// =======================================================================
+	// FIR filters.
+	// =======================================================================
+
+	nb::class_<PyFIRFilter>(m, "FIRFilter",
+		"Finite-impulse-response filter with a double-precision tap vector.\n\n"
+		"Construct via fir_lowpass / fir_highpass / fir_bandpass / fir_bandstop, "
+		"or from explicit coefficients via fir_filter(taps). "
+		"process() dispatches state/sample arithmetic on the dtype argument.")
+		.def("num_taps", &PyFIRFilter::num_taps,
+		     "Number of tap coefficients.")
+		.def("coefficients", &PyFIRFilter::coefficients,
+		     "Taps as a NumPy float64 array.")
+		.def("impulse_response", &PyFIRFilter::impulse_response,
+		     nb::arg("length"),
+		     "Impulse response — the taps, padded or truncated to `length`.")
+		.def("frequency_response", &PyFIRFilter::frequency_response,
+		     nb::arg("normalized_freqs"),
+		     "Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). "
+		     "Returns complex128.")
+		.def("process", &PyFIRFilter::process,
+		     nb::arg("signal"), nb::arg("dtype") = "reference",
+		     "Filter a signal. dtype selects arithmetic for taps, state, and "
+		     "samples (see available_dtypes()). Returns NumPy float64.");
+
+	m.def("fir_filter",
+		[](np_f64_ro coeffs) {
+			std::size_t n = coeffs.shape(0);
+			check_num_taps(static_cast<int>(n), "fir_filter");
+			PyFIRFilter f;
+			f.taps = mtl::vec::dense_vector<double>(n);
+			const double* src = coeffs.data();
+			for (std::size_t i = 0; i < n; ++i) f.taps[i] = src[i];
+			return f;
+		}, nb::arg("coefficients"),
+		"Construct an FIR filter from explicit tap coefficients.");
+
+	m.def("fir_lowpass",
+		[](int num_taps, double sr, double cutoff,
+		   const std::string& window, double kaiser_beta) {
+			const char* n = "fir_lowpass";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
+			PyFIRFilter f;
+			f.taps = sw::dsp::design_fir_lowpass<double>(
+				static_cast<std::size_t>(num_taps), cutoff / sr, w);
+			return f;
+		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg(A_CUT),
+		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		"Design an FIR lowpass filter via the window method.");
+
+	m.def("fir_highpass",
+		[](int num_taps, double sr, double cutoff,
+		   const std::string& window, double kaiser_beta) {
+			const char* n = "fir_highpass";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(cutoff, sr, n, "cutoff");
+			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
+			PyFIRFilter f;
+			f.taps = sw::dsp::design_fir_highpass<double>(
+				static_cast<std::size_t>(num_taps), cutoff / sr, w);
+			return f;
+		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg(A_CUT),
+		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		"Design an FIR highpass filter via spectral inversion of a lowpass.");
+
+	m.def("fir_bandpass",
+		[](int num_taps, double sr, double f_low, double f_high,
+		   const std::string& window, double kaiser_beta) {
+			const char* n = "fir_bandpass";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(f_low, sr, n, "f_low");
+			check_frequency(f_high, sr, n, "f_high");
+			if (!(f_high > f_low)) {
+				throw std::invalid_argument(
+					"fir_bandpass: f_high must be greater than f_low");
+			}
+			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
+			PyFIRFilter f;
+			f.taps = sw::dsp::design_fir_bandpass<double>(
+				static_cast<std::size_t>(num_taps), f_low / sr, f_high / sr, w);
+			return f;
+		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg("f_low"), nb::arg("f_high"),
+		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		"Design an FIR bandpass filter.");
+
+	m.def("fir_bandstop",
+		[](int num_taps, double sr, double f_low, double f_high,
+		   const std::string& window, double kaiser_beta) {
+			const char* n = "fir_bandstop";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(f_low, sr, n, "f_low");
+			check_frequency(f_high, sr, n, "f_high");
+			if (!(f_high > f_low)) {
+				throw std::invalid_argument(
+					"fir_bandstop: f_high must be greater than f_low");
+			}
+			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
+			// Bandstop via spectral inversion of a bandpass:
+			// bs[n] = delta[n - M/2] - bp[n]
+			auto bp = sw::dsp::design_fir_bandpass<double>(
+				static_cast<std::size_t>(num_taps), f_low / sr, f_high / sr, w);
+			PyFIRFilter f;
+			f.taps = mtl::vec::dense_vector<double>(bp.size());
+			for (std::size_t i = 0; i < bp.size(); ++i) f.taps[i] = -bp[i];
+			f.taps[(bp.size() - 1) / 2] += 1.0;
+			return f;
+		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg("f_low"), nb::arg("f_high"),
+		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		"Design an FIR bandstop (notch) filter via spectral inversion.");
 }

@@ -422,3 +422,239 @@ def test_filter_common_api(make):
     y = filt.process(sig)
     assert y.shape == sig.shape
     assert y.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# Posit dtypes — now enabled for process().
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", ["posit_full", "tiny_posit"])
+def test_iir_posit_process(dtype):
+    filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+    sig = _sine(300.0)
+    ref = filt.process(sig, dtype="reference")
+    out = filt.process(sig, dtype=dtype)
+    assert out.shape == ref.shape
+    # Posit arithmetic should produce a recognizably similar result to reference.
+    # posit<8,2> (tiny_posit) is quite lossy — allow a generous bound.
+    err = np.max(np.abs(ref - out)) / (np.max(np.abs(ref)) + 1e-12)
+    assert err < 0.5, f"{dtype} relative error too large: {err}"
+
+
+# ---------------------------------------------------------------------------
+# Extended diagnostics on IIRFilter.
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnostics:
+    def test_stability_margin_stable_filter(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        # Butterworth is always stable; margin = 1 - max|pole| > 0
+        assert filt.stability_margin() > 0.0
+
+    def test_condition_number_finite(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        cn = filt.condition_number(num_freqs=64)
+        assert np.isfinite(cn)
+        assert cn > 0.0
+
+    def test_worst_case_sensitivity_finite(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        s = filt.worst_case_sensitivity()
+        assert np.isfinite(s)
+        assert s >= 0.0
+
+    def test_pole_displacement_reference_is_zero(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        assert filt.pole_displacement("reference") == 0.0
+
+    def test_pole_displacement_half_positive(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        # Half precision stores fewer coefficient bits, so poles must move.
+        d = filt.pole_displacement("half")
+        assert d > 0.0
+        # But should still be small (filter is not marginally stable).
+        assert d < 0.01
+
+    def test_higher_order_filter_has_larger_condition(self):
+        # Higher-order cascades are more sensitive to coefficient perturbation.
+        low = mpdsp.butterworth_lowpass(order=2, sample_rate=SAMPLE_RATE, cutoff=500.0)
+        high = mpdsp.butterworth_lowpass(order=10, sample_rate=SAMPLE_RATE, cutoff=500.0)
+        assert high.condition_number(num_freqs=64) > low.condition_number(num_freqs=64)
+
+
+# ---------------------------------------------------------------------------
+# FIR filters.
+# ---------------------------------------------------------------------------
+
+
+class TestFIRDesign:
+    def test_lowpass_design_shape(self):
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        assert isinstance(f, mpdsp.FIRFilter)
+        assert f.num_taps() == 51
+        c = f.coefficients()
+        assert c.shape == (51,)
+        assert c.dtype == np.float64
+
+    def test_highpass_dc_rejects(self):
+        f = mpdsp.fir_highpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        h = f.frequency_response(np.array([0.0, 0.45]))
+        assert np.abs(h[0]) < 0.05
+        assert np.abs(h[1]) > 0.5
+
+    def test_lowpass_passes_dc_rejects_high(self):
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        h = f.frequency_response(np.array([0.0, 0.45]))
+        assert abs(np.abs(h[0]) - 1.0) < 0.05
+        assert np.abs(h[1]) < 0.05
+
+    def test_bandpass_peaks_between_bounds(self):
+        f = mpdsp.fir_bandpass(num_taps=101, sample_rate=SAMPLE_RATE,
+                                f_low=800.0, f_high=1600.0)
+        freqs = np.array([100.0, 1200.0, 3500.0]) / SAMPLE_RATE
+        mag = np.abs(f.frequency_response(freqs))
+        assert mag[1] > mag[0]
+        assert mag[1] > mag[2]
+
+    def test_bandstop_notches_center(self):
+        f = mpdsp.fir_bandstop(num_taps=101, sample_rate=SAMPLE_RATE,
+                                f_low=800.0, f_high=1600.0)
+        freqs = np.array([100.0, 1200.0, 3500.0]) / SAMPLE_RATE
+        mag = np.abs(f.frequency_response(freqs))
+        assert mag[1] < mag[0]
+        assert mag[1] < mag[2]
+
+    def test_fir_filter_from_explicit_coefficients(self):
+        # Unity-impulse taps => identity filter.
+        taps = np.zeros(11, dtype=np.float64)
+        taps[0] = 1.0
+        f = mpdsp.fir_filter(taps)
+        assert f.num_taps() == 11
+        sig = _sine(300.0)
+        y = f.process(sig)
+        # First sample in == first sample out (no delay for zero-position tap).
+        assert abs(y[0] - sig[0]) < 1e-12
+
+    def test_impulse_response_matches_taps(self):
+        f = mpdsp.fir_lowpass(num_taps=21, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        ir = f.impulse_response(21)
+        np.testing.assert_allclose(ir, f.coefficients())
+
+    def test_impulse_response_padded_with_zeros(self):
+        f = mpdsp.fir_lowpass(num_taps=21, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        ir = f.impulse_response(30)
+        assert ir.shape == (30,)
+        np.testing.assert_allclose(ir[:21], f.coefficients())
+        np.testing.assert_array_equal(ir[21:], 0.0)
+
+    def test_windows_accepts_kaiser(self):
+        # Kaiser requires a beta parameter; the binding accepts it as
+        # kaiser_beta and passes it through to the window.
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                              cutoff=1000.0, window="kaiser", kaiser_beta=6.0)
+        h = f.frequency_response(np.array([0.0]))
+        assert abs(np.abs(h[0]) - 1.0) < 0.05
+
+    def test_windows_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                              cutoff=1000.0, window="not_a_window")
+
+    def test_invalid_num_taps_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.fir_lowpass(num_taps=0, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+
+    def test_bandpass_requires_ordered_frequencies(self):
+        with pytest.raises(ValueError):
+            mpdsp.fir_bandpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                                f_low=1600.0, f_high=800.0)
+
+
+class TestFIRProcessing:
+    def test_process_signal_shape(self):
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(200.0)
+        y = f.process(sig)
+        assert y.shape == sig.shape
+        assert y.dtype == np.float64
+
+    def test_lowpass_rejects_high_freq(self):
+        f = mpdsp.fir_lowpass(num_taps=101, sample_rate=SAMPLE_RATE, cutoff=500.0)
+        low = _sine(100.0)
+        high = _sine(3000.0)
+        # Skip group-delay transient
+        skip = 200
+        y_low = f.process(low)[skip:]
+        y_high = f.process(high)[skip:]
+        assert np.max(np.abs(y_low)) > 0.8
+        assert np.max(np.abs(y_high)) < 0.1
+
+    @pytest.mark.parametrize("dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_process_dispatch_works(self, dtype):
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)
+        ref = f.process(sig, dtype="reference")
+        out = f.process(sig, dtype=dtype)
+        assert out.shape == ref.shape
+        # Reduced precision should differ from reference but still be close.
+        err = np.max(np.abs(ref - out)) / (np.max(np.abs(ref)) + 1e-12)
+        assert err < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Python helpers in mpdsp.filters.
+# ---------------------------------------------------------------------------
+
+
+class TestFilterHelpers:
+    def test_compare_filters_runs_across_dtypes(self):
+        from mpdsp.filters import compare_filters
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)
+        df = compare_filters(filt, sig, dtypes=["reference", "gpu_baseline", "half"])
+        # Accept either pandas.DataFrame or list-of-dicts depending on pandas
+        # availability.
+        rows = df.to_dict("records") if hasattr(df, "to_dict") else df
+        by_dtype = {r["dtype"]: r for r in rows}
+        assert set(by_dtype.keys()) == {"reference", "gpu_baseline", "half"}
+        # Reference compared to itself: SQNR is capped high, error is 0.
+        ref_row = by_dtype["reference"]
+        assert ref_row["max_abs_error"] == 0.0
+        # Reduced dtypes should have finite SQNR and positive error.
+        assert np.isfinite(by_dtype["half"]["sqnr_db"])
+        assert by_dtype["half"]["max_abs_error"] > 0.0
+
+    def test_compare_filters_on_fir(self):
+        from mpdsp.filters import compare_filters
+        f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)
+        df = compare_filters(f, sig, dtypes=["reference", "gpu_baseline"])
+        rows = df.to_dict("records") if hasattr(df, "to_dict") else df
+        assert {r["dtype"] for r in rows} == {"reference", "gpu_baseline"}
+
+    def test_plot_filter_comparison_returns_figure(self):
+        pytest.importorskip("matplotlib")
+        from mpdsp.filters import plot_filter_comparison
+        import matplotlib
+        matplotlib.use("Agg")  # headless
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        fig = plot_filter_comparison(filt, num_freqs=64,
+                                     sample_rate=SAMPLE_RATE)
+        # Three subplots for IIR (magnitude, phase, pole-zero)
+        assert len(fig.axes) == 3
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_plot_filter_comparison_fir_has_two_axes(self):
+        pytest.importorskip("matplotlib")
+        from mpdsp.filters import plot_filter_comparison
+        import matplotlib
+        matplotlib.use("Agg")
+        f = mpdsp.fir_lowpass(num_taps=31, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        fig = plot_filter_comparison(f, num_freqs=64, sample_rate=SAMPLE_RATE)
+        # FIR: magnitude + phase (no pole-zero)
+        assert len(fig.axes) == 2
+        import matplotlib.pyplot as plt
+        plt.close(fig)
