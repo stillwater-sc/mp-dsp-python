@@ -44,7 +44,7 @@ try:
         fir_lowpass, fir_highpass,
         fir_bandpass, fir_bandstop,
         # Conditioning
-        PeakEnvelope,
+        PeakEnvelope, RMSEnvelope, Compressor, AGC,
         # Introspection
         available_dtypes,
     )
