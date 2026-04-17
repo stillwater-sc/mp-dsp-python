@@ -48,6 +48,9 @@ try:
         # Estimation
         KalmanFilter,
         LMSFilter, NLMSFilter, RLSFilter,
+        # Image (scaffold — full surface rolls out in follow-up PRs)
+        checkerboard, gaussian_blob, gradient_horizontal,
+        convolve2d,
         # Introspection
         available_dtypes,
     )

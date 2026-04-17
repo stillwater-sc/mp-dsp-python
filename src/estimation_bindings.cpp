@@ -14,6 +14,7 @@
 #include <sw/dsp/estimation/lms.hpp>
 #include <sw/dsp/estimation/rls.hpp>
 
+#include "_binding_helpers.hpp"
 #include "types.hpp"
 
 #include <cstddef>
@@ -24,127 +25,20 @@
 
 namespace nb = nanobind;
 
+// Pull shared NumPy typedefs + helpers into this TU's namespace.
+using mpdsp::bindings::np_f64;
+using mpdsp::bindings::np_f64_ro;
+using mpdsp::bindings::np_f64_2d;
+using mpdsp::bindings::np_f64_2d_ro;
+using mpdsp::bindings::make_f64_array;
+using mpdsp::bindings::make_f64_2d_array;
+using mpdsp::bindings::mat_to_numpy;
+using mpdsp::bindings::numpy_to_mat;
+using mpdsp::bindings::vec_to_numpy;
+using mpdsp::bindings::numpy_to_vec;
+using mpdsp::bindings::make_impl_for_dtype;
+
 namespace {
-
-using np_f64       = nb::ndarray<nb::numpy, double>;
-using np_f64_ro    = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_contig>;
-using np_f64_2d    = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
-// c_contig on 2D inputs matches MTL's default row-major orientation, so
-// numpy_to_mat can walk both buffers with a shared linear index.
-using np_f64_2d_ro = nb::ndarray<nb::numpy, const double, nb::ndim<2>, nb::c_contig>;
-
-// -- Shared array builders ---------------------------------------------------
-
-static np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
-	auto buf = std::unique_ptr<double[]>(new double[n]);
-	double* data = buf.get();
-	nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<double*>(p); });
-	buf.release();
-	out_ptr = data;
-	std::size_t shape[1] = { n };
-	return np_f64(data, 1, shape, owner);
-}
-
-static np_f64_2d make_f64_2d_array(std::size_t rows, std::size_t cols,
-                                   double*& out_ptr) {
-	std::size_t total = rows * cols;
-	auto buf = std::unique_ptr<double[]>(new double[total]);
-	double* data = buf.get();
-	nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<double*>(p); });
-	buf.release();
-	out_ptr = data;
-	std::size_t shape[2] = { rows, cols };
-	return np_f64_2d(data, 2, shape, owner);
-}
-
-// -- dense2D <-> NumPy marshalling -------------------------------------------
-//
-// MTL's dense2D defaults to row-major orientation (same as NumPy C-order),
-// but dense2D exposes only operator()(r, c) — not data() with a guaranteed
-// row-major stride — so walk (r, c) element by element. Casts convert
-// T<->double at the boundary.
-
-template <typename T>
-static np_f64_2d mat_to_numpy(const mtl::mat::dense2D<T>& m) {
-	std::size_t rows = m.num_rows();
-	std::size_t cols = m.num_cols();
-	double* out_ptr = nullptr;
-	auto arr = make_f64_2d_array(rows, cols, out_ptr);
-	for (std::size_t r = 0; r < rows; ++r) {
-		for (std::size_t c = 0; c < cols; ++c) {
-			out_ptr[r * cols + c] = static_cast<double>(m(r, c));
-		}
-	}
-	return arr;
-}
-
-template <typename T>
-static void numpy_to_mat(np_f64_2d_ro src, mtl::mat::dense2D<T>& dst,
-                         const char* name) {
-	if (src.shape(0) != dst.num_rows() || src.shape(1) != dst.num_cols()) {
-		throw std::invalid_argument(
-			std::string(name) + ": shape mismatch (expected " +
-			std::to_string(dst.num_rows()) + "x" +
-			std::to_string(dst.num_cols()) + ", got " +
-			std::to_string(src.shape(0)) + "x" +
-			std::to_string(src.shape(1)) + ")");
-	}
-	std::size_t cols = dst.num_cols();
-	const double* data = src.data();
-	for (std::size_t r = 0; r < dst.num_rows(); ++r) {
-		for (std::size_t c = 0; c < cols; ++c) {
-			dst(r, c) = static_cast<T>(data[r * cols + c]);
-		}
-	}
-}
-
-template <typename T>
-static np_f64 vec_to_numpy(const mtl::vec::dense_vector<T>& v) {
-	std::size_t n = v.size();
-	double* out_ptr = nullptr;
-	auto arr = make_f64_array(n, out_ptr);
-	for (std::size_t i = 0; i < n; ++i) {
-		out_ptr[i] = static_cast<double>(v[i]);
-	}
-	return arr;
-}
-
-template <typename T>
-static void numpy_to_vec(np_f64_ro src, mtl::vec::dense_vector<T>& dst,
-                         const char* name) {
-	if (src.shape(0) != dst.size()) {
-		throw std::invalid_argument(
-			std::string(name) + ": size mismatch (expected " +
-			std::to_string(dst.size()) + ", got " +
-			std::to_string(src.shape(0)) + ")");
-	}
-	const double* data = src.data();
-	for (std::size_t i = 0; i < dst.size(); ++i) {
-		dst[i] = static_cast<T>(data[i]);
-	}
-}
-
-// -- Shared dtype dispatcher (mirrors conditioning_bindings.cpp) -------------
-
-template <template<class> class Impl, class Base, class... Args>
-static std::unique_ptr<Base>
-make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) {
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:    return std::make_unique<Impl<double>>(std::forward<Args>(args)...);
-	case ArithConfig::gpu_baseline: return std::make_unique<Impl<float>>(std::forward<Args>(args)...);
-	case ArithConfig::ml_hw:        return std::make_unique<Impl<half_>>(std::forward<Args>(args)...);
-	case ArithConfig::cf24_config:  return std::make_unique<Impl<cf24>>(std::forward<Args>(args)...);
-	case ArithConfig::half_config:  return std::make_unique<Impl<half_>>(std::forward<Args>(args)...);
-	case ArithConfig::posit_full:   return std::make_unique<Impl<p32>>(std::forward<Args>(args)...);
-	case ArithConfig::tiny_posit:   return std::make_unique<Impl<tiny_posit_t>>(std::forward<Args>(args)...);
-	}
-	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
-}
 
 // ===========================================================================
 // KalmanFilter
