@@ -1,4 +1,4 @@
-"""Tests for signal-conditioning bindings (scaffold: PeakEnvelope)."""
+"""Tests for signal-conditioning bindings: PeakEnvelope, RMSEnvelope, Compressor, AGC."""
 
 import numpy as np
 import pytest
@@ -188,3 +188,231 @@ class TestPeakEnvelopeDtypeDispatch:
         # Envelope shapes agree to within a reasonable low-precision bound.
         err = np.max(np.abs(r - a)) / (np.max(np.abs(r)) + 1e-12)
         assert err < 0.1
+
+
+# ---------------------------------------------------------------------------
+# RMSEnvelope
+# ---------------------------------------------------------------------------
+
+
+class TestRMSEnvelope:
+    def test_default_dtype_is_reference(self):
+        env = mpdsp.RMSEnvelope(sample_rate=SAMPLE_RATE, window_ms=10.0)
+        assert env.dtype == "reference"
+
+    @pytest.mark.parametrize("bad_sr", [-1.0, 0.0])
+    def test_invalid_sample_rate_raises(self, bad_sr):
+        with pytest.raises(ValueError):
+            mpdsp.RMSEnvelope(sample_rate=bad_sr, window_ms=10.0)
+
+    @pytest.mark.parametrize("bad_window", [0.0, -1.0])
+    def test_invalid_window_raises(self, bad_window):
+        with pytest.raises(ValueError):
+            mpdsp.RMSEnvelope(sample_rate=SAMPLE_RATE, window_ms=bad_window)
+
+    def test_unit_amplitude_sine_rms_is_sqrt_half(self):
+        """An amplitude-1 sine has RMS = sqrt(1/2) ≈ 0.707."""
+        env = mpdsp.RMSEnvelope(sample_rate=SAMPLE_RATE, window_ms=50.0)
+        t = np.arange(8192) / SAMPLE_RATE
+        sig = np.sin(2 * np.pi * 200 * t)
+        out = env.process_block(sig)
+        # Let the window converge before measuring.
+        steady = out[4096:]
+        assert abs(np.mean(steady) - 1.0 / np.sqrt(2.0)) < 0.02
+
+    def test_reset_clears_state(self):
+        env = mpdsp.RMSEnvelope(sample_rate=SAMPLE_RATE, window_ms=10.0)
+        for _ in range(500):
+            env.process(1.0)
+        assert env.value() > 0.1
+        env.reset()
+        assert env.value() == 0.0
+
+    @pytest.mark.parametrize("dtype", [
+        "reference", "gpu_baseline", "ml_hw", "cf24", "half",
+        "posit_full", "tiny_posit",
+    ])
+    def test_process_runs_under_each_dtype(self, dtype):
+        env = mpdsp.RMSEnvelope(sample_rate=SAMPLE_RATE, window_ms=10.0,
+                                 dtype=dtype)
+        sig = _step_signal(n=512)
+        out = env.process_block(sig)
+        assert out.shape == sig.shape
+        assert out.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# Compressor
+# ---------------------------------------------------------------------------
+
+
+class TestCompressor:
+    def _params(self, **overrides):
+        base = dict(sample_rate=SAMPLE_RATE, threshold_db=-20.0, ratio=4.0,
+                    attack_ms=1.0, release_ms=50.0)
+        base.update(overrides)
+        return base
+
+    def test_default_dtype(self):
+        comp = mpdsp.Compressor(**self._params())
+        assert comp.dtype == "reference"
+
+    def test_ratio_below_one_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.Compressor(**self._params(ratio=0.5))
+
+    def test_negative_knee_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.Compressor(**self._params(knee_db=-1.0))
+
+    @pytest.mark.parametrize("bad_sr", [-1.0, 0.0])
+    def test_invalid_sample_rate_raises(self, bad_sr):
+        with pytest.raises(ValueError):
+            mpdsp.Compressor(**self._params(sample_rate=bad_sr))
+
+    def test_below_threshold_is_untouched(self):
+        """Signals below the threshold pass through without attenuation."""
+        comp = mpdsp.Compressor(**self._params(threshold_db=-6.0))
+        # Amplitude 0.1 => -20 dBFS, well under -6 dB threshold.
+        t = np.arange(4096) / SAMPLE_RATE
+        sig = 0.1 * np.sin(2 * np.pi * 200 * t)
+        out = comp.process_block(sig)
+        # Compressor with no makeup gain shouldn't change anything appreciably.
+        np.testing.assert_allclose(out, sig, rtol=1e-3, atol=1e-3)
+
+    def test_above_threshold_gets_attenuated(self):
+        """With ratio=4:1 and a tone well above threshold, the steady-state
+        peak should drop."""
+        comp = mpdsp.Compressor(**self._params(threshold_db=-20.0, ratio=4.0))
+        t = np.arange(4096) / SAMPLE_RATE
+        # Amplitude 1.0 => 0 dBFS, 20 dB above threshold. 4:1 compression
+        # turns a 20 dB overage into 5 dB, so steady-state peak ~ 10^(-15/20)
+        # ≈ 0.178. Allow a broad range to accommodate attack transients.
+        sig = np.sin(2 * np.pi * 200 * t)
+        out = comp.process_block(sig)
+        # Use the tail of the signal where the envelope has converged.
+        tail_peak = np.max(np.abs(out[3072:]))
+        assert tail_peak < 0.5  # well below the 1.0 input peak
+        assert tail_peak > 0.05  # but not completely silenced
+
+    def test_reset_clears_envelope_state(self):
+        comp = mpdsp.Compressor(**self._params())
+        # Burst of ones to build up envelope state
+        burst = np.ones(512)
+        comp.process_block(burst)
+        # Now reset and process a zero-signal; output should start at zero.
+        comp.reset()
+        out = comp.process_block(np.zeros(16))
+        assert np.all(out == 0.0)
+
+    def test_soft_knee_smooths_transition(self):
+        """A soft-knee compressor applies gain reduction gradually through the
+        knee region around the threshold. At exactly the threshold amplitude,
+        the hard-knee compressor applies 0 dB of reduction while the soft-knee
+        compressor applies some — so soft-knee output is measurably quieter.
+        """
+        hard = mpdsp.Compressor(**self._params(threshold_db=-6.0, knee_db=0.0))
+        soft = mpdsp.Compressor(**self._params(threshold_db=-6.0, knee_db=12.0))
+        # Drive both with a tone exactly at threshold amplitude (0.5 => -6 dBFS).
+        t = np.arange(8192) / SAMPLE_RATE
+        sig = 0.5 * np.sin(2 * np.pi * 200 * t)
+        h = hard.process_block(sig)
+        s = soft.process_block(sig)
+        # Compare steady-state RMS after the envelope has converged.
+        tail = slice(4096, None)
+        h_rms = float(np.sqrt(np.mean(h[tail] ** 2)))
+        s_rms = float(np.sqrt(np.mean(s[tail] ** 2)))
+        assert s_rms < h_rms - 0.005, (
+            f"expected soft-knee RMS < hard-knee RMS at threshold "
+            f"(hard={h_rms:.4f}, soft={s_rms:.4f})"
+        )
+
+    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline", "half", "posit_full"])
+    def test_process_runs_under_each_dtype(self, dtype):
+        comp = mpdsp.Compressor(**self._params(dtype=dtype))
+        t = np.arange(1024) / SAMPLE_RATE
+        sig = np.sin(2 * np.pi * 200 * t)
+        out = comp.process_block(sig)
+        assert out.shape == sig.shape
+        assert out.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# AGC
+# ---------------------------------------------------------------------------
+
+
+class TestAGC:
+    def test_default_dtype(self):
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5)
+        assert agc.dtype == "reference"
+
+    @pytest.mark.parametrize("param", [
+        "sample_rate", "target_level", "window_ms", "max_gain",
+    ])
+    @pytest.mark.parametrize("bad", [-1.0, 0.0])
+    def test_invalid_params_raise(self, param, bad):
+        kwargs = dict(sample_rate=SAMPLE_RATE, target_level=0.5,
+                      window_ms=100.0, max_gain=100.0)
+        kwargs[param] = bad
+        with pytest.raises(ValueError):
+            mpdsp.AGC(**kwargs)
+
+    def test_boost_quiet_signal(self):
+        """A quiet input should be amplified toward the target level (up to
+        max_gain)."""
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5,
+                         window_ms=10.0, max_gain=100.0)
+        t = np.arange(16384) / SAMPLE_RATE
+        sig = 0.01 * np.sin(2 * np.pi * 200 * t)  # RMS ~ 0.007
+        out = agc.process_block(sig)
+        # After convergence the RMS should be much closer to the target
+        # than the input was.
+        tail_rms = np.sqrt(np.mean(out[8192:] ** 2))
+        assert tail_rms > 0.1  # clearly boosted
+        assert tail_rms < 0.7  # and not wildly overshooting
+
+    def test_attenuate_loud_signal(self):
+        """A loud input should be reduced toward the target."""
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5,
+                         window_ms=10.0, max_gain=100.0)
+        t = np.arange(16384) / SAMPLE_RATE
+        sig = 2.0 * np.sin(2 * np.pi * 200 * t)  # RMS ~ sqrt(2)
+        out = agc.process_block(sig)
+        tail_rms = np.sqrt(np.mean(out[8192:] ** 2))
+        assert tail_rms < 1.0
+        assert tail_rms > 0.2
+
+    def test_max_gain_bounds_quiet_silence(self):
+        """Essentially-zero input should not be amplified beyond max_gain."""
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5,
+                         window_ms=10.0, max_gain=10.0)
+        sig = 1e-6 * np.ones(1024)
+        out = agc.process_block(sig)
+        # max_gain = 10 -> output cap should be around 1e-5, not blowing up
+        assert np.max(np.abs(out)) < 1e-4
+
+    def test_reset_clears_state(self):
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5)
+        t = np.arange(4096) / SAMPLE_RATE
+        sig = 0.1 * np.sin(2 * np.pi * 200 * t)
+        agc.process_block(sig)
+        agc.reset()
+        # Process zeros and confirm internal RMS state is clean.
+        out = agc.process_block(np.zeros(16))
+        # With level == 0, gain defaults to 1 (don't amplify silence), so
+        # output equals input (all zeros).
+        assert np.all(out == 0.0)
+
+    @pytest.mark.parametrize("dtype", [
+        "reference", "gpu_baseline", "ml_hw", "cf24", "half",
+        "posit_full", "tiny_posit",
+    ])
+    def test_process_runs_under_each_dtype(self, dtype):
+        agc = mpdsp.AGC(sample_rate=SAMPLE_RATE, target_level=0.5,
+                         dtype=dtype)
+        t = np.arange(512) / SAMPLE_RATE
+        sig = np.sin(2 * np.pi * 200 * t)
+        out = agc.process_block(sig)
+        assert out.shape == sig.shape
+        assert out.dtype == np.float64
