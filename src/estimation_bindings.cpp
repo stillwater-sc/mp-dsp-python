@@ -157,18 +157,13 @@ struct IKalmanImpl {
 	virtual std::size_t meas_dim() const = 0;
 	virtual std::size_t ctrl_dim() const = 0;
 
-	// Getters are intentionally non-const: sw::dsp::KalmanFilter<T>::B() has
-	// only a non-const overload upstream (the other five matrices have
-	// const overloads — this looks like an upstream omission). Reading
-	// Python matrix properties returns a fresh NumPy copy either way, so
-	// non-const virtuals are semantically fine here.
-	virtual np_f64_2d get_F() = 0;
-	virtual np_f64_2d get_H() = 0;
-	virtual np_f64_2d get_Q() = 0;
-	virtual np_f64_2d get_R() = 0;
-	virtual np_f64_2d get_P() = 0;
-	virtual np_f64_2d get_B() = 0;
-	virtual np_f64    get_state() = 0;
+	virtual np_f64_2d get_F() const = 0;
+	virtual np_f64_2d get_H() const = 0;
+	virtual np_f64_2d get_Q() const = 0;
+	virtual np_f64_2d get_R() const = 0;
+	virtual np_f64_2d get_P() const = 0;
+	virtual np_f64_2d get_B() const = 0;
+	virtual np_f64    get_state() const = 0;
 
 	virtual void set_F(np_f64_2d_ro a) = 0;
 	virtual void set_H(np_f64_2d_ro a) = 0;
@@ -193,13 +188,13 @@ struct KalmanImpl : IKalmanImpl {
 	std::size_t meas_dim() const override { return inner.meas_dim(); }
 	std::size_t ctrl_dim() const override { return inner.ctrl_dim(); }
 
-	np_f64_2d get_F() override { return mat_to_numpy(inner.F()); }
-	np_f64_2d get_H() override { return mat_to_numpy(inner.H()); }
-	np_f64_2d get_Q() override { return mat_to_numpy(inner.Q()); }
-	np_f64_2d get_R() override { return mat_to_numpy(inner.R()); }
-	np_f64_2d get_P() override { return mat_to_numpy(inner.P()); }
-	np_f64_2d get_B() override { return mat_to_numpy(inner.B()); }
-	np_f64    get_state() override { return vec_to_numpy(inner.state()); }
+	np_f64_2d get_F() const override { return mat_to_numpy(inner.F()); }
+	np_f64_2d get_H() const override { return mat_to_numpy(inner.H()); }
+	np_f64_2d get_Q() const override { return mat_to_numpy(inner.Q()); }
+	np_f64_2d get_R() const override { return mat_to_numpy(inner.R()); }
+	np_f64_2d get_P() const override { return mat_to_numpy(inner.P()); }
+	np_f64_2d get_B() const override { return mat_to_numpy(inner.B()); }
+	np_f64    get_state() const override { return vec_to_numpy(inner.state()); }
 
 	void set_F(np_f64_2d_ro a) override { numpy_to_mat(a, inner.F(), "F"); }
 	void set_H(np_f64_2d_ro a) override { numpy_to_mat(a, inner.H(), "H"); }
@@ -258,13 +253,13 @@ public:
 	std::size_t meas_dim() const { return impl_->meas_dim(); }
 	std::size_t ctrl_dim() const { return impl_->ctrl_dim(); }
 
-	np_f64_2d get_F() { return impl_->get_F(); }
-	np_f64_2d get_H() { return impl_->get_H(); }
-	np_f64_2d get_Q() { return impl_->get_Q(); }
-	np_f64_2d get_R() { return impl_->get_R(); }
-	np_f64_2d get_P() { return impl_->get_P(); }
-	np_f64_2d get_B() { return impl_->get_B(); }
-	np_f64    get_state() { return impl_->get_state(); }
+	np_f64_2d get_F() const { return impl_->get_F(); }
+	np_f64_2d get_H() const { return impl_->get_H(); }
+	np_f64_2d get_Q() const { return impl_->get_Q(); }
+	np_f64_2d get_R() const { return impl_->get_R(); }
+	np_f64_2d get_P() const { return impl_->get_P(); }
+	np_f64_2d get_B() const { return impl_->get_B(); }
+	np_f64    get_state() const { return impl_->get_state(); }
 
 	void set_F(np_f64_2d_ro a) { impl_->set_F(a); }
 	void set_H(np_f64_2d_ro a) { impl_->set_H(a); }
