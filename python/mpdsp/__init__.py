@@ -40,6 +40,9 @@ try:
         rbj_lowpass, rbj_highpass,
         rbj_bandpass, rbj_bandstop,
         rbj_allpass, rbj_lowshelf, rbj_highshelf,
+        FIRFilter, fir_filter,
+        fir_lowpass, fir_highpass,
+        fir_bandpass, fir_bandstop,
         # Introspection
         available_dtypes,
     )
@@ -57,3 +60,7 @@ try:
     HAS_PLOT = True
 except ImportError:
     HAS_PLOT = False
+
+# Filter helpers (pure Python; requires mpdsp._core; plotting needs matplotlib)
+if HAS_CORE:
+    from mpdsp.filters import compare_filters, plot_filter_comparison
