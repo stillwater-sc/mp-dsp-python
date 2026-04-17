@@ -13,6 +13,7 @@ void bind_quantization(nb::module_& m);
 void bind_spectral(nb::module_& m);
 void bind_filters(nb::module_& m);
 void bind_conditioning(nb::module_& m);
+void bind_estimation(nb::module_& m);
 
 NB_MODULE(_core, m) {
 	m.doc() = "mpdsp C++ core: mixed-precision DSP bindings via nanobind";
@@ -22,4 +23,5 @@ NB_MODULE(_core, m) {
 	bind_spectral(m);
 	bind_filters(m);
 	bind_conditioning(m);
+	bind_estimation(m);
 }
