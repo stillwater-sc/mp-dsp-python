@@ -24,6 +24,11 @@
 #include <sw/dsp/image/image.hpp>
 #include <sw/dsp/image/morphology.hpp>
 #include <sw/dsp/image/separable.hpp>
+#include <sw/dsp/io/bmp.hpp>
+#include <sw/dsp/io/pgm.hpp>
+#include <sw/dsp/io/ppm.hpp>
+
+#include <nanobind/stl/tuple.h>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -31,6 +36,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 namespace nb = nanobind;
 
@@ -651,4 +657,113 @@ void bind_image(nb::module_& m) {
 		nb::arg("dtype") = "reference",
 		"Convert an RGB image (three NumPy 2D arrays) to grayscale using "
 		"ITU-R BT.601 weights: Y = 0.299*R + 0.587*G + 0.114*B.");
+
+	// =======================================================================
+	// Image file I/O — PGM (grayscale), PPM (RGB), BMP (grayscale or RGB).
+	// All bindings operate in double precision; the dtype parameter is not
+	// exposed because file I/O is fundamentally a lossless round-trip of
+	// stored bytes, not a numerical operation.
+	// =======================================================================
+
+	m.def("write_pgm",
+		[](const std::string& path, np_f64_2d_ro image, int max_val) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"write_pgm: image must have non-zero dimensions");
+			}
+			auto mat = numpy_to_mat_fresh<double>(image);
+			sw::dsp::io::write_pgm(path, mat, max_val);
+		},
+		nb::arg("path"), nb::arg("image"), nb::arg("max_val") = 255,
+		"Write a grayscale image to a PGM file. Values are clamped to "
+		"[0, max_val] during quantization.");
+
+	m.def("read_pgm",
+		[](const std::string& path) {
+			auto mat = sw::dsp::io::read_pgm<double>(path);
+			return mat_to_numpy(mat);
+		},
+		nb::arg("path"),
+		"Read a PGM file. Returns a 2D NumPy float64 array normalized to "
+		"[0, 1].");
+
+	m.def("write_ppm",
+		[](const std::string& path, np_f64_2d_ro r, np_f64_2d_ro g,
+		   np_f64_2d_ro b, int max_val) {
+			if (r.shape(0) != g.shape(0) || r.shape(0) != b.shape(0) ||
+			    r.shape(1) != g.shape(1) || r.shape(1) != b.shape(1)) {
+				throw std::invalid_argument(
+					"write_ppm: r, g, b must all have the same shape");
+			}
+			if (r.shape(0) == 0 || r.shape(1) == 0) {
+				throw std::invalid_argument(
+					"write_ppm: channels must have non-zero dimensions");
+			}
+			auto rm = numpy_to_mat_fresh<double>(r);
+			auto gm = numpy_to_mat_fresh<double>(g);
+			auto bm = numpy_to_mat_fresh<double>(b);
+			sw::dsp::io::write_ppm(path, rm, gm, bm, max_val);
+		},
+		nb::arg("path"), nb::arg("r"), nb::arg("g"), nb::arg("b"),
+		nb::arg("max_val") = 255,
+		"Write an RGB image to a PPM file (P6 binary format).");
+
+	m.def("read_ppm",
+		[](const std::string& path) {
+			auto data = sw::dsp::io::read_ppm<double>(path);
+			return std::make_tuple(mat_to_numpy(data.r),
+			                        mat_to_numpy(data.g),
+			                        mat_to_numpy(data.b));
+		},
+		nb::arg("path"),
+		"Read a PPM file. Returns a (r, g, b) tuple of NumPy float64 "
+		"arrays normalized to [0, 1].");
+
+	// write_bmp has two upstream overloads (grayscale and RGB). Expose them
+	// as two Python functions so the call-site intent is clear.
+	m.def("write_bmp",
+		[](const std::string& path, np_f64_2d_ro image) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"write_bmp: image must have non-zero dimensions");
+			}
+			auto mat = numpy_to_mat_fresh<double>(image);
+			sw::dsp::io::write_bmp(path, mat);
+		},
+		nb::arg("path"), nb::arg("image"),
+		"Write a grayscale image to a 24-bit BMP file (R=G=B=image).");
+
+	m.def("write_bmp_rgb",
+		[](const std::string& path, np_f64_2d_ro r, np_f64_2d_ro g,
+		   np_f64_2d_ro b) {
+			if (r.shape(0) != g.shape(0) || r.shape(0) != b.shape(0) ||
+			    r.shape(1) != g.shape(1) || r.shape(1) != b.shape(1)) {
+				throw std::invalid_argument(
+					"write_bmp_rgb: r, g, b must all have the same shape");
+			}
+			if (r.shape(0) == 0 || r.shape(1) == 0) {
+				throw std::invalid_argument(
+					"write_bmp_rgb: channels must have non-zero dimensions");
+			}
+			auto rm = numpy_to_mat_fresh<double>(r);
+			auto gm = numpy_to_mat_fresh<double>(g);
+			auto bm = numpy_to_mat_fresh<double>(b);
+			sw::dsp::io::write_bmp(path, rm, gm, bm);
+		},
+		nb::arg("path"), nb::arg("r"), nb::arg("g"), nb::arg("b"),
+		"Write an RGB image to a 24-bit BMP file.");
+
+	m.def("read_bmp",
+		[](const std::string& path) {
+			auto data = sw::dsp::io::read_bmp<double>(path);
+			// Return (r, g, b, is_grayscale) so Python callers can tell
+			// whether the file held a palette image.
+			return std::make_tuple(mat_to_numpy(data.r),
+			                        mat_to_numpy(data.g),
+			                        mat_to_numpy(data.b),
+			                        data.is_grayscale());
+		},
+		nb::arg("path"),
+		"Read a BMP file (8-bit palette or 24-bit RGB). Returns "
+		"(r, g, b, is_grayscale) — channels normalized to [0, 1].");
 }

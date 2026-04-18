@@ -68,6 +68,10 @@ try:
         morphological_gradient, tophat, blackhat,
         # Image — multi-channel
         rgb_to_gray,
+        # Image — file I/O
+        read_pgm, write_pgm,
+        read_ppm, write_ppm,
+        read_bmp, write_bmp, write_bmp_rgb,
         # Introspection
         available_dtypes,
     )
@@ -98,6 +102,9 @@ if HAS_CORE:
         collect_adaptive_weights,
     )
 
-# Image multi-channel helpers (pure Python; no matplotlib dependency yet)
+# Image helpers (pure Python; plotting requires matplotlib)
 if HAS_CORE:
-    from mpdsp.image import apply_per_channel
+    from mpdsp.image import (
+        apply_per_channel,
+        plot_image, plot_image_grid, plot_pipeline,
+    )

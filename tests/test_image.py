@@ -880,3 +880,174 @@ class TestApplyPerChannel:
         b = np.ones((4, 4))
         with pytest.raises(ValueError):
             mpdsp.apply_per_channel(r, g, b, lambda p: p)
+
+
+# ---------------------------------------------------------------------------
+# File I/O — PGM, PPM, BMP round-trips
+# ---------------------------------------------------------------------------
+
+
+import os
+import tempfile
+
+
+class TestPgmIO:
+    def test_round_trip_preserves_shape(self):
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "test.pgm")
+            mpdsp.write_pgm(path, img)
+            loaded = mpdsp.read_pgm(path)
+        assert loaded.shape == img.shape
+        assert loaded.dtype == np.float64
+
+    def test_round_trip_within_quantization(self):
+        """8-bit PGM loses ~1/255 ≈ 0.004 per pixel in quantization."""
+        img = mpdsp.gradient_horizontal(32, 32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "gradient.pgm")
+            mpdsp.write_pgm(path, img, max_val=255)
+            loaded = mpdsp.read_pgm(path)
+        assert np.max(np.abs(img - loaded)) < 0.005
+
+    def test_higher_max_val_reduces_error(self):
+        img = mpdsp.gradient_horizontal(32, 32)
+        with tempfile.TemporaryDirectory() as d:
+            path8 = os.path.join(d, "8.pgm")
+            path16 = os.path.join(d, "16.pgm")
+            mpdsp.write_pgm(path8, img, max_val=255)
+            mpdsp.write_pgm(path16, img, max_val=65535)
+            loaded8 = mpdsp.read_pgm(path8)
+            loaded16 = mpdsp.read_pgm(path16)
+        err8 = np.max(np.abs(img - loaded8))
+        err16 = np.max(np.abs(img - loaded16))
+        assert err16 < err8
+
+    def test_write_rejects_empty_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "empty.pgm")
+            with pytest.raises(ValueError):
+                mpdsp.write_pgm(path, np.zeros((0, 5)))
+
+    def test_read_missing_file_raises(self):
+        with pytest.raises(RuntimeError):
+            mpdsp.read_pgm("/tmp/this_file_does_not_exist_xyz.pgm")
+
+
+class TestPpmIO:
+    def test_round_trip_three_channels(self):
+        r = mpdsp.gradient_horizontal(16, 16)
+        g = mpdsp.gradient_vertical(16, 16)
+        b = mpdsp.gradient_radial(16, 16)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "rgb.ppm")
+            mpdsp.write_ppm(path, r, g, b)
+            r2, g2, b2 = mpdsp.read_ppm(path)
+        assert r2.shape == r.shape
+        assert g2.shape == g.shape
+        assert b2.shape == b.shape
+        assert np.max(np.abs(r - r2)) < 0.005
+        assert np.max(np.abs(g - g2)) < 0.005
+        assert np.max(np.abs(b - b2)) < 0.005
+
+    def test_shape_mismatch_raises(self):
+        r = np.ones((4, 4))
+        g = np.ones((5, 4))
+        b = np.ones((4, 4))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bad.ppm")
+            with pytest.raises(ValueError):
+                mpdsp.write_ppm(path, r, g, b)
+
+
+class TestBmpIO:
+    def test_grayscale_round_trip(self):
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "gray.bmp")
+            mpdsp.write_bmp(path, img)
+            r, g, b, is_grayscale = mpdsp.read_bmp(path)
+        assert r.shape == img.shape
+        # write_bmp(grayscale) stores R=G=B.
+        np.testing.assert_allclose(r, g)
+        np.testing.assert_allclose(r, b)
+        assert np.max(np.abs(r - img)) < 0.005
+
+    def test_rgb_round_trip(self):
+        r = mpdsp.gradient_horizontal(12, 12)
+        g = mpdsp.gradient_vertical(12, 12)
+        b = mpdsp.gradient_radial(12, 12)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "rgb.bmp")
+            mpdsp.write_bmp_rgb(path, r, g, b)
+            r2, g2, b2, is_grayscale = mpdsp.read_bmp(path)
+        assert not is_grayscale
+        assert np.max(np.abs(r - r2)) < 0.005
+        assert np.max(np.abs(g - g2)) < 0.005
+        assert np.max(np.abs(b - b2)) < 0.005
+
+    def test_shape_mismatch_raises(self):
+        r = np.ones((4, 4))
+        g = np.ones((5, 4))
+        b = np.ones((4, 4))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bad.bmp")
+            with pytest.raises(ValueError):
+                mpdsp.write_bmp_rgb(path, r, g, b)
+
+
+# ---------------------------------------------------------------------------
+# Image plotting helpers
+# ---------------------------------------------------------------------------
+
+
+class TestImagePlottingHelpers:
+    def test_plot_image_returns_axes(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.image import plot_image
+
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        ax = plot_image(img, title="blob")
+        assert ax is not None
+        plt.close("all")
+
+    def test_plot_image_grid_returns_figure(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.image import plot_image_grid
+
+        imgs = [mpdsp.gaussian_blob(8, 8, sigma=s) for s in (1.0, 2.0, 3.0)]
+        fig = plot_image_grid(imgs, titles=["s=1", "s=2", "s=3"], ncols=3)
+        assert fig is not None
+        assert len(fig.axes) >= 3
+        plt.close(fig)
+
+    def test_plot_image_grid_rejects_empty(self):
+        from mpdsp.image import plot_image_grid
+        with pytest.raises(ValueError):
+            plot_image_grid([])
+
+    def test_plot_pipeline_returns_figure(self):
+        pytest.importorskip("matplotlib")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpdsp.image import plot_pipeline
+
+        clean = mpdsp.gaussian_blob(32, 32, sigma=4.0)
+        noisy = mpdsp.add_noise(clean, stddev=0.1)
+        blurred = mpdsp.gaussian_blur(noisy, sigma=1.0)
+        fig = plot_pipeline([clean, noisy, blurred],
+                             titles=["clean", "noisy", "blurred"])
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_pipeline_rejects_empty(self):
+        from mpdsp.image import plot_pipeline
+        with pytest.raises(ValueError):
+            plot_pipeline([])
