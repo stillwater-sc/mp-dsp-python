@@ -40,11 +40,13 @@ dependencies = [
 # matplotlib still handles bar charts, scatter, and the response/error
 # plots in scripts/plot_precision.py.
 plot = ["matplotlib>=3.5", "seaborn>=0.12"]
-notebook = ["matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel"]
+notebook = ["matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel",
+            "ipywidgets>=8.0"]
 dashboard = ["matplotlib>=3.5", "seaborn>=0.12", "streamlit>=1.20"]
-dev = ["pytest", "matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel"]
+dev = ["pytest", "matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel",
+       "ipywidgets>=8.0"]
 all = ["matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel",
-       "streamlit>=1.20", "pytest"]
+       "ipywidgets>=8.0", "streamlit>=1.20", "pytest"]
 
 [project.urls]
 Homepage = "https://github.com/stillwater-sc/mp-dsp-python"
