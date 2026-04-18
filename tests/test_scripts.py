@@ -129,12 +129,29 @@ def test_plot_precision_publication_flag(csv_dir):
 
 
 def test_plot_heatmap_generates_output(csv_dir):
+    """All four summary figures land in both PNG and PDF."""
     with tempfile.TemporaryDirectory() as outdir:
         result = _run_script("plot_heatmap.py", csv_dir, outdir)
         assert result.returncode == 0, f"Script failed: {result.stderr}"
-        assert os.path.exists(os.path.join(outdir, "sqnr_heatmap.png"))
-        assert os.path.exists(os.path.join(outdir, "sqnr_bar_chart.png"))
-        assert os.path.exists(os.path.join(outdir, "precision_cost_frontier.png"))
+        expected_stems = ["error_heatmap", "sqnr_heatmap",
+                          "sqnr_bar_chart", "precision_cost_frontier"]
+        for stem in expected_stems:
+            for ext in ("png", "pdf"):
+                assert os.path.exists(os.path.join(outdir, f"{stem}.{ext}")), (
+                    f"Missing {stem}.{ext}")
+
+
+def test_plot_heatmap_new_cli_flags(csv_dir):
+    """Issue #13 spec'd invocation: --input-dir / --output-dir."""
+    script_path = Path(__file__).parent.parent / "scripts" / "plot_heatmap.py"
+    with tempfile.TemporaryDirectory() as outdir:
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
+            [sys.executable, str(script_path),
+             "--input-dir", csv_dir, "--output-dir", outdir],
+            capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert os.path.exists(os.path.join(outdir, "error_heatmap.pdf"))
+        assert os.path.exists(os.path.join(outdir, "sqnr_heatmap.pdf"))
 
 
 def test_plot_pole_zero_generates_output(csv_dir):

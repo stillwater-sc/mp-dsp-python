@@ -36,11 +36,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-plot = ["matplotlib>=3.5"]
-notebook = ["matplotlib>=3.5", "jupyter", "ipykernel"]
-dashboard = ["matplotlib>=3.5", "streamlit>=1.20"]
-dev = ["pytest", "matplotlib>=3.5", "jupyter", "ipykernel"]
-all = ["matplotlib>=3.5", "jupyter", "ipykernel", "streamlit>=1.20", "pytest"]
+# seaborn drives the heatmap plots in scripts/plot_heatmap.py; plain
+# matplotlib still handles bar charts, scatter, and the response/error
+# plots in scripts/plot_precision.py.
+plot = ["matplotlib>=3.5", "seaborn>=0.12"]
+notebook = ["matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel"]
+dashboard = ["matplotlib>=3.5", "seaborn>=0.12", "streamlit>=1.20"]
+dev = ["pytest", "matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel"]
+all = ["matplotlib>=3.5", "seaborn>=0.12", "jupyter", "ipykernel",
+       "streamlit>=1.20", "pytest"]
 
 [project.urls]
 Homepage = "https://github.com/stillwater-sc/mp-dsp-python"
