@@ -50,7 +50,7 @@ print(f"SQNR: {mpdsp.sqnr_db(ref, posit):.1f} dB")
 
 # Image processing
 img = mpdsp.checkerboard(256, 256, block_size=8)
-edges = mpdsp.canny(img, low=0.1, high=0.3, sigma=1.0)
+edges = mpdsp.canny(img, low_threshold=0.1, high_threshold=0.3, sigma=1.0)
 mpdsp.write_pgm("edges.pgm", edges)
 
 # Estimation
@@ -69,20 +69,23 @@ sensitivity = filt.worst_case_sensitivity()
 
 `mp-dsp-python` exposes every module of the C++ library to Python:
 
+Bindings marked ✓ are available today; ⏳ are planned for `0.5.0` (see issue
+tracker for the per-module roadmap).
+
 | Module | C++ Headers | Python API | Description |
 |--------|-------------|------------|-------------|
-| **signals** | `generators.hpp`, `signal.hpp`, `sampling.hpp` | `mpdsp.sine()`, `mpdsp.chirp()`, `mpdsp.impulse()`, ... | Signal generators returning NumPy arrays. Resample, interpolate, decimate. |
-| **windows** | `hamming.hpp`, `hanning.hpp`, `blackman.hpp`, `kaiser.hpp`, ... | `mpdsp.hamming()`, `mpdsp.kaiser()`, ... | Window functions returning NumPy arrays. Apply to signals for spectral analysis. |
-| **quantization** | `adc.hpp`, `dac.hpp`, `dither.hpp`, `noise_shaping.hpp`, `sqnr.hpp` | `mpdsp.adc()`, `mpdsp.dac()`, `mpdsp.sqnr_db()`, `mpdsp.rpdf_dither()`, ... | ADC/DAC modeling with type dispatch. Dithering (TPDF, RPDF). Noise shaping. SQNR measurement — the core metric for mixed-precision evaluation. |
-| **filter/iir** | `butterworth.hpp`, `chebyshev1.hpp`, `chebyshev2.hpp`, `elliptic.hpp`, `bessel.hpp`, `legendre.hpp`, `rbj.hpp` | `mpdsp.butterworth_lowpass()`, `mpdsp.chebyshev1_highpass()`, ... | All 7 IIR families with LP/HP/BP/BS variants. Design in double, process with type dispatch. Frequency response, impulse response, transfer function access. |
-| **filter/fir** | `fir_filter.hpp`, `fir_design.hpp` | `mpdsp.fir_lowpass()`, `mpdsp.fir_filter()`, ... | FIR filter design (window method). Direct convolution. |
-| **spectral** | `fft.hpp`, `dft.hpp`, `psd.hpp`, `spectrogram.hpp`, `ztransform.hpp`, `laplace.hpp` | `mpdsp.fft()`, `mpdsp.psd()`, `mpdsp.spectrogram()`, `mpdsp.ztransform()`, ... | FFT (Cooley-Tukey), power spectral density, STFT/spectrogram, Z-transform and Laplace evaluation. All returning NumPy arrays. |
-| **conditioning** | `envelope.hpp`, `compressor.hpp`, `agc.hpp` | `mpdsp.PeakEnvelope()`, `mpdsp.Compressor()`, `mpdsp.AGC()` | Envelope followers (peak, RMS). Dynamic range compressor with soft knee. Automatic gain control. |
-| **estimation** | `kalman.hpp`, `lms.hpp`, `rls.hpp` | `mpdsp.KalmanFilter()`, `mpdsp.LMSFilter()`, `mpdsp.RLSFilter()` | Linear Kalman filter with predict/update. LMS and NLMS adaptive filters. RLS with forgetting factor. State matrices as NumPy 2D arrays. |
-| **image** | `image.hpp`, `convolve2d.hpp`, `separable.hpp`, `morphology.hpp`, `edge.hpp`, `generators.hpp` | `mpdsp.convolve2d()`, `mpdsp.sobel_x()`, `mpdsp.canny()`, `mpdsp.checkerboard()`, ... | Planar image container (NumPy 2D arrays as channels). 2D convolution, separable filters, Gaussian blur. Morphological operations (erode, dilate, open, close). Sobel, Prewitt, Canny edge detection. Image generators (checkerboard, zone plate, gradients, noise). |
-| **io** | `wav.hpp`, `csv.hpp`, `pgm.hpp`, `ppm.hpp`, `bmp.hpp` | `mpdsp.read_wav()`, `mpdsp.write_pgm()`, `mpdsp.read_bmp()`, ... | WAV audio I/O (8/16/24/32-bit PCM + float). PGM/PPM/BMP image I/O. CSV signal I/O. All converting to/from NumPy arrays. |
-| **analysis** | `stability.hpp`, `sensitivity.hpp`, `condition.hpp` | `mpdsp.stability_margin()`, `mpdsp.pole_displacement()`, `mpdsp.condition_number()`, ... | Pole extraction, stability margin, coefficient sensitivity, condition number. `project_onto()` / `embed_into()` for explicit type conversion with quality measurement. |
-| **types** | `projection.hpp`, `transfer_function.hpp` | `mpdsp.project_onto()`, `mpdsp.transfer_function()` | Type projection/embedding operators. Transfer function evaluation and cascade. |
+| **signals** ✓ | `generators.hpp`, `signal.hpp`, `sampling.hpp` | `mpdsp.sine()`, `mpdsp.chirp()`, `mpdsp.impulse()`, `mpdsp.white_noise()`, `mpdsp.gaussian_noise()`, `mpdsp.pink_noise()`, ... | Signal generators returning NumPy arrays. |
+| **windows** ✓ | `hamming.hpp`, `hanning.hpp`, `blackman.hpp`, `kaiser.hpp`, ... | `mpdsp.hamming()`, `mpdsp.kaiser()`, ... | Window functions returning NumPy arrays. |
+| **quantization** ✓ partial | `adc.hpp`, `dac.hpp`, `dither.hpp`, `noise_shaping.hpp`, `sqnr.hpp` | `mpdsp.adc()`, `mpdsp.sqnr_db()`, `mpdsp.measure_sqnr_db()`, `mpdsp.max_absolute_error()`, ... (⏳ `dac`, `rpdf_dither`, noise-shaping) | ADC modeling with type dispatch. SQNR measurement — the core metric for mixed-precision evaluation. |
+| **filter/iir** ✓ | `butterworth.hpp`, `chebyshev1.hpp`, `chebyshev2.hpp`, `elliptic.hpp`, `bessel.hpp`, `legendre.hpp`, `rbj.hpp` | `mpdsp.butterworth_lowpass()`, `mpdsp.chebyshev1_highpass()`, `mpdsp.elliptic_bandpass()`, `mpdsp.rbj_lowshelf()`, ... | All 7 IIR families with LP/HP/BP/BS (and RBJ shelf/allpass) variants. Design in double, process with type dispatch. Filter objects expose `poles()`, `frequency_response()`, `stability_margin()`, `condition_number()`, `pole_displacement()`, `worst_case_sensitivity()` as methods. |
+| **filter/fir** ✓ | `fir_filter.hpp`, `fir_design.hpp` | `mpdsp.fir_lowpass()`, `mpdsp.fir_bandpass()`, `mpdsp.fir_filter()`, ... | FIR filter design (window method). Direct convolution. |
+| **spectral** ✓ partial | `fft.hpp`, `dft.hpp`, `psd.hpp`, `spectrogram.hpp`, `ztransform.hpp`, `laplace.hpp` | `mpdsp.fft()`, `mpdsp.ifft()`, `mpdsp.fft_magnitude_db()`, `mpdsp.psd()`, `mpdsp.periodogram()`, `mpdsp.spectrogram()` (⏳ `ztransform`, `laplace`) | FFT (Cooley-Tukey), power spectral density, STFT/spectrogram. |
+| **conditioning** ✓ | `envelope.hpp`, `compressor.hpp`, `agc.hpp` | `mpdsp.PeakEnvelope()`, `mpdsp.RMSEnvelope()`, `mpdsp.Compressor()`, `mpdsp.AGC()` | Envelope followers (peak, RMS). Dynamic range compressor with soft knee. Automatic gain control. |
+| **estimation** ✓ | `kalman.hpp`, `lms.hpp`, `rls.hpp` | `mpdsp.KalmanFilter()`, `mpdsp.LMSFilter()`, `mpdsp.NLMSFilter()`, `mpdsp.RLSFilter()` | Linear Kalman filter with predict/update. LMS/NLMS adaptive filters. RLS with forgetting factor. State matrices as NumPy 2D arrays. |
+| **image** ✓ | `image.hpp`, `convolve2d.hpp`, `separable.hpp`, `morphology.hpp`, `edge.hpp`, `generators.hpp` | `mpdsp.convolve2d()`, `mpdsp.gaussian_blur()`, `mpdsp.sobel_x()`, `mpdsp.canny()`, `mpdsp.dilate()`, `mpdsp.checkerboard()`, ... | 2D convolution, separable filters, Gaussian/box blur. Morphological operations (erode, dilate, open, close, gradient, tophat). Sobel, Prewitt, Canny edge detection. Image generators (checkerboard, zone plate, gradients, noise, blobs). |
+| **io** ✓ partial | `wav.hpp`, `csv.hpp`, `pgm.hpp`, `ppm.hpp`, `bmp.hpp` | `mpdsp.read_pgm()`, `mpdsp.write_pgm()`, `mpdsp.read_ppm()`, `mpdsp.write_ppm()`, `mpdsp.read_bmp()`, `mpdsp.write_bmp()` (⏳ `read_wav`/`write_wav`; CSV via `mpdsp.load_sweep()`) | PGM/PPM/BMP image I/O. CSV signal I/O. Converting to/from NumPy arrays. |
+| **analysis** ✓ via filter methods | `stability.hpp`, `sensitivity.hpp`, `condition.hpp` | `filt.stability_margin()`, `filt.condition_number()`, `filt.worst_case_sensitivity()`, `filt.pole_displacement(dtype)` | Stability/sensitivity/conditioning analysis exposed as methods on filter objects rather than free functions. `pole_displacement` takes a dtype string and reports how far poles drift under that arithmetic. |
+| **types** ⏳ | `projection.hpp`, `transfer_function.hpp` | (⏳ `project_onto`, `transfer_function` — planned for 0.5.0) | Type projection/embedding operators. Transfer function evaluation and cascade. |
 
 ### Mixed-Precision Type Dispatch
 
@@ -92,22 +95,31 @@ C++ template types — it passes a string key and gets back `float64`
 NumPy arrays.
 
 ```python
-# Same API, different arithmetic
+# Same API, different arithmetic — IIR/FIR filters
 result_f32  = filt.process(signal, dtype="gpu_baseline")    # float state+sample
 result_p16  = filt.process(signal, dtype="posit_full")      # posit<32,2> / posit<16,1>
-result_6bit = filt.process(signal, dtype="sensor_6bit")     # integer<6> samples
+result_half = filt.process(signal, dtype="half")            # cfloat<16,5> throughout
 
-# Same for spectral analysis
-psd_ref = mpdsp.psd(signal, sample_rate=44100, dtype="reference")
-psd_f16 = mpdsp.psd(signal, sample_rate=44100, dtype="ml_hw")
-
-# Same for image processing
+# Image processing — convolve2d, separable_filter, gaussian_blur,
+# box_blur, sobel_x/y, prewitt_x/y, gradient_magnitude, canny, rgb_to_gray
 edges_ref = mpdsp.canny(img, 0.1, 0.3, dtype="reference")
 edges_p8  = mpdsp.canny(img, 0.1, 0.3, dtype="tiny_posit")
 
-# Same for Kalman filter
-kf = mpdsp.KalmanFilter(2, 1, dtype="fpga_fixed")
+# Quantization — adc, measure_sqnr_db
+quantized = mpdsp.adc(signal, dtype="half")
+
+# Conditioning — PeakEnvelope, RMSEnvelope, Compressor, AGC
+comp = mpdsp.Compressor(sample_rate=44100, threshold_db=-12.0, ratio=4.0,
+                        attack_ms=5.0, release_ms=50.0, dtype="posit_full")
+
+# Estimation — KalmanFilter, LMSFilter, NLMSFilter, RLSFilter
+kf = mpdsp.KalmanFilter(2, 1, dtype="cf24")
 ```
+
+Spectral primitives (`fft`, `psd`, `spectrogram`, ...) are pure double-precision
+in `0.4.x` — mixed-precision dispatch on transforms is planned for `0.5.0`.
+Signal generators and window functions are intentionally reference-precision
+(they are not part of a mixed-precision datapath).
 
 #### Pre-Instantiated Configurations
 
@@ -115,12 +127,15 @@ kf = mpdsp.KalmanFilter(2, 1, dtype="fpga_fixed")
 |--------|-------------|-------------|--------------|--------|
 | `reference` | double | double | double | Ground truth |
 | `gpu_baseline` | double | float | float | GPU / embedded CPU |
-| `ml_hw` | double | float | bfloat16 | ML accelerator |
-| `sensor_8bit` | double | double | integer<8> | Standard 8-bit ADC |
-| `sensor_6bit` | double | double | integer<6> | Noise-limited sensor |
+| `ml_hw` | double | float | cfloat<16,5> (IEEE half) | ML accelerator |
 | `posit_full` | double | posit<32,2> | posit<16,1> | Posit arithmetic research |
-| `fpga_fixed` | double | fixpnt<32,24> | fixpnt<16,12> | FPGA fixed-point datapath |
 | `tiny_posit` | double | posit<8,2> | posit<8,2> | Ultra-low-power edge |
+| `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float research |
+| `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
+
+Query the live set at runtime with `mpdsp.available_dtypes()`. Fixed-point
+and integer configurations (sensor ADCs, FPGA datapaths) are planned for
+`0.5.0` alongside the remaining upstream bindings.
 
 Coefficients are always designed in `double` — design-time precision is
 non-negotiable for IIR filters (see the
@@ -248,23 +263,23 @@ freqs, psd = mpdsp.psd(signal * window, sample_rate=44100)
 # Design and compare IIR filters across arithmetic types
 filt = mpdsp.butterworth_lowpass(order=4, sample_rate=44100, cutoff=1000)
 results = {}
-for dtype in ["reference", "gpu_baseline", "posit_full", "sensor_6bit"]:
+for dtype in ["reference", "gpu_baseline", "posit_full", "half"]:
     results[dtype] = filt.process(signal, dtype=dtype)
     if dtype != "reference":
         sqnr = mpdsp.sqnr_db(results["reference"], results[dtype])
         print(f"  {dtype:20s}  SQNR = {sqnr:.1f} dB")
 
 # --- Spectral Analysis ---
-# Compare FFT precision across types
-spectrum_ref = mpdsp.fft(signal, dtype="reference")
-spectrum_p16 = mpdsp.fft(signal, dtype="posit_full")
+# FFT is pure double-precision in 0.4.x (mixed-precision dispatch on
+# transforms is planned for 0.5.0). The returned tuple is (real, imag).
+real, imag = mpdsp.fft(signal)
 
 # --- Image Processing ---
 # Full image pipeline
 img = mpdsp.checkerboard(256, 256, block_size=16)
 noisy = mpdsp.add_noise(img, stddev=0.1)
 denoised = mpdsp.gaussian_blur(noisy, sigma=1.5)
-edges = mpdsp.canny(denoised, low=0.1, high=0.3)
+edges = mpdsp.canny(denoised, low_threshold=0.1, high_threshold=0.3)
 
 # Compare edge detection across arithmetic types
 edges_ref = mpdsp.canny(denoised, 0.1, 0.3, dtype="reference")

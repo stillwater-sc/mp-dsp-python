@@ -82,6 +82,19 @@ void bind_signals(nb::module_& m) {
 	}, nb::arg("length"), nb::arg("amplitude") = 1.0, nb::arg("seed") = 0u,
 	   "Generate white noise (uniform in [-amplitude, amplitude]).");
 
+	// Upstream's gaussian_noise templates on `amplitude` but docs the scale as
+	// the standard deviation (mean=0, stddev=amplitude). Python callers expect
+	// `stddev` — expose that name directly and forward to amplitude.
+	m.def("gaussian_noise", [](std::size_t length, double stddev, unsigned seed) {
+		return vec_to_numpy(gaussian_noise<double>(length, stddev, seed));
+	}, nb::arg("length"), nb::arg("stddev") = 1.0, nb::arg("seed") = 0u,
+	   "Generate Gaussian white noise (mean=0, normal distribution with given stddev).");
+
+	m.def("pink_noise", [](std::size_t length, double amplitude, unsigned seed) {
+		return vec_to_numpy(pink_noise<double>(length, amplitude, seed));
+	}, nb::arg("length"), nb::arg("amplitude") = 1.0, nb::arg("seed") = 0u,
+	   "Generate pink noise (1/f spectrum, Voss-McCartney algorithm).");
+
 	// Window functions — these are in the sw::dsp namespace via windows.hpp
 	m.def("hamming", [](std::size_t N) {
 		return vec_to_numpy(hamming_window<double>(N));
