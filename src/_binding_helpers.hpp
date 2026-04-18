@@ -20,6 +20,12 @@
 // header from each binding translation unit that needs it. There is no
 // corresponding .cpp — the helpers are intentionally inline template code
 // so multiple TUs can instantiate them independently.
+//
+// Before adding a new property binding that returns an `nb::ndarray` built
+// with `make_f64_array` / `make_f64_2d_array`, read `src/BINDING_PATTERNS.md`.
+// Such properties need an explicit `nb::rv_policy::take_ownership` on the
+// `def_prop_rw` / `def_prop_ro` call — the failure is runtime-only and
+// silently slips through build-time checks.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
