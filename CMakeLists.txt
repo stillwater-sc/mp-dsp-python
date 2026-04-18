@@ -10,6 +10,28 @@ project(mp-dsp-python
 	VERSION 0.4.1
 	LANGUAGES CXX)
 
+# ---------------------------------------------------------------------------
+# Peer dependency pins.
+#
+# Update these together with `project(... VERSION ...)` at release time so
+# the wheel built for mpdsp X.Y.Z always links against known-good snapshots
+# of the peers. These pins only affect the FetchContent fallback path —
+# when a sibling checkout of the peer is found next to this repo (see the
+# `_DSP_CANDIDATES` / `_UNI_CANDIDATES` / `_MTL5_CANDIDATES` loops below),
+# that local source is used instead. For wheel builds under cibuildwheel,
+# which has no siblings to find, the pins are what determines what gets
+# compiled into the binary.
+#
+# Override at configure time with `-DMPDSP_DSP_PIN=main` (etc.) to build
+# against an unreleased upstream without editing this file.
+# ---------------------------------------------------------------------------
+set(MPDSP_DSP_PIN       "v0.4.1" CACHE STRING
+	"mixed-precision-dsp git tag / branch / SHA to fetch")
+set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
+	"universal git tag / branch / SHA to fetch")
+set(MPDSP_MTL5_PIN      "v5.2.0" CACHE STRING
+	"mtl5 git tag / branch / SHA to fetch")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -76,7 +98,7 @@ if(NOT _DSP_FOUND)
   include(FetchContent)
   FetchContent_Declare(dsp
     GIT_REPOSITORY https://github.com/stillwater-sc/mixed-precision-dsp.git
-    GIT_TAG main
+    GIT_TAG ${MPDSP_DSP_PIN}
     GIT_SHALLOW TRUE
   )
   FetchContent_Populate(dsp)
@@ -107,7 +129,7 @@ if(NOT _UNI_FOUND)
   include(FetchContent)
   FetchContent_Declare(universal
     GIT_REPOSITORY https://github.com/stillwater-sc/universal.git
-    GIT_TAG main
+    GIT_TAG ${MPDSP_UNIVERSAL_PIN}
     GIT_SHALLOW TRUE
   )
   FetchContent_Populate(universal)
@@ -141,7 +163,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(mtl5
       GIT_REPOSITORY https://github.com/stillwater-sc/mtl5.git
-      GIT_TAG main
+      GIT_TAG ${MPDSP_MTL5_PIN}
       GIT_SHALLOW TRUE
     )
     FetchContent_Populate(mtl5)
