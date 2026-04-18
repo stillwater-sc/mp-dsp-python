@@ -166,7 +166,14 @@ def test_plot_pole_zero_generates_output(csv_dir):
 
 
 def test_plot_pole_zero_new_cli_flags(csv_dir):
-    """Issue #14 spec'd invocation: --input-dir / --output-dir."""
+    """Issue #14 spec'd invocation: --input-dir / --output-dir.
+
+    Mirrors the full artifact set asserted in
+    `test_plot_pole_zero_generates_output` — both figures, both formats —
+    so a regression that skips one of the two plots on the new CLI path
+    still fails this test. (Initial version only checked pole_zero.pdf,
+    which left pole_displacement.pdf unguarded.)
+    """
     script_path = Path(__file__).parent.parent / "scripts" / "plot_pole_zero.py"
     with tempfile.TemporaryDirectory() as outdir:
         result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
@@ -174,4 +181,7 @@ def test_plot_pole_zero_new_cli_flags(csv_dir):
              "--input-dir", csv_dir, "--output-dir", outdir],
             capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, f"Script failed: {result.stderr}"
-        assert os.path.exists(os.path.join(outdir, "pole_zero.pdf"))
+        for stem in ("pole_zero", "pole_displacement"):
+            for ext in ("png", "pdf"):
+                assert os.path.exists(os.path.join(outdir, f"{stem}.{ext}")), (
+                    f"Missing {stem}.{ext}")

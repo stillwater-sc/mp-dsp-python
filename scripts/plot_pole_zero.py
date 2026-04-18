@@ -4,7 +4,7 @@
 Reads `pole_positions.csv` and produces two figures:
 
 - `pole_zero.{png,pdf}` — unit-circle diagram with reference (double)
-  poles as large black × markers, quantized poles as smaller colored
+  poles as large black cross markers, quantized poles as smaller colored
   circles, arrows drawn from reference to quantized location. Legend
   annotates each non-reference arith_type with its maximum pole
   displacement so readers can compare quantization sensitivity across
@@ -111,9 +111,9 @@ def _draw_unit_circle(ax):
 
 
 def _grid_shape(n_families: int) -> tuple[int, int]:
-    """Default to 2×3 (issue #14 spec); fall back to an adaptive grid when
+    """Default to 2x3 (issue #14 spec); fall back to an adaptive grid when
     the fixture or a custom sweep contains a different number of families
-    — a rigid 2×3 with only 1-2 filled subplots looks sparse.
+    — a rigid 2x3 with only 1-2 filled subplots looks sparse.
     """
     if n_families == 6:
         return 2, 3
@@ -133,7 +133,7 @@ def plot_pole_zero(df: pd.DataFrame, output_dir: Optional[str]):
     nrows, ncols = _grid_shape(len(families))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows))
     # Normalize to a flat array regardless of rows/cols — handles the
-    # single-family test fixture and the 2×3 production case uniformly.
+    # single-family test fixture and the 2x3 production case uniformly.
     axes = np.atleast_1d(axes).flatten()
 
     for idx, family in enumerate(families):
@@ -141,7 +141,7 @@ def plot_pole_zero(df: pd.DataFrame, output_dir: Optional[str]):
         _draw_unit_circle(ax)
         fam_df = df[df["filter_family"] == family]
 
-        # Reference poles — large black × markers per issue spec.
+        # Reference poles — large black cross markers per issue spec.
         ref = fam_df[fam_df["arith_type"] == REFERENCE_TYPE]
         if not ref.empty:
             ax.plot(ref["ref_real"], ref["ref_imag"], "kx",
@@ -181,13 +181,19 @@ def plot_pole_zero(df: pd.DataFrame, output_dir: Optional[str]):
         ax.set_xlabel("Re(z)")
         ax.set_ylabel("Im(z)")
 
+        # Axis limits must include the unit circle — it's the reference
+        # landmark of the plot. Deriving limits from pole coordinates alone
+        # crops the circle when poles cluster near a small region (e.g.
+        # high-order low-cutoff filters with poles all near one arc).
         all_real = fam_df["real"].tolist() + fam_df["ref_real"].tolist()
         all_imag = fam_df["imag"].tolist() + fam_df["ref_imag"].tolist()
         margin = 0.15
-        ax.set_xlim(min(all_real) - margin, max(all_real) + margin)
-        ax.set_ylim(min(all_imag) - margin, max(all_imag) + margin)
+        ax.set_xlim(min(-1.0, min(all_real)) - margin,
+                     max(1.0, max(all_real)) + margin)
+        ax.set_ylim(min(-1.0, min(all_imag)) - margin,
+                     max(1.0, max(all_imag)) + margin)
 
-    # Hide unused subplots in the 2×3 grid when <6 families were provided.
+    # Hide unused subplots in the 2x3 grid when <6 families were provided.
     for idx in range(len(families), len(axes)):
         axes[idx].set_visible(False)
 
