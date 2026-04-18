@@ -162,6 +162,25 @@ Jupyter notebooks tailored to mixed-precision DSP research:
 | **Precision-cost frontier** | SQNR vs. bits-per-sample Pareto plot |
 | **Kalman tracking** | State estimation convergence across types |
 
+### Interactive Filter Designer
+
+A Streamlit dashboard at `scripts/plot_dashboard.py` exposes every IIR
+family (Butterworth, Chebyshev I/II, Bessel, Legendre, Elliptic, RBJ
+biquads) with live magnitude/phase plots, pole-zero diagrams, impulse
+and step response, and a side-by-side mixed-precision comparison across
+all 7 arithmetic configurations — modeled on Vinnie Falco's classic
+DSPFilters demo, with the mixed-precision angle that is the whole point
+of this library.
+
+```bash
+pip install mpdsp[dashboard]
+streamlit run scripts/plot_dashboard.py
+```
+
+Full walkthrough (install paths for local / SSH-tunnel / LAN, tab-by-tab
+tour, mixed-precision interpretation guide, export conventions) in
+[`docs/dashboard.md`](docs/dashboard.md).
+
 ## How
 
 ### Repository Structure
