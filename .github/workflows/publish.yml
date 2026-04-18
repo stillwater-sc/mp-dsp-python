@@ -80,7 +80,22 @@ jobs:
           CIBW_BUILD_VERBOSITY: 1
           CIBW_BEFORE_BUILD: pip install nanobind numpy
           CIBW_TEST_REQUIRES: pytest numpy matplotlib
-          CIBW_TEST_COMMAND: pytest {project}/tests/ -v --tb=short || echo "Tests not yet available"
+          # `MPDSP_REQUIRE_CORE=1` flips tests/test_version.py from skip-on-
+          # missing-_core to fail-on-missing-_core. Set in the *test* env so
+          # only the wheel-test pytest run sees it, not the build.
+          CIBW_TEST_ENVIRONMENT: "MPDSP_REQUIRE_CORE=1"
+          # Two-stage gate. Smoke test first (must pass — asserts the _core
+          # extension imported cleanly and at least one binding is reachable
+          # via the `mpdsp` namespace), then the full pytest run. An earlier
+          # release shipped with _core.so installed to the wrong path; HAS_CORE
+          # silently went False and the test suite skipped everything, so the
+          # broken wheel reached TestPyPI. Never let that happen again.
+          CIBW_TEST_COMMAND: >-
+            python -c "import mpdsp, sys;
+            assert mpdsp.HAS_CORE, f'_core not importable: {mpdsp.__core_import_error__!r}';
+            assert callable(mpdsp.butterworth_lowpass), 'butterworth_lowpass missing';
+            print(f'smoke ok: mpdsp {mpdsp.__version__} dsp {mpdsp.__dsp_version__}')"
+            && pytest {project}/tests/ -v --tb=short
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4

@@ -16,9 +16,31 @@ file guards three invariants:
 
 from __future__ import annotations
 
+import os
 import re
 
 import mpdsp
+
+
+# In CI wheel-test runs we set MPDSP_REQUIRE_CORE=1 so a silently-failed
+# _core import (broken install path, missing symbol, ABI mismatch) fails
+# the test instead of skipping it. Local source-checkout runs leave the
+# var unset — those may legitimately have no extension built yet.
+_REQUIRE_CORE = os.environ.get("MPDSP_REQUIRE_CORE") == "1"
+
+
+def _skip_or_fail_if_no_core():
+    if mpdsp.HAS_CORE:
+        return
+    msg = (
+        f"mpdsp._core unavailable (import error: "
+        f"{mpdsp.__core_import_error__!r}); "
+        f"running against {mpdsp.__file__}"
+    )
+    if _REQUIRE_CORE:
+        raise AssertionError(msg)
+    import pytest
+    pytest.skip(msg)
 
 
 def test_version_attribute_is_well_formed():
@@ -38,18 +60,14 @@ def test_dsp_version_attribute_is_well_formed():
     triple reconstructs to the same string — is pinned in
     `test_dsp_version_info_matches_string`.
     """
-    if not mpdsp.HAS_CORE:
-        import pytest
-        pytest.skip("mpdsp._core not available")
+    _skip_or_fail_if_no_core()
     assert isinstance(mpdsp.__dsp_version__, str)
     assert re.match(r"^\d+\.\d+\.\d+", mpdsp.__dsp_version__)
 
 
 def test_dsp_version_info_triple():
     """__dsp_version_info__ is a (major, minor, patch) tuple of ints."""
-    if not mpdsp.HAS_CORE:
-        import pytest
-        pytest.skip("mpdsp._core not available")
+    _skip_or_fail_if_no_core()
     info = mpdsp.__dsp_version_info__
     assert isinstance(info, tuple)
     assert len(info) == 3
@@ -58,9 +76,7 @@ def test_dsp_version_info_triple():
 
 def test_dsp_version_info_matches_string():
     """The tuple reconstructs to the string form."""
-    if not mpdsp.HAS_CORE:
-        import pytest
-        pytest.skip("mpdsp._core not available")
+    _skip_or_fail_if_no_core()
     major, minor, patch = mpdsp.__dsp_version_info__
     assert f"{major}.{minor}.{patch}" == mpdsp.__dsp_version__
 
@@ -75,9 +91,7 @@ def test_lockstep_prefix():
     corresponding Python bump, or a developer is running against a
     non-matching local peer checkout. Both are worth surfacing.
     """
-    if not mpdsp.HAS_CORE:
-        import pytest
-        pytest.skip("mpdsp._core not available")
+    _skip_or_fail_if_no_core()
     # Strip any pre-release or post-release marker in the third segment
     # (e.g. "0.4.1rc1" or "0.4.1.post1" -> "0.4.1"). Regex grabs the
     # numeric X.Y.Z prefix, which is what we pin against dsp_version.

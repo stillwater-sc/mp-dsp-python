@@ -29,7 +29,14 @@ except ImportError:  # pragma: no cover  -- pre-3.8 fallback not used
 # CSV I/O (pure Python, always available)
 from mpdsp.io import load_sweep
 
-# C++ bindings (available after building the nanobind module)
+# C++ bindings (available after building the nanobind module).
+# The try/except exists so pure-Python paths (mpdsp.io, mpdsp.plotting) still
+# work in unbuilt source checkouts. But a *failed* import in an installed
+# wheel is a packaging bug — silently falling through to HAS_CORE=False once
+# shipped wheels with `_core.so` installed to the wrong path (see the
+# CMakeLists.txt install() comment). Stash the underlying exception on the
+# module so users can diagnose without re-importing.
+__core_import_error__ = None
 try:
     from mpdsp._core import (
         # Signal generators
@@ -102,10 +109,21 @@ try:
     from mpdsp._core import dsp_version as __dsp_version__
     from mpdsp._core import dsp_version_info as __dsp_version_info__
     HAS_CORE = True
-except ImportError:
+except ImportError as _e:
     HAS_CORE = False
     __dsp_version__ = None
     __dsp_version_info__ = None
+    __core_import_error__ = _e
+    import warnings as _warnings
+    _warnings.warn(
+        f"mpdsp._core failed to import: {_e}. "
+        f"C++ bindings unavailable (filters, spectral, quantization, image). "
+        f"This is expected for unbuilt source checkouts but indicates a "
+        f"packaging bug in an installed wheel.",
+        ImportWarning,
+        stacklevel=2,
+    )
+    del _warnings, _e
 
 # Plotting (requires matplotlib)
 try:

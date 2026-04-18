@@ -57,10 +57,18 @@ wheel.install-dir = "mpdsp"
 # `project(mp-dsp-python VERSION X.Y.Z)` line in CMakeLists.txt. This
 # keeps Python wheel metadata, the C++ CMake target, and any
 # downstream CMake consumers in lockstep automatically.
+#
+# `result` templates the captured X.Y.Z with an optional PEP 440
+# post-release suffix. CMake's project(VERSION) doesn't accept
+# `.postN`, so post-releases live in the `result` template here rather
+# than in CMakeLists.txt. When upstream mixed-precision-dsp bumps
+# (tracked via `project(VERSION ...)` and MPDSP_DSP_PIN), reset this
+# to `"{value}"` so the wheel version matches the new upstream triple.
 [tool.scikit-build.metadata.version]
 provider = "scikit_build_core.metadata.regex"
 input = "CMakeLists.txt"
 regex = '(?i)project\s*\(\s*mp-dsp-python[^)]*VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
+result = "{value}.post1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
