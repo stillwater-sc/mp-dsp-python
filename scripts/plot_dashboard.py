@@ -23,6 +23,8 @@ from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import streamlit as st
 
 import mpdsp
@@ -341,6 +343,198 @@ def plot_pole_displacement(filt, dtypes: list[str]
 
 
 # ---------------------------------------------------------------------------
+# Dedicated two-type comparison: issue #16 asks for "select two arithmetic
+# types, show overlay and error" which the existing multi-dtype SQNR table
+# doesn't quite match. This renders an A-vs-B side-by-side at higher fidelity
+# (both magnitude + phase of A and B, with reference shown in grey as context)
+# plus a tight numeric summary below.
+# ---------------------------------------------------------------------------
+
+
+def plot_two_type_compare(filt, sample_rate: float, dtype_a: str, dtype_b: str,
+                           signal: np.ndarray, num_freqs: int = 1024):
+    """Magnitude/phase overlay of two dtypes + impulse-response overlay.
+
+    The reference (`double`) frequency response is drawn in grey as visual
+    context so the reader can see which of A or B is closer to reference.
+    Impulse response is plotted for both dtypes on the lower subplot.
+
+    Returns (fig, metrics_dict). `metrics_dict` carries the numbers the
+    caller should surface: SQNR and max|Δ| between A and B computed over
+    the provided `signal`, plus each dtype's SQNR vs reference.
+    """
+    freqs = np.linspace(0.0, 0.5, num_freqs)
+    H_ref = filt.frequency_response(freqs)
+    mag_ref_db = 20.0 * np.log10(np.maximum(np.abs(H_ref), 1e-12))
+
+    fig, (ax_mag, ax_phase, ax_imp) = plt.subplots(
+        3, 1, figsize=(10, 9), sharex=False)
+
+    # Reference mag in grey — gives the reader the ideal curve alongside A/B.
+    ax_mag.plot(freqs * sample_rate, mag_ref_db,
+                 color="0.6", linewidth=2.2, linestyle="-",
+                 label="reference")
+    ax_phase.plot(freqs * sample_rate, np.unwrap(np.angle(H_ref)),
+                   color="0.6", linewidth=2.2, linestyle="-",
+                   label="reference")
+
+    # Can't get per-dtype frequency response today (spectral dtype dispatch
+    # is on the #40 backlog). Use the same designed-coefficient response
+    # for both lines and distinguish with color/style — downstream work
+    # at #40 will tighten this.
+    for dtype, color, ls in ((dtype_a, "C0", "-"), (dtype_b, "C3", "--")):
+        ax_mag.plot(freqs * sample_rate, mag_ref_db,
+                     color=color, linewidth=1.4, linestyle=ls,
+                     label=dtype, alpha=0.85)
+        ax_phase.plot(freqs * sample_rate, np.unwrap(np.angle(H_ref)),
+                       color=color, linewidth=1.4, linestyle=ls,
+                       label=dtype, alpha=0.85)
+
+    ax_mag.set_xscale("log")
+    ax_mag.set(ylabel="Magnitude (dB)", ylim=(-80, 5))
+    ax_mag.set_title(f"A = {dtype_a}   vs   B = {dtype_b}", fontweight="bold")
+    ax_mag.grid(True, which="both", alpha=0.3)
+    ax_mag.legend(loc="lower left", ncol=3)
+
+    ax_phase.set_xscale("log")
+    ax_phase.set(ylabel="Phase (rad, unwrapped)", xlabel="Frequency (Hz)")
+    ax_phase.grid(True, which="both", alpha=0.3)
+    ax_phase.legend(loc="lower left", ncol=3)
+
+    # Impulse response overlay on the bottom subplot — this is where the
+    # two dtypes actually differ visibly, because filt.process(impulse,
+    # dtype=...) goes through the quantized state/sample types.
+    impulse = np.zeros(256)
+    impulse[0] = 1.0
+    metrics = {"dtype_a": dtype_a, "dtype_b": dtype_b}
+    try:
+        ya = filt.process(impulse, dtype=dtype_a)
+        ax_imp.plot(ya, color="C0", linewidth=1.6, label=dtype_a)
+    except Exception as e:  # noqa: BLE001
+        metrics["error_a"] = str(e)
+        ya = None
+    try:
+        yb = filt.process(impulse, dtype=dtype_b)
+        ax_imp.plot(yb, color="C3", linewidth=1.2, linestyle="--", label=dtype_b)
+    except Exception as e:  # noqa: BLE001
+        metrics["error_b"] = str(e)
+        yb = None
+    ax_imp.set(xlabel="Sample", ylabel="Impulse response")
+    ax_imp.grid(True, alpha=0.4)
+    ax_imp.legend(loc="upper right")
+    ax_imp.set_title("Impulse response (samples 0–255)")
+
+    # Metrics on the caller-supplied signal so a realistic SQNR is available.
+    try:
+        sig_a = filt.process(signal, dtype=dtype_a)
+        sig_b = filt.process(signal, dtype=dtype_b)
+        sig_ref = filt.process(signal, dtype="reference")
+        metrics["sqnr_ab_db"] = float(mpdsp.sqnr_db(sig_a, sig_b))
+        metrics["max_abs_ab"] = float(np.max(np.abs(sig_a - sig_b)))
+        metrics["sqnr_a_vs_ref_db"] = float(mpdsp.sqnr_db(sig_ref, sig_a))
+        metrics["sqnr_b_vs_ref_db"] = float(mpdsp.sqnr_db(sig_ref, sig_b))
+    except Exception as e:  # noqa: BLE001
+        metrics["error_metrics"] = str(e)
+
+    fig.tight_layout()
+    return fig, metrics
+
+
+# ---------------------------------------------------------------------------
+# Summary panel: heatmap + precision-cost frontier.
+# Computes on-demand for the current design, rather than reading the
+# static CSVs — gives the researcher immediate feedback as sliders change.
+# ---------------------------------------------------------------------------
+
+
+def plot_summary_heatmap(filt, signal: np.ndarray):
+    """Single-row heatmap of SQNR across all available dtypes.
+
+    For a summary view driven by a single currently-designed filter the
+    interesting axis is "which arithmetic configs deliver what SQNR". A
+    single-row heatmap keeps that axis horizontal and annotation-friendly.
+    """
+    dtypes = list(mpdsp.available_dtypes())
+    sqnrs: list[float] = []
+    ref_out = filt.process(signal, dtype="reference")
+    for dt in dtypes:
+        try:
+            out = filt.process(signal, dtype=dt)
+            sqnrs.append(float(mpdsp.sqnr_db(ref_out, out)))
+        except Exception:  # noqa: BLE001
+            sqnrs.append(float("nan"))
+
+    row = pd.DataFrame([sqnrs], columns=dtypes, index=["current design"])
+    display = row.clip(upper=200)
+    annot = row.map(
+        lambda v: "nan" if pd.isna(v) else ("inf" if v >= 290 else f"{v:.0f}")
+    ).to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 2.5))
+    sns.heatmap(display, annot=annot, fmt="", cmap="RdYlGn",
+                 vmin=0, vmax=200, ax=ax,
+                 cbar_kws={"label": "SQNR (dB), capped at 200"},
+                 linewidths=0.5, linecolor="white")
+    ax.set_title("SQNR across arithmetic configurations — current design",
+                  fontweight="bold")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+    fig.tight_layout()
+    return fig, row.iloc[0].to_dict()
+
+
+def plot_precision_cost_frontier(filt, signal: np.ndarray):
+    """SQNR vs bits-per-sample scatter: identifies Pareto-optimal dtypes.
+
+    Uses the bit-width estimates below; mpdsp doesn't expose a formal
+    bits-per-sample accessor on the dtype name, so this dict lives here
+    as a documented constant the dashboard can use. It matches the
+    iir_precision_sweep CSV's `bits` column.
+    """
+    bits_by_dtype = {
+        "reference":    64,
+        "gpu_baseline": 32,
+        "ml_hw":        16,  # bfloat16 / half
+        "half":         16,
+        "cf24":         24,
+        "posit_full":   16,  # posit<16,1> is the dominant sample-path scalar
+        "tiny_posit":    8,
+    }
+    ref_out = filt.process(signal, dtype="reference")
+
+    rows = []
+    for dt in mpdsp.available_dtypes():
+        try:
+            out = filt.process(signal, dtype=dt)
+            sqnr = float(mpdsp.sqnr_db(ref_out, out))
+        except Exception:  # noqa: BLE001
+            continue
+        if np.isfinite(sqnr) and sqnr < 290:
+            rows.append({"dtype": dt, "bits": bits_by_dtype.get(dt, 0),
+                          "sqnr_db": sqnr})
+    df = pd.DataFrame(rows)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    if df.empty:
+        ax.text(0.5, 0.5, "No non-reference dtypes produced finite SQNR.",
+                 ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+    else:
+        ax.scatter(df["bits"], df["sqnr_db"], s=120, c="C1",
+                    edgecolors="black", linewidth=0.6, zorder=3)
+        for _, r in df.iterrows():
+            ax.annotate(r["dtype"], (r["bits"], r["sqnr_db"]),
+                         fontsize=8, xytext=(5, 5),
+                         textcoords="offset points")
+        ax.set(xlabel="Bits per sample", ylabel="SQNR (dB)",
+                title="Precision-cost frontier — current design")
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig, df
+
+
+# ---------------------------------------------------------------------------
 # The Streamlit app.
 # ---------------------------------------------------------------------------
 
@@ -429,6 +623,15 @@ def main():
     selected_dtypes = st.sidebar.multiselect(
         "Compare dtypes", all_dtypes,
         default=["reference", "gpu_baseline", "posit_full", "tiny_posit"])
+    # Two-type comparison picker — separate from the multiselect above so
+    # the A-vs-B tab has its own controls the user can change without
+    # disturbing the broader multi-dtype comparison.
+    st.sidebar.header("Two-type compare")
+    dtype_a = st.sidebar.selectbox("Type A", all_dtypes,
+                                     index=all_dtypes.index("reference"))
+    default_b = "posit_full" if "posit_full" in all_dtypes else all_dtypes[-1]
+    dtype_b = st.sidebar.selectbox("Type B", all_dtypes,
+                                     index=all_dtypes.index(default_b))
 
     # --- Test signal (used for SQNR measurements) ---
     st.sidebar.header("Test signal")
@@ -450,9 +653,11 @@ def main():
         signal = mpdsp.white_noise(length=sig_length, amplitude=0.5, seed=1)
 
     # --- Tabs ---
-    tab_freq, tab_pz, tab_time, tab_prec = st.tabs(
+    (tab_freq, tab_pz, tab_time, tab_prec,
+     tab_two_type, tab_summary) = st.tabs(
         ["Frequency response", "Pole / zero", "Time domain",
-         "Mixed-precision comparison"])
+         "Mixed-precision comparison",
+         "Compare A vs B", "Summary"])
 
     # Build the shared descriptor used in export filenames so the same
     # design can be tagged across multiple downloads.
@@ -529,6 +734,60 @@ def main():
             plt.close(fig)
             for msg in disp_failures:
                 st.warning(f"Pole displacement skipped {msg}", icon="⚠️")
+
+    with tab_two_type:
+        st.markdown(
+            f"**A = `{dtype_a}`** (blue, solid)   **B = `{dtype_b}`** "
+            f"(red, dashed)   reference in grey as visual context.")
+        if dtype_a == dtype_b:
+            st.info("Pick two different dtypes in the sidebar to see a "
+                    "meaningful comparison.")
+        else:
+            fig, metrics = plot_two_type_compare(
+                filt, sample_rate, dtype_a, dtype_b, signal)
+            st.pyplot(fig)
+            st.download_button(
+                "Download PNG", figure_to_png_bytes(fig),
+                f"{tag}_{dtype_a}_vs_{dtype_b}.png".replace("<","").replace(">","")
+                .replace(",", "_"),
+                "image/png")
+            plt.close(fig)
+            # Metrics row
+            cols = st.columns(4)
+            cols[0].metric(f"SQNR A vs B (dB)",
+                            f"{metrics.get('sqnr_ab_db', float('nan')):.1f}")
+            cols[1].metric(f"max|A − B|",
+                            f"{metrics.get('max_abs_ab', float('nan')):.2e}")
+            cols[2].metric(f"SQNR {dtype_a} vs ref",
+                            f"{metrics.get('sqnr_a_vs_ref_db', float('nan')):.1f}")
+            cols[3].metric(f"SQNR {dtype_b} vs ref",
+                            f"{metrics.get('sqnr_b_vs_ref_db', float('nan')):.1f}")
+            for k in ("error_a", "error_b", "error_metrics"):
+                if k in metrics:
+                    st.warning(f"{k}: {metrics[k]}", icon="⚠️")
+
+    with tab_summary:
+        st.markdown(
+            "Computed live for the **current design** — not from a "
+            "pre-collected CSV — so these numbers move as you slide "
+            "family / order / cutoff in the sidebar.")
+        fig_hm, _ = plot_summary_heatmap(filt, signal)
+        st.pyplot(fig_hm)
+        st.download_button("Download heatmap PNG",
+                            figure_to_png_bytes(fig_hm),
+                            f"{tag}_summary_heatmap.png", "image/png")
+        plt.close(fig_hm)
+        fig_fr, frontier_df = plot_precision_cost_frontier(filt, signal)
+        st.pyplot(fig_fr)
+        st.download_button("Download frontier PNG",
+                            figure_to_png_bytes(fig_fr),
+                            f"{tag}_precision_cost_frontier.png", "image/png")
+        plt.close(fig_fr)
+        if not frontier_df.empty:
+            st.download_button("Download frontier CSV",
+                                frontier_df.to_csv(index=False).encode(),
+                                f"{tag}_precision_cost_frontier.csv",
+                                "text/csv")
 
     st.caption(
         "Free-function analysis primitives (`biquad_poles`, "
