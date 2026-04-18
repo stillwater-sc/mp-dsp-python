@@ -54,7 +54,9 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install Python dependencies
-        run: pip install numpy matplotlib pandas pytest
+        # seaborn is required by scripts/plot_heatmap.py — tests/test_scripts.py
+        # exercises the script via subprocess, so it must be available here.
+        run: pip install numpy matplotlib pandas seaborn pytest
 
       - name: Install package
         run: pip install -e .

@@ -38,7 +38,8 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install dependencies
-        run: pip install nanobind numpy matplotlib pytest
+        # seaborn is required by scripts/plot_heatmap.py.
+        run: pip install nanobind numpy matplotlib seaborn pytest
 
       - name: Build and test
         run: |
