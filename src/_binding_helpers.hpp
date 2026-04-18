@@ -176,6 +176,20 @@ inline mtl::mat::dense2D<T> numpy_to_mat_fresh(np_f64_2d_ro src) {
 	return dst;
 }
 
+// 1D counterpart to numpy_to_mat_fresh: convert a NumPy 1D array to a
+// freshly-allocated dense_vector<T>. Useful when a processor takes 1D
+// kernels alongside a 2D image.
+template <typename T>
+inline mtl::vec::dense_vector<T> numpy_to_vec_fresh(np_f64_ro src) {
+	std::size_t n = src.shape(0);
+	mtl::vec::dense_vector<T> dst(n);
+	const double* data = src.data();
+	for (std::size_t i = 0; i < n; ++i) {
+		dst[i] = static_cast<T>(data[i]);
+	}
+	return dst;
+}
+
 // ---------------------------------------------------------------------------
 // Arithmetic-config dispatcher. Given a class template Impl<T> deriving from
 // Base, construct the right instantiation for the requested ArithConfig and
@@ -185,6 +199,37 @@ inline mtl::mat::dense2D<T> numpy_to_mat_fresh(np_f64_2d_ro src) {
 // A future ArithConfig enumerator that's added without extending the switch
 // raises instead of silently dispatching to double.
 // ---------------------------------------------------------------------------
+
+// Free-function counterpart to make_impl_for_dtype. Takes a generic lambda
+// (C++20 explicit-template-argument lambda) and invokes it for the T that
+// matches `config`, returning whatever the lambda returns. Intended for
+// dtype-dispatched processors like convolve2d / sobel_* / canny that are
+// free templates, not class Impl<T>.
+//
+// Usage:
+//   auto out = dispatch_dtype_fn(config, "sobel_x", [&]<typename T>() {
+//       auto m = numpy_to_mat_fresh<T>(image);
+//       return mat_to_numpy(sw::dsp::sobel_x<T>(m, border));
+//   });
+template <class Callable>
+inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
+                               Callable&& f) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::half_;
+	using mpdsp::p32;
+	using tiny_posit_t = sw::universal::posit<8, 2>;
+	switch (config) {
+	case ArithConfig::reference:    return f.template operator()<double>();
+	case ArithConfig::gpu_baseline: return f.template operator()<float>();
+	case ArithConfig::ml_hw:        return f.template operator()<half_>();
+	case ArithConfig::cf24_config:  return f.template operator()<cf24>();
+	case ArithConfig::half_config:  return f.template operator()<half_>();
+	case ArithConfig::posit_full:   return f.template operator()<p32>();
+	case ArithConfig::tiny_posit:   return f.template operator()<tiny_posit_t>();
+	}
+	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
+}
 
 template <template<class> class Impl, class Base, class... Args>
 inline std::unique_ptr<Base>

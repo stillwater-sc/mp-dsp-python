@@ -56,7 +56,11 @@ try:
         uniform_noise_image, gaussian_noise_image, salt_and_pepper,
         add_noise, threshold,
         # Image — processing
-        convolve2d,
+        convolve2d, separable_filter,
+        gaussian_blur, box_blur,
+        # Image — edge detection
+        sobel_x, sobel_y, prewitt_x, prewitt_y,
+        gradient_magnitude, canny,
         # Introspection
         available_dtypes,
     )

@@ -19,8 +19,10 @@
 #include <nanobind/stl/string.h>
 
 #include <sw/dsp/image/convolve2d.hpp>
+#include <sw/dsp/image/edge.hpp>
 #include <sw/dsp/image/generators.hpp>
 #include <sw/dsp/image/image.hpp>
+#include <sw/dsp/image/separable.hpp>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -31,10 +33,13 @@
 
 namespace nb = nanobind;
 
+using mpdsp::bindings::np_f64_ro;
 using mpdsp::bindings::np_f64_2d;
 using mpdsp::bindings::np_f64_2d_ro;
 using mpdsp::bindings::mat_to_numpy;
 using mpdsp::bindings::numpy_to_mat_fresh;
+using mpdsp::bindings::numpy_to_vec_fresh;
+using mpdsp::bindings::dispatch_dtype_fn;
 
 namespace {
 
@@ -65,54 +70,16 @@ static void check_dims(std::size_t rows, std::size_t cols, const char* name) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Dtype dispatcher for free-function processors.
+// Processors share the pattern:
 //
-// Free functions like convolve2d can't use make_impl_for_dtype<Impl, Base>
-// (that one constructs a class Impl<T>). Instead, a per-function dispatcher
-// instantiates the upstream function template at the requested T, ferries
-// NumPy input through dense2D<T>, runs, and ships the result back as
-// NumPy float64. Future processing bindings use the same shape.
-// ---------------------------------------------------------------------------
-
-template <typename T>
-static np_f64_2d convolve2d_typed(np_f64_2d_ro image, np_f64_2d_ro kernel,
-                                   sw::dsp::BorderMode border, double pad) {
-	auto in_mat  = numpy_to_mat_fresh<T>(image);
-	auto kern    = numpy_to_mat_fresh<T>(kernel);
-	auto result  = sw::dsp::convolve2d<T, T>(in_mat, kern, border, static_cast<T>(pad));
-	return mat_to_numpy(result);
-}
-
-static np_f64_2d convolve2d_dispatch(np_f64_2d_ro image, np_f64_2d_ro kernel,
-                                     const std::string& border_name,
-                                     double pad,
-                                     const std::string& dtype) {
-	auto config = mpdsp::parse_config(dtype);
-	auto border = parse_border(border_name);
-	using mpdsp::ArithConfig;
-	using mpdsp::cf24;
-	using mpdsp::half_;
-	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
-	switch (config) {
-	case ArithConfig::reference:
-		return convolve2d_typed<double>(image, kernel, border, pad);
-	case ArithConfig::gpu_baseline:
-		return convolve2d_typed<float>(image, kernel, border, pad);
-	case ArithConfig::ml_hw:
-		return convolve2d_typed<half_>(image, kernel, border, pad);
-	case ArithConfig::cf24_config:
-		return convolve2d_typed<cf24>(image, kernel, border, pad);
-	case ArithConfig::half_config:
-		return convolve2d_typed<half_>(image, kernel, border, pad);
-	case ArithConfig::posit_full:
-		return convolve2d_typed<p32>(image, kernel, border, pad);
-	case ArithConfig::tiny_posit:
-		return convolve2d_typed<tiny_posit_t>(image, kernel, border, pad);
-	}
-	throw std::invalid_argument("convolve2d: unsupported ArithConfig");
-}
+//   auto config = mpdsp::parse_config(dtype);
+//   return dispatch_dtype_fn(config, "<name>", [&]<typename T>() {
+//       auto m = numpy_to_mat_fresh<T>(image);
+//       return mat_to_numpy(sw::dsp::<fn><T>(m, ...));
+//   });
+//
+// The lambda body is where the per-function work lives; the surrounding
+// dispatcher machinery is shared in _binding_helpers.hpp.
 
 } // namespace
 
@@ -360,7 +327,15 @@ void bind_image(nb::module_& m) {
 				throw std::invalid_argument(
 					"convolve2d: kernel must have non-zero dimensions");
 			}
-			return convolve2d_dispatch(image, kernel, border, pad, dtype);
+			auto config = mpdsp::parse_config(dtype);
+			auto bm = parse_border(border);
+			return dispatch_dtype_fn(config, "convolve2d", [&]<typename T>() {
+				auto in_mat = numpy_to_mat_fresh<T>(image);
+				auto kern   = numpy_to_mat_fresh<T>(kernel);
+				auto result = sw::dsp::convolve2d<T, T>(
+					in_mat, kern, bm, static_cast<T>(pad));
+				return mat_to_numpy(result);
+			});
 		},
 		nb::arg("image"), nb::arg("kernel"),
 		nb::arg("border") = "reflect_101", nb::arg("pad") = 0.0,
@@ -369,4 +344,177 @@ void bind_image(nb::module_& m) {
 		"reflect, reflect_101, or wrap; `pad` is the fill value for "
 		"border='constant'. `dtype` selects the internal arithmetic — see "
 		"available_dtypes().");
+
+	m.def("separable_filter",
+		[](np_f64_2d_ro image, np_f64_ro row_kernel, np_f64_ro col_kernel,
+		   const std::string& border, double pad, const std::string& dtype) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"separable_filter: image must have non-zero dimensions");
+			}
+			if (row_kernel.shape(0) == 0 || col_kernel.shape(0) == 0) {
+				throw std::invalid_argument(
+					"separable_filter: row_kernel and col_kernel must be non-empty");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			auto bm = parse_border(border);
+			return dispatch_dtype_fn(config, "separable_filter",
+			                          [&]<typename T>() {
+				auto in_mat = numpy_to_mat_fresh<T>(image);
+				auto rk     = numpy_to_vec_fresh<T>(row_kernel);
+				auto ck     = numpy_to_vec_fresh<T>(col_kernel);
+				auto result = sw::dsp::separable_filter<T, T>(
+					in_mat, rk, ck, bm, static_cast<T>(pad));
+				return mat_to_numpy(result);
+			});
+		},
+		nb::arg("image"), nb::arg("row_kernel"), nb::arg("col_kernel"),
+		nb::arg("border") = "reflect_101", nb::arg("pad") = 0.0,
+		nb::arg("dtype") = "reference",
+		"Apply a row kernel then a column kernel (separable 2D filter). "
+		"Equivalent to convolve2d with an outer-product kernel but cheaper "
+		"for K rows * L cols -> O(K+L) per pixel instead of O(K*L).");
+
+	m.def("gaussian_blur",
+		[](np_f64_2d_ro image, double sigma, std::size_t radius,
+		   const std::string& border, const std::string& dtype) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"gaussian_blur: image must have non-zero dimensions");
+			}
+			if (!(sigma > 0.0)) {
+				throw std::invalid_argument(
+					"gaussian_blur: sigma must be positive");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			auto bm = parse_border(border);
+			return dispatch_dtype_fn(config, "gaussian_blur",
+			                          [&]<typename T>() {
+				auto in_mat = numpy_to_mat_fresh<T>(image);
+				auto result = sw::dsp::gaussian_blur<T>(in_mat, sigma, radius, bm);
+				return mat_to_numpy(result);
+			});
+		},
+		nb::arg("image"), nb::arg("sigma"), nb::arg("radius") = std::size_t{0},
+		nb::arg("border") = "reflect_101", nb::arg("dtype") = "reference",
+		"Separable Gaussian blur. `radius=0` auto-selects a radius that "
+		"captures most of the Gaussian tail (usually ceil(3*sigma)).");
+
+	m.def("box_blur",
+		[](np_f64_2d_ro image, std::size_t size,
+		   const std::string& border, const std::string& dtype) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"box_blur: image must have non-zero dimensions");
+			}
+			if (size == 0) {
+				throw std::invalid_argument(
+					"box_blur: size must be positive");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			auto bm = parse_border(border);
+			return dispatch_dtype_fn(config, "box_blur",
+			                          [&]<typename T>() {
+				auto in_mat = numpy_to_mat_fresh<T>(image);
+				auto result = sw::dsp::box_blur<T>(in_mat, size, bm);
+				return mat_to_numpy(result);
+			});
+		},
+		nb::arg("image"), nb::arg("size"),
+		nb::arg("border") = "reflect_101", nb::arg("dtype") = "reference",
+		"Box-average blur with an `size x size` uniform kernel.");
+
+	// =======================================================================
+	// Edge detection — Sobel / Prewitt gradient components, their magnitude,
+	// and Canny edge maps. All dtype-dispatched via the same lambda pattern.
+	// =======================================================================
+
+	auto bind_edge_op = [&m](const char* name, auto op) {
+		m.def(name,
+			[name, op](np_f64_2d_ro image, const std::string& border,
+			            const std::string& dtype) {
+				if (image.shape(0) == 0 || image.shape(1) == 0) {
+					throw std::invalid_argument(
+						std::string(name) + ": image must have non-zero dimensions");
+				}
+				auto config = mpdsp::parse_config(dtype);
+				auto bm = parse_border(border);
+				return dispatch_dtype_fn(config, name, [&]<typename T>() {
+					auto in_mat = numpy_to_mat_fresh<T>(image);
+					return mat_to_numpy(op.template operator()<T>(in_mat, bm));
+				});
+			},
+			nb::arg("image"),
+			nb::arg("border") = "reflect_101",
+			nb::arg("dtype") = "reference");
+	};
+
+	bind_edge_op("sobel_x", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                        sw::dsp::BorderMode bm) {
+		return sw::dsp::sobel_x<T>(img, bm);
+	});
+	bind_edge_op("sobel_y", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                        sw::dsp::BorderMode bm) {
+		return sw::dsp::sobel_y<T>(img, bm);
+	});
+	bind_edge_op("prewitt_x", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                          sw::dsp::BorderMode bm) {
+		return sw::dsp::prewitt_x<T>(img, bm);
+	});
+	bind_edge_op("prewitt_y", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                          sw::dsp::BorderMode bm) {
+		return sw::dsp::prewitt_y<T>(img, bm);
+	});
+
+	m.def("gradient_magnitude",
+		[](np_f64_2d_ro gx, np_f64_2d_ro gy, const std::string& dtype) {
+			if (gx.shape(0) != gy.shape(0) || gx.shape(1) != gy.shape(1)) {
+				throw std::invalid_argument(
+					"gradient_magnitude: gx and gy must have the same shape");
+			}
+			if (gx.shape(0) == 0 || gx.shape(1) == 0) {
+				throw std::invalid_argument(
+					"gradient_magnitude: inputs must have non-zero dimensions");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "gradient_magnitude",
+			                          [&]<typename T>() {
+				auto gx_mat = numpy_to_mat_fresh<T>(gx);
+				auto gy_mat = numpy_to_mat_fresh<T>(gy);
+				return mat_to_numpy(
+					sw::dsp::gradient_magnitude<T>(gx_mat, gy_mat));
+			});
+		},
+		nb::arg("gx"), nb::arg("gy"), nb::arg("dtype") = "reference",
+		"Pixel-wise sqrt(gx^2 + gy^2). Typically fed Sobel or Prewitt "
+		"gradient outputs.");
+
+	m.def("canny",
+		[](np_f64_2d_ro image, double low_threshold, double high_threshold,
+		   double sigma, const std::string& dtype) {
+			if (image.shape(0) == 0 || image.shape(1) == 0) {
+				throw std::invalid_argument(
+					"canny: image must have non-zero dimensions");
+			}
+			if (!(sigma > 0.0)) {
+				throw std::invalid_argument(
+					"canny: sigma must be positive");
+			}
+			if (!(low_threshold >= 0.0) || !(high_threshold >= low_threshold)) {
+				throw std::invalid_argument(
+					"canny: thresholds must satisfy 0 <= low <= high");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "canny", [&]<typename T>() {
+				auto in_mat = numpy_to_mat_fresh<T>(image);
+				auto result = sw::dsp::canny<T>(in_mat, low_threshold,
+				                                 high_threshold, sigma);
+				return mat_to_numpy(result);
+			});
+		},
+		nb::arg("image"), nb::arg("low_threshold"), nb::arg("high_threshold"),
+		nb::arg("sigma") = 1.0, nb::arg("dtype") = "reference",
+		"Canny edge detector: Gaussian smooth, Sobel gradients, non-maximum "
+		"suppression, hysteresis thresholding. Returns a binary edge map "
+		"(0.0 for non-edge, 1.0 for edge).");
 }
