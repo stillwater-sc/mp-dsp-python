@@ -1,10 +1,15 @@
 [build-system]
-requires = ["scikit-build-core>=0.8", "nanobind>=2.0"]
+# Regex version metadata provider requires scikit-build-core >= 0.10.
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "mpdsp"
-version = "0.1.0"
+# Version is sourced from CMakeLists.txt via scikit-build-core's regex
+# provider (see [tool.scikit-build.metadata.version] below). We track
+# mixed-precision-dsp in lockstep; Python-only patches use PEP 440
+# post-releases. Do not hardcode the version here.
+dynamic = ["version"]
 description = "Python integration layer for the mixed-precision DSP library"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,6 +52,15 @@ Documentation = "https://github.com/stillwater-sc/mixed-precision-dsp"
 cmake.build-type = "Release"
 wheel.packages = ["python/mpdsp"]
 wheel.install-dir = "mpdsp"
+
+# Single source of truth for the package version: read it from the
+# `project(mp-dsp-python VERSION X.Y.Z)` line in CMakeLists.txt. This
+# keeps Python wheel metadata, the C++ CMake target, and any
+# downstream CMake consumers in lockstep automatically.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = '(?i)project\s*\(\s*mp-dsp-python[^)]*VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
