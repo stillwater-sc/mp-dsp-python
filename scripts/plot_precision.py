@@ -118,13 +118,18 @@ def apply_publication_style(use_latex: bool = False) -> None:
 def type_color_map(types: Iterable[str]) -> dict[str, tuple]:
     """Stable color assignment per arithmetic type.
 
-    Using `tab10` gives 10 distinct colors at the start and then cycles —
-    fine for the 5–8 types this sweep typically produces. Sorting the
-    types first makes the legend ordering reproducible across runs.
+    Sorts the type names alphabetically so legend ordering is reproducible
+    across runs (CSV row order is producer-dependent), then assigns `tab10`
+    colors. The reference type is force-overridden to pure black — the
+    issue spec calls for it as the thick black reference line, and we
+    don't want its color drifting with CSV ordering.
     """
-    t_list = list(types)
+    t_list = sorted(types)
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(t_list), 1)))
-    return dict(zip(t_list, colors))
+    color_map = dict(zip(t_list, colors))
+    if REFERENCE_TYPE in color_map:
+        color_map[REFERENCE_TYPE] = (0.0, 0.0, 0.0, 1.0)
+    return color_map
 
 
 def style_for(atype: str) -> tuple[float, str]:
@@ -159,15 +164,19 @@ def plot_magnitude_response(df: pd.DataFrame, output_dir: Optional[str]):
         fam_df = df[df["filter_family"] == family]
         for atype in types:
             sub = fam_df[fam_df["arith_type"] == atype]
+            # Log x-axis — filter non-positive frequencies so matplotlib
+            # doesn't drop points and warn. DC is naturally absent on log.
+            sub = sub[sub["freq_hz"] > 0]
             if sub.empty:
                 continue
             lw, ls = style_for(atype)
             ax.plot(sub["freq_hz"].values, sub["magnitude_db"].values,
                     label=atype, color=colors[atype], linewidth=lw, linestyle=ls)
+        ax.set_xscale("log")
         ax.set_ylabel("Magnitude (dB)")
         ax.set_title(family)
         ax.set_ylim(-80, 5)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, which="both", alpha=0.3)
         ax.legend(loc="lower left", ncol=3)
 
     axes[-1].set_xlabel("Frequency (Hz)")
@@ -187,14 +196,16 @@ def plot_phase_response(df: pd.DataFrame, output_dir: Optional[str]):
         fam_df = df[df["filter_family"] == family]
         for atype in types:
             sub = fam_df[fam_df["arith_type"] == atype]
+            sub = sub[sub["freq_hz"] > 0]
             if sub.empty:
                 continue
             lw, ls = style_for(atype)
             ax.plot(sub["freq_hz"].values, sub["phase_deg"].values,
                     label=atype, color=colors[atype], linewidth=lw, linestyle=ls)
+        ax.set_xscale("log")
         ax.set_ylabel("Phase (degrees)")
         ax.set_title(family)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, which="both", alpha=0.3)
         ax.legend(loc="lower left", ncol=3)
 
     axes[-1].set_xlabel("Frequency (Hz)")
@@ -278,11 +289,15 @@ def plot_impulse_response(df: pd.DataFrame, output_dir: Optional[str]):
                 continue
             # Respect either a sample_index column (the documented schema)
             # or, if producers emit sorted rows without an explicit index,
-            # just fall back to positional ordering.
-            sub = sub.head(IMPULSE_WINDOW)
+            # fall back to positional ordering. Sort BEFORE head() so a
+            # shuffled long-format CSV (multiple types interleaved, or
+            # parallel-emitted rows) still plots the first 100 samples in
+            # order rather than whatever happened to land first in the file.
             if "sample_index" in sub.columns:
+                sub = sub.sort_values("sample_index").head(IMPULSE_WINDOW)
                 x = sub["sample_index"].values
             else:
+                sub = sub.head(IMPULSE_WINDOW)
                 x = np.arange(len(sub))
             lw, ls = style_for(atype)
             ax.plot(x, sub["value"].values, label=atype,

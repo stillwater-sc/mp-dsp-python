@@ -57,9 +57,17 @@ def csv_dir():
 
 
 def _run_script(script_name: str, csv_dir: str, output_dir: str) -> subprocess.CompletedProcess:
-    """Run a plotting script and return the result."""
+    """Run a plotting script and return the result.
+
+    The subprocess.run calls in this file all receive the active Python
+    interpreter and a script path resolved from `__file__` plus
+    tempdir arguments constructed locally — no user/network input
+    reaches the command line. Ruff's S603 fires on every
+    subprocess.run regardless of provenance, so tag these specific
+    call sites as intentional.
+    """
     script_path = Path(__file__).parent.parent / "scripts" / script_name
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
         [sys.executable, str(script_path), csv_dir, "--output", output_dir],
         capture_output=True, text=True, timeout=30)
 
@@ -69,7 +77,7 @@ def test_plot_precision_generates_output(csv_dir):
     with tempfile.TemporaryDirectory() as outdir:
         result = _run_script("plot_precision.py", csv_dir, outdir)
         assert result.returncode == 0, f"Script failed: {result.stderr}"
-        # All five figures × two formats.
+        # All five figures x two formats.
         expected_stems = ["magnitude_response", "phase_response",
                           "magnitude_error", "phase_error",
                           "impulse_response"]
@@ -83,7 +91,7 @@ def test_plot_precision_new_cli_flags(csv_dir):
     """Issue #12-spec'd invocation: --input-dir / --output-dir."""
     script_path = Path(__file__).parent.parent / "scripts" / "plot_precision.py"
     with tempfile.TemporaryDirectory() as outdir:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
             [sys.executable, str(script_path),
              "--input-dir", csv_dir, "--output-dir", outdir],
             capture_output=True, text=True, timeout=30)
@@ -111,7 +119,7 @@ def test_plot_precision_publication_flag(csv_dir):
     """--publication should not error and should still produce outputs."""
     script_path = Path(__file__).parent.parent / "scripts" / "plot_precision.py"
     with tempfile.TemporaryDirectory() as outdir:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
             [sys.executable, str(script_path),
              "--input-dir", csv_dir, "--output-dir", outdir,
              "--publication"],
