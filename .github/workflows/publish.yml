@@ -79,7 +79,7 @@ jobs:
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_BUILD_VERBOSITY: 1
           CIBW_BEFORE_BUILD: pip install nanobind numpy
-          CIBW_TEST_REQUIRES: pytest numpy matplotlib
+          CIBW_TEST_REQUIRES: pytest numpy matplotlib seaborn
           # `MPDSP_REQUIRE_CORE=1` flips tests/test_version.py from skip-on-
           # missing-_core to fail-on-missing-_core. Set in the *test* env so
           # only the wheel-test pytest run sees it, not the build.

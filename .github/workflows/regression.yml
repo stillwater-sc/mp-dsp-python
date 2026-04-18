@@ -45,7 +45,8 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install dependencies
-        run: pip install numpy matplotlib pytest pytest-xdist
+        # seaborn is required by scripts/plot_heatmap.py.
+        run: pip install numpy matplotlib seaborn pytest pytest-xdist
 
       - name: Install package
         run: pip install -e .
