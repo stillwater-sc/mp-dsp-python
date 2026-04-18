@@ -18,7 +18,7 @@ library.
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import matplotlib.pyplot as plt
@@ -45,7 +45,14 @@ class FamilySpec:
     name: str
     has_order: bool = True
     extra_params: tuple = ()          # names of extra kwargs (e.g. "ripple_db")
-    makers: dict = None               # topology -> callable
+    makers: dict[str, Callable] = field(default_factory=dict)  # topology -> callable
+
+    def __post_init__(self):
+        # A FamilySpec with no topologies is useless and would TypeError at
+        # the first `spec.makers[topology]` lookup. Fail fast at construction.
+        if not self.makers:
+            raise ValueError(f"FamilySpec({self.name!r}) must define at least "
+                             "one topology in `makers`.")
 
 
 ORDER_FAMILIES: dict[str, FamilySpec] = {
@@ -234,8 +241,15 @@ def plot_pole_zero(filt):
     return fig
 
 
-def plot_impulse_step(filt, dtypes: list[str], length: int = 256):
-    """Impulse and step response across selected dtypes."""
+def plot_impulse_step(filt, dtypes: list[str], length: int = 256
+                       ) -> tuple[plt.Figure, list[str]]:
+    """Impulse and step response across selected dtypes.
+
+    Returns `(fig, failures)` — each `failures` entry is a human-readable
+    string like "tiny_posit: unsupported operation" that the caller can
+    surface through `st.warning`. Swallowing silently would leave the
+    user with an empty plot and no indication why.
+    """
     impulse = np.zeros(length)
     impulse[0] = 1.0
     step = np.ones(length)
@@ -248,15 +262,19 @@ def plot_impulse_step(filt, dtypes: list[str], length: int = 256):
         ax.grid(True, alpha=0.4)
         ax.axhline(0.0, color="0.85", linewidth=0.5)
 
+    failures: list[str] = []
     for dt in dtypes:
         try:
             ax_imp.plot(filt.process(impulse, dtype=dt), label=dt, linewidth=1.2)
             ax_step.plot(filt.process(step, dtype=dt), label=dt, linewidth=1.2)
-        except Exception:
-            continue
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"{dt}: {e}")
+            # Render the failure as a legend-only entry so the user sees
+            # which dtype didn't contribute a trace.
+            ax_imp.plot([], [], " ", label=f"{dt}: error")
     ax_imp.legend(loc="best", fontsize="small")
     fig.tight_layout()
-    return fig
+    return fig, failures
 
 
 def figure_to_png_bytes(fig, dpi: int = 150) -> bytes:
@@ -265,17 +283,50 @@ def figure_to_png_bytes(fig, dpi: int = 150) -> bytes:
     return buf.getvalue()
 
 
-def plot_pole_displacement(filt, dtypes: list[str]):
-    """Bar chart: how far each dtype drifts the poles from the reference."""
+def freq_slider_bounds(nyquist: float, preferred_min: float,
+                       preferred_default: float, margin_frac: float = 0.02
+                       ) -> tuple[float, float, float]:
+    """Derive (min, max, default) for a frequency slider keyed to Nyquist.
+
+    At very low sample rates the "preferred" constants (e.g. 20 Hz minimum
+    cutoff, 1 kHz default) would invert `min_value > max_value` or place
+    the default outside `[min, max]`, which Streamlit rejects with an
+    API exception. Clamp everything back into a valid range, preserving
+    the preferred values when the sample rate is high enough. `margin_frac`
+    keeps the upper bound strictly below Nyquist so edge-frequency designs
+    don't land on numerical edge cases in the filter constructors.
+    """
+    hi = max(1.0, nyquist * (1.0 - margin_frac))
+    # preferred_min must not exceed half the usable band, else the slider
+    # becomes single-valued or degenerate.
+    lo = min(preferred_min, hi * 0.5) if hi > 2.0 else hi * 0.5
+    default = min(max(preferred_default, lo), hi)
+    return lo, hi, default
+
+
+def plot_pole_displacement(filt, dtypes: list[str]
+                            ) -> tuple[plt.Figure, list[str]]:
+    """Bar chart: how far each dtype drifts the poles from the reference.
+
+    Returns `(fig, failures)` so the caller can surface per-dtype error
+    messages through `st.warning` — a bar silently dropped from the plot
+    would leave no trail. A short placeholder appears on the chart for
+    every failing dtype so the user can see what was attempted.
+    """
     labels, values = [], []
+    failures: list[str] = []
     for dt in dtypes:
         if dt == "reference":
             continue
         try:
-            labels.append(dt)
-            values.append(filt.pole_displacement(dt))
-        except Exception:
+            d = filt.pole_displacement(dt)
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"{dt}: {e}")
+            labels.append(f"{dt} (err)")
+            values.append(0.0)
             continue
+        labels.append(dt)
+        values.append(d)
     fig, ax = plt.subplots(figsize=(8, 4))
     if not labels:
         ax.text(0.5, 0.5, "No non-reference dtypes selected.",
@@ -286,7 +337,7 @@ def plot_pole_displacement(filt, dtypes: list[str]):
         ax.set_title("How far do quantized coefficients drift the poles?")
         ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
-    return fig
+    return fig, failures
 
 
 # ---------------------------------------------------------------------------
@@ -318,24 +369,27 @@ def main():
         topology = st.sidebar.selectbox("Topology", list(spec.makers.keys()))
         order = st.sidebar.slider("Order", 1, 8, 4)
 
+    # 1 kHz sample-rate floor keeps all derived slider bounds comfortably
+    # above the fixed preferred minimums; the previous 100 Hz floor could
+    # drive nyquist below some slider lower bounds and crash the app.
     sample_rate = st.sidebar.number_input(
-        "Sample rate (Hz)", min_value=100.0, max_value=384_000.0,
+        "Sample rate (Hz)", min_value=1_000.0, max_value=384_000.0,
         value=44_100.0, step=1000.0)
 
     nyquist = sample_rate / 2.0
     freq_params: dict = {}
     if topology in ("lowpass", "highpass", "allpass", "lowshelf", "highshelf"):
+        lo, hi, default = freq_slider_bounds(nyquist, 20.0, nyquist / 4)
         freq_params["cutoff"] = st.sidebar.slider(
-            "Cutoff (Hz)", 20.0, float(nyquist - 100.0),
-            min(1000.0, nyquist / 4), step=10.0)
+            "Cutoff (Hz)", lo, hi, default, step=10.0)
     else:  # bandpass / bandstop
+        lo, hi, default = freq_slider_bounds(nyquist, 50.0, nyquist / 4)
         freq_params["center"] = st.sidebar.slider(
-            "Center frequency (Hz)", 50.0, float(nyquist - 100.0),
-            min(1000.0, nyquist / 4), step=10.0)
+            "Center frequency (Hz)", lo, hi, default, step=10.0)
         if family != "RBJ":
+            lo, hi, default = freq_slider_bounds(nyquist, 20.0, nyquist / 8)
             freq_params["width"] = st.sidebar.slider(
-                "Bandwidth (Hz)", 20.0, float(nyquist - 100.0),
-                min(500.0, nyquist / 8), step=10.0)
+                "Bandwidth (Hz)", lo, hi, default, step=10.0)
 
     # Family-specific extra parameters.
     extra: dict = {}
@@ -381,14 +435,17 @@ def main():
     sig_kind = st.sidebar.selectbox("Shape", ["sine", "chirp", "white_noise"])
     sig_length = st.sidebar.slider("Length (samples)", 128, 8192, 2048, step=128)
     if sig_kind == "sine":
-        sig_freq = st.sidebar.slider("Frequency (Hz)", 20.0, float(nyquist - 100.0),
-                                     min(440.0, nyquist / 10), step=10.0)
+        lo, hi, default = freq_slider_bounds(nyquist, 20.0, nyquist / 10)
+        sig_freq = st.sidebar.slider("Frequency (Hz)", lo, hi, default, step=10.0)
         signal = mpdsp.sine(length=sig_length, frequency=sig_freq,
                             sample_rate=sample_rate)
     elif sig_kind == "chirp":
-        signal = mpdsp.chirp(length=sig_length, f_start=20.0,
-                             f_end=float(nyquist - 100.0),
-                             sample_rate=sample_rate)
+        # f_start/f_end: use the same Nyquist margin as the sliders so the
+        # chirp doesn't drive the design up to the exact Nyquist edge.
+        _, hi, _ = freq_slider_bounds(nyquist, 1.0, nyquist / 2)
+        f_start = min(20.0, hi * 0.5)
+        signal = mpdsp.chirp(length=sig_length, f_start=f_start,
+                             f_end=hi, sample_rate=sample_rate)
     else:
         signal = mpdsp.white_noise(length=sig_length, amplitude=0.5, seed=1)
 
@@ -404,17 +461,24 @@ def main():
     else:
         tag = f"{family.lower().replace(' ', '')}_{topology}_n{order}"
 
+    # Each tab renders a matplotlib Figure, then pipes bytes out for the
+    # PNG download button, then calls `plt.close(fig)`. Without the close,
+    # matplotlib's pyplot registry retains every figure generated on every
+    # slider change, steadily leaking memory in long-lived sessions.
+
     with tab_freq:
         fig = plot_magnitude_phase(filt, sample_rate, selected_dtypes, signal)
         st.pyplot(fig)
         st.download_button("Download PNG", figure_to_png_bytes(fig),
                            f"{tag}_freq.png", "image/png")
+        plt.close(fig)
 
     with tab_pz:
         fig = plot_pole_zero(filt)
         st.pyplot(fig)
         st.download_button("Download PNG", figure_to_png_bytes(fig),
                            f"{tag}_polezero.png", "image/png")
+        plt.close(fig)
         if filt.num_stages() > 0:
             coefs = filt.coefficients()
             st.caption(f"{len(coefs)} biquad stage(s). "
@@ -439,10 +503,13 @@ def main():
                                f"{tag}_coefficients.csv", "text/csv")
 
     with tab_time:
-        fig = plot_impulse_step(filt, selected_dtypes)
+        fig, time_failures = plot_impulse_step(filt, selected_dtypes)
         st.pyplot(fig)
         st.download_button("Download PNG", figure_to_png_bytes(fig),
                            f"{tag}_time.png", "image/png")
+        plt.close(fig)
+        for msg in time_failures:
+            st.warning(f"Time-domain plot skipped {msg}", icon="⚠️")
 
     with tab_prec:
         if not selected_dtypes:
@@ -454,11 +521,14 @@ def main():
             st.download_button("Download comparison CSV",
                                df.to_csv(index=False).encode(),
                                f"{tag}_comparison.csv", "text/csv")
-            fig = plot_pole_displacement(filt, selected_dtypes)
+            fig, disp_failures = plot_pole_displacement(filt, selected_dtypes)
             st.pyplot(fig)
             st.download_button("Download displacement PNG",
                                figure_to_png_bytes(fig),
                                f"{tag}_displacement.png", "image/png")
+            plt.close(fig)
+            for msg in disp_failures:
+                st.warning(f"Pole displacement skipped {msg}", icon="⚠️")
 
     st.caption(
         "Free-function analysis primitives (`biquad_poles`, "
