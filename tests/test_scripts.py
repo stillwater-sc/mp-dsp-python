@@ -43,24 +43,89 @@ def csv_dir():
             f.write("Butterworth,float,0,0.866,0.234,0.866,0.234,0\n")
             f.write("Butterworth,float,1,0.866,-0.234,0.866,-0.234,0\n")
 
+        # impulse_response.csv — long-format per-sample rows
+        with open(os.path.join(tmpdir, "impulse_response.csv"), "w") as f:
+            f.write("filter_family,arith_type,sample_index,value,ref_value\n")
+            import math as _math
+            for atype, scale in (("double", 1.0), ("float", 0.999)):
+                for n in range(8):
+                    v = _math.exp(-n * 0.4) * _math.cos(n * 0.6) * scale
+                    f.write(f"Butterworth,{atype},{n},{v:.6f},"
+                            f"{_math.exp(-n*0.4)*_math.cos(n*0.6):.6f}\n")
+
         yield tmpdir
 
 
 def _run_script(script_name: str, csv_dir: str, output_dir: str) -> subprocess.CompletedProcess:
-    """Run a plotting script and return the result."""
+    """Run a plotting script and return the result.
+
+    The subprocess.run calls in this file all receive the active Python
+    interpreter and a script path resolved from `__file__` plus
+    tempdir arguments constructed locally — no user/network input
+    reaches the command line. Ruff's S603 fires on every
+    subprocess.run regardless of provenance, so tag these specific
+    call sites as intentional.
+    """
     script_path = Path(__file__).parent.parent / "scripts" / script_name
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
         [sys.executable, str(script_path), csv_dir, "--output", output_dir],
         capture_output=True, text=True, timeout=30)
 
 
 def test_plot_precision_generates_output(csv_dir):
+    """Legacy invocation: positional csv_dir + --output."""
     with tempfile.TemporaryDirectory() as outdir:
         result = _run_script("plot_precision.py", csv_dir, outdir)
         assert result.returncode == 0, f"Script failed: {result.stderr}"
+        # All five figures x two formats.
+        expected_stems = ["magnitude_response", "phase_response",
+                          "magnitude_error", "phase_error",
+                          "impulse_response"]
+        for stem in expected_stems:
+            for ext in ("png", "pdf"):
+                assert os.path.exists(os.path.join(outdir, f"{stem}.{ext}")), (
+                    f"Missing {stem}.{ext}")
+
+
+def test_plot_precision_new_cli_flags(csv_dir):
+    """Issue #12-spec'd invocation: --input-dir / --output-dir."""
+    script_path = Path(__file__).parent.parent / "scripts" / "plot_precision.py"
+    with tempfile.TemporaryDirectory() as outdir:
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
+            [sys.executable, str(script_path),
+             "--input-dir", csv_dir, "--output-dir", outdir],
+            capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
         assert os.path.exists(os.path.join(outdir, "magnitude_response.png"))
-        assert os.path.exists(os.path.join(outdir, "phase_response.png"))
-        assert os.path.exists(os.path.join(outdir, "magnitude_error.png"))
+        assert os.path.exists(os.path.join(outdir, "magnitude_response.pdf"))
+
+
+def test_plot_precision_skips_impulse_when_csv_missing(csv_dir):
+    """impulse_response.csv is documented as optional — script must still
+    emit the other four figures if it's absent."""
+    os.remove(os.path.join(csv_dir, "impulse_response.csv"))
+    with tempfile.TemporaryDirectory() as outdir:
+        result = _run_script("plot_precision.py", csv_dir, outdir)
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        # Four figures still present.
+        for stem in ("magnitude_response", "phase_response",
+                     "magnitude_error", "phase_error"):
+            assert os.path.exists(os.path.join(outdir, f"{stem}.png"))
+        # Impulse is absent.
+        assert not os.path.exists(os.path.join(outdir, "impulse_response.png"))
+
+
+def test_plot_precision_publication_flag(csv_dir):
+    """--publication should not error and should still produce outputs."""
+    script_path = Path(__file__).parent.parent / "scripts" / "plot_precision.py"
+    with tempfile.TemporaryDirectory() as outdir:
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
+            [sys.executable, str(script_path),
+             "--input-dir", csv_dir, "--output-dir", outdir,
+             "--publication"],
+            capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert os.path.exists(os.path.join(outdir, "magnitude_response.pdf"))
 
 
 def test_plot_heatmap_generates_output(csv_dir):
