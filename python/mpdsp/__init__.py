@@ -48,8 +48,14 @@ try:
         # Estimation
         KalmanFilter,
         LMSFilter, NLMSFilter, RLSFilter,
-        # Image (scaffold — full surface rolls out in follow-up PRs)
-        checkerboard, gaussian_blob, gradient_horizontal,
+        # Image — generators
+        checkerboard,
+        stripes_horizontal, stripes_vertical, grid,
+        gradient_horizontal, gradient_vertical, gradient_radial,
+        gaussian_blob, circle, rectangle, zone_plate,
+        uniform_noise_image, gaussian_noise_image, salt_and_pepper,
+        add_noise, threshold,
+        # Image — processing
         convolve2d,
         # Introspection
         available_dtypes,
