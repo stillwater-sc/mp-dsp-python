@@ -140,6 +140,9 @@ except ImportError:
 if HAS_CORE:
     from mpdsp.filters import compare_filters, plot_filter_comparison
 
+# Analysis helpers (pure Python; build only on stdlib + numpy + _core methods)
+from mpdsp.analysis import biquad_poles, is_stable, max_pole_radius
+
 # Estimation helpers (pure Python; plotting needs matplotlib)
 if HAS_CORE:
     from mpdsp.estimation import (
