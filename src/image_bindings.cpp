@@ -6,7 +6,11 @@
 //     template + hand-written ArithConfig switch (see convolve2d).
 //   - BorderMode string parsing at the Python boundary.
 //
-// Covered so far: all 17 generators, threshold, add_noise, convolve2d.
+// Covered so far: 14 generators (checkerboard, stripes_horizontal,
+// stripes_vertical, grid, gradient_horizontal/vertical/radial,
+// gaussian_blob, circle, rectangle, zone_plate, uniform_noise_image,
+// gaussian_noise_image, salt_and_pepper), plus threshold, add_noise,
+// and convolve2d.
 // Still to land: separable/blur/edge detection, morphology + elements,
 // multi-channel, I/O.
 
@@ -268,7 +272,7 @@ void bind_image(nb::module_& m) {
 			return mat_to_numpy(img);
 		},
 		nb::arg("rows"), nb::arg("cols"),
-		nb::arg("low") = 0.0, nb::arg("high") = 1.0, nb::arg("seed") = 0u,
+		nb::arg("low") = 0.0, nb::arg("high") = 1.0, nb::arg("seed") = 42u,
 		"Uniform-distribution noise in [low, high].");
 
 	m.def("gaussian_noise_image",
@@ -284,7 +288,7 @@ void bind_image(nb::module_& m) {
 			return mat_to_numpy(img);
 		},
 		nb::arg("rows"), nb::arg("cols"),
-		nb::arg("mean") = 0.0, nb::arg("stddev") = 1.0, nb::arg("seed") = 0u,
+		nb::arg("mean") = 0.0, nb::arg("stddev") = 1.0, nb::arg("seed") = 42u,
 		"Gaussian-distribution noise with the given mean and stddev.");
 
 	m.def("salt_and_pepper",
@@ -301,7 +305,7 @@ void bind_image(nb::module_& m) {
 		},
 		nb::arg("rows"), nb::arg("cols"),
 		nb::arg("density") = 0.05,
-		nb::arg("low") = 0.0, nb::arg("high") = 1.0, nb::arg("seed") = 0u,
+		nb::arg("low") = 0.0, nb::arg("high") = 1.0, nb::arg("seed") = 42u,
 		"Salt-and-pepper noise: `density` fraction of pixels randomly "
 		"flipped to `low` (pepper) or `high` (salt); the rest stay at "
 		"the midpoint (low+high)/2.");
@@ -336,8 +340,8 @@ void bind_image(nb::module_& m) {
 		},
 		nb::arg("image"), nb::arg("thresh"),
 		nb::arg("low") = 0.0, nb::arg("high") = 1.0,
-		"Binary threshold: pixels above `thresh` become `high`, pixels "
-		"at or below become `low`.");
+		"Binary threshold: pixels greater than or equal to `thresh` "
+		"become `high`; pixels strictly below become `low`.");
 
 	// =======================================================================
 	// Processing — dtype-dispatched. Convolve2d is the scaffold; all other

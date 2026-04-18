@@ -190,11 +190,10 @@ class TestRectangle:
 
 class TestZonePlate:
     def test_shape_and_range(self):
+        """Upstream normalizes the cosine output to [0, 1]."""
         img = mpdsp.zone_plate(32, 32)
         assert img.shape == (32, 32)
-        # Zone plate is cosine-based, so it lives in [-1, 1] but the upstream
-        # normalizes to [0, 1].
-        assert img.min() >= -1.0
+        assert img.min() >= 0.0
         assert img.max() <= 1.0
 
     def test_nontrivial_output(self):
@@ -286,6 +285,20 @@ class TestThreshold:
         img = np.array([[0.1, 0.4], [0.6, 0.9]])
         out = mpdsp.threshold(img, thresh=0.5)
         np.testing.assert_array_equal(out, [[0.0, 0.0], [1.0, 1.0]])
+
+    def test_boundary_pixel_goes_high(self):
+        """Upstream contract: pixels >= thresh map to `high`; pixels
+        strictly below map to `low`. Pin the boundary behavior so a
+        future upstream shift from >= to > would fail this test."""
+        img = np.array([[0.5]])
+        out = mpdsp.threshold(img, thresh=0.5, low=-7.0, high=7.0)
+        assert out[0, 0] == 7.0
+
+    def test_just_below_threshold_goes_low(self):
+        """Counterpart to test_boundary_pixel_goes_high."""
+        img = np.array([[0.5 - 1e-12]])
+        out = mpdsp.threshold(img, thresh=0.5, low=-7.0, high=7.0)
+        assert out[0, 0] == -7.0
 
     def test_empty_image_raises(self):
         with pytest.raises(ValueError):
