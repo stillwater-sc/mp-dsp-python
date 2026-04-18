@@ -285,58 +285,6 @@ print(f"  Condition number: {filt.condition_number():.2e}")
 print(f"  Worst sensitivity: {filt.worst_case_sensitivity():.4f}")
 ```
 
-## Phased Implementation
-
-### Phase 1: CSV Visualization Scripts
-**No C++ build required.** Python scripts consuming the three CSV files
-produced by `iir_precision_sweep`:
-- `scripts/plot_precision.py` — magnitude/phase/impulse response overlays
-- `scripts/plot_heatmap.py` — filter family × arithmetic type SQNR heatmap
-- `scripts/plot_pole_zero.py` — poles on unit circle with displacement
-
-### Phase 2: Signals, Windows, Quantization
-nanobind module for the foundation layer:
-- Signal generators → NumPy arrays
-- Window functions → NumPy arrays
-- ADC/DAC quantization with type dispatch
-- SQNR measurement
-- **Notebook:** `01_signals_and_spectra.ipynb`, `04_quantization.ipynb`
-
-### Phase 3: Spectral Analysis
-FFT, PSD, spectrogram bindings:
-- `fft()` / `ifft()` with type dispatch
-- `psd()` and `spectrogram()` returning NumPy arrays
-- Z-transform and Laplace evaluation
-- **Notebook:** `01_signals_and_spectra.ipynb` (extended)
-
-### Phase 4: IIR/FIR Filters
-Filter design and mixed-precision processing:
-- All 7 IIR families with LP/HP/BP/BS
-- FIR design (window method)
-- `process()` with type dispatch across all configs
-- Frequency response, pole-zero access, stability analysis
-- **Notebooks:** `02_iir_precision.ipynb`, `03_fir_and_windows.ipynb`
-
-### Phase 5: Signal Conditioning + Estimation
-Envelope followers, compressor, AGC, Kalman, LMS, RLS:
-- Stateful objects with `process()` / `predict()` / `update()`
-- State matrices as NumPy arrays
-- **Notebooks:** `05_conditioning.ipynb`, `06_estimation.ipynb`
-
-### Phase 6: Image Processing
-2D operations and image I/O:
-- Image generators → NumPy 2D arrays
-- Convolution, blur, morphology, edge detection
-- PGM/PPM/BMP read/write
-- **Notebooks:** `07_image_processing.ipynb`, `08_sensor_noise.ipynb`
-
-### Phase 7: Analysis + Dashboard
-Numerical analysis tools and interactive exploration:
-- Stability, sensitivity, condition number
-- `project_onto()` / `embed_into()` with quality measurement
-- Streamlit/Panel web dashboard for parameter sweeping
-- **Notebooks:** `09_numerical_analysis.ipynb`
-
 ## Relationship to mixed-precision-dsp
 
 This repository is the **Python integration layer** for the full
@@ -344,34 +292,6 @@ This repository is the **Python integration layer** for the full
 C++ library. The C++ library implements 12 DSP modules with
 mixed-precision arithmetic; this repo makes all of them accessible
 to Python researchers.
-
-### Cross-Repository Issues
-
-**C++ library (mixed-precision-dsp):**
-
-| Issue | Status | Description |
-|-------|--------|-------------|
-| [dsp#22](https://github.com/stillwater-sc/mixed-precision-dsp/issues/22) | Epic | Mixed-precision IIR comparison (parent) |
-| [dsp#23](https://github.com/stillwater-sc/mixed-precision-dsp/issues/23) | Merged | Precision sweep app (console + CSV) |
-| [dsp#24](https://github.com/stillwater-sc/mixed-precision-dsp/issues/24) | Merged | CSV export (frequency response, poles, metrics) |
-| [dsp#33](https://github.com/stillwater-sc/mixed-precision-dsp/issues/33) | Open | FIR polyphase + overlap-add/save |
-| [dsp#38](https://github.com/stillwater-sc/mixed-precision-dsp/issues/38) | Open | Extended Kalman Filter (EKF) |
-| [dsp#39](https://github.com/stillwater-sc/mixed-precision-dsp/issues/39) | Open | Unscented Kalman Filter (UKF) |
-| [dsp#41](https://github.com/stillwater-sc/mixed-precision-dsp/issues/41) | Open | Sensor noise image precision demo |
-| [dsp#46](https://github.com/stillwater-sc/mixed-precision-dsp/issues/46) | Open | Python bindings architecture (this repo) |
-| [dsp#47](https://github.com/stillwater-sc/mixed-precision-dsp/issues/47) | Merged | project_onto / embed_into operators |
-| [dsp#50](https://github.com/stillwater-sc/mixed-precision-dsp/issues/50) | Open | Elliptic filter NaN bug |
-| [dsp#51](https://github.com/stillwater-sc/mixed-precision-dsp/issues/51) | Open | fixpnt template deduction bug |
-
-**Python visualization (tracked in dsp repo, implemented here):**
-
-| Issue | Description | Phase |
-|-------|-------------|-------|
-| [dsp#25](https://github.com/stillwater-sc/mixed-precision-dsp/issues/25) | Magnitude, phase, impulse plots from CSV | 1 |
-| [dsp#26](https://github.com/stillwater-sc/mixed-precision-dsp/issues/26) | Heatmap and SQNR bar chart | 1 |
-| [dsp#27](https://github.com/stillwater-sc/mixed-precision-dsp/issues/27) | Pole-zero displacement visualization | 1 |
-| [dsp#28](https://github.com/stillwater-sc/mixed-precision-dsp/issues/28) | Jupyter notebook for interactive exploration | 4 |
-| [dsp#29](https://github.com/stillwater-sc/mixed-precision-dsp/issues/29) | Web dashboard for parameter sweeping | 7 |
 
 ### Design Documents
 
