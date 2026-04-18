@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
-project(mp-dsp-python LANGUAGES CXX)
+
+# Version tracks the mixed-precision-dsp C++ library in lockstep (see
+# docs convention matching mtl5 / mtl5-python). Python-only patches
+# ship as PEP 440 post-releases (e.g. 0.4.1.post1) without bumping
+# this value. scikit-build-core reads the version from this line via
+# the regex provider configured in pyproject.toml — do not hardcode
+# it anywhere else.
+project(mp-dsp-python
+	VERSION 0.4.1
+	LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

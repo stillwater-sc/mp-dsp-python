@@ -3,9 +3,28 @@ mpdsp — Python integration layer for the mixed-precision DSP library.
 
 Provides nanobind bindings to sw::dsp (C++20), matplotlib visualizations,
 and Jupyter notebooks for mixed-precision DSP research.
+
+Versioning: __version__ is sourced from the installed wheel metadata,
+which in turn is read from CMakeLists.txt at build time. We track the
+mixed-precision-dsp C++ library version in lockstep. __dsp_version__
+(available once the C++ module loads) reports the version of the
+upstream library the wheel was compiled against — useful for runtime
+verification in research setups where the two can drift during
+development.
 """
 
-__version__ = "0.1.0"
+# Read the installed-package version from wheel metadata so there's
+# exactly one source of truth. Falls back to "0+unknown" when run from
+# an unbuilt source checkout (no wheel metadata present).
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    try:
+        __version__ = _pkg_version("mpdsp")
+    except PackageNotFoundError:
+        __version__ = "0+unknown"
+    del _pkg_version, PackageNotFoundError
+except ImportError:  # pragma: no cover  -- pre-3.8 fallback not used
+    __version__ = "0+unknown"
 
 # CSV I/O (pure Python, always available)
 from mpdsp.io import load_sweep
@@ -75,9 +94,18 @@ try:
         # Introspection
         available_dtypes,
     )
+    # The underlying mixed-precision-dsp C++ library version the wheel
+    # was built against, sourced from sw::dsp::version.hpp. Matches
+    # __version__ when the lockstep convention holds; divergence means
+    # someone is running a mismatched source checkout, which is what
+    # runtime introspection is for.
+    from mpdsp._core import dsp_version as __dsp_version__
+    from mpdsp._core import dsp_version_info as __dsp_version_info__
     HAS_CORE = True
 except ImportError:
     HAS_CORE = False
+    __dsp_version__ = None
+    __dsp_version_info__ = None
 
 # Plotting (requires matplotlib)
 try:
