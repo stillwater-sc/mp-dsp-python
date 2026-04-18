@@ -395,3 +395,233 @@ class TestConvolve2dDtypeDispatch:
         alt = mpdsp.convolve2d(img, kernel, dtype="half")
         err = np.max(np.abs(ref - alt)) / (np.max(np.abs(ref)) + 1e-12)
         assert err < 0.02
+
+
+# ---------------------------------------------------------------------------
+# Separable filter
+# ---------------------------------------------------------------------------
+
+
+class TestSeparableFilter:
+    def test_identity_kernels_round_trip(self):
+        img = mpdsp.checkerboard(8, 8, block_size=2)
+        one = np.array([1.0])
+        out = mpdsp.separable_filter(img, one, one)
+        np.testing.assert_array_equal(out, img)
+
+    def test_matches_convolve2d_for_outer_product(self):
+        """Separable with row/col kernels should match convolve2d with the
+        outer-product kernel to within floating-point tolerance."""
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        r = np.array([0.25, 0.5, 0.25])
+        c = np.array([1.0, 2.0, 1.0])
+        sep = mpdsp.separable_filter(img, r, c)
+        ref = mpdsp.convolve2d(img, np.outer(c, r))
+        np.testing.assert_allclose(sep, ref, atol=1e-12)
+
+    def test_empty_image_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.separable_filter(np.zeros((0, 5)),
+                                    np.array([1.0]), np.array([1.0]))
+
+    def test_empty_kernel_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.separable_filter(np.ones((5, 5)),
+                                    np.array([]), np.array([1.0]))
+
+
+# ---------------------------------------------------------------------------
+# Gaussian + box blur
+# ---------------------------------------------------------------------------
+
+
+class TestGaussianBlur:
+    def test_shape_preserved(self):
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        out = mpdsp.gaussian_blur(img, sigma=1.5)
+        assert out.shape == img.shape
+
+    def test_blurring_reduces_high_frequency(self):
+        """A checkerboard has max high-frequency content; blurring should
+        reduce the peak-to-peak range of interior pixels."""
+        img = mpdsp.checkerboard(16, 16, block_size=1)
+        blurred = mpdsp.gaussian_blur(img, sigma=1.0)
+        interior = blurred[2:-2, 2:-2]
+        assert interior.max() < 1.0
+        assert interior.min() > 0.0
+
+    def test_explicit_radius(self):
+        img = mpdsp.gaussian_blob(24, 24, sigma=3.0)
+        out = mpdsp.gaussian_blur(img, sigma=1.0, radius=5)
+        assert out.shape == img.shape
+
+    def test_non_positive_sigma_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.gaussian_blur(np.ones((5, 5)), sigma=0.0)
+
+    def test_empty_image_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.gaussian_blur(np.zeros((0, 5)), sigma=1.0)
+
+
+class TestBoxBlur:
+    def test_uniform_input_unchanged(self):
+        """Box blur of a uniform image with reflect_101 border is the same
+        uniform image (average of equal values is the same value)."""
+        img = np.full((10, 10), 0.42)
+        out = mpdsp.box_blur(img, size=3)
+        np.testing.assert_allclose(out, 0.42)
+
+    def test_reduces_variance_on_noise(self):
+        rng = np.random.default_rng(0)
+        img = rng.standard_normal((32, 32))
+        out = mpdsp.box_blur(img, size=5)
+        assert out.std() < img.std()
+
+    def test_zero_size_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.box_blur(np.ones((5, 5)), size=0)
+
+
+# ---------------------------------------------------------------------------
+# Edge detection — Sobel / Prewitt / gradient_magnitude / Canny
+# ---------------------------------------------------------------------------
+
+
+class TestSobel:
+    def _vertical_edge(self):
+        """Half-white / half-black image with a vertical edge at x=16."""
+        return mpdsp.rectangle(32, 32, y=0, x=16, h=32, w=16)
+
+    def test_sobel_x_detects_vertical_edge(self):
+        img = self._vertical_edge()
+        sx = mpdsp.sobel_x(img)
+        # sobel_x responds to horizontal derivative; a vertical edge
+        # at column 16 produces non-zero values along that column.
+        assert np.max(np.abs(sx[:, 15:18])) > 0.5
+        # Interior of the uniform regions should be ~0.
+        assert np.max(np.abs(sx[10:20, 2:8])) < 1e-9
+        assert np.max(np.abs(sx[10:20, 24:30])) < 1e-9
+
+    def test_sobel_y_zero_on_vertical_edge(self):
+        """A purely vertical edge has no vertical derivative — sobel_y → 0."""
+        img = self._vertical_edge()
+        sy = mpdsp.sobel_y(img)
+        assert np.max(np.abs(sy)) < 1e-9
+
+    def test_sobel_y_detects_horizontal_edge(self):
+        img = mpdsp.rectangle(32, 32, y=16, x=0, h=16, w=32)
+        sy = mpdsp.sobel_y(img)
+        assert np.max(np.abs(sy[15:18, :])) > 0.5
+
+    def test_empty_image_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.sobel_x(np.zeros((0, 5)))
+
+
+class TestPrewitt:
+    def test_prewitt_x_detects_vertical_edge(self):
+        img = mpdsp.rectangle(32, 32, y=0, x=16, h=32, w=16)
+        px = mpdsp.prewitt_x(img)
+        assert np.max(np.abs(px[:, 15:18])) > 0.5
+
+    def test_prewitt_y_zero_on_vertical_edge(self):
+        img = mpdsp.rectangle(32, 32, y=0, x=16, h=32, w=16)
+        py = mpdsp.prewitt_y(img)
+        assert np.max(np.abs(py)) < 1e-9
+
+
+class TestGradientMagnitude:
+    def test_zeros_input_zero_output(self):
+        z = np.zeros((8, 8))
+        gm = mpdsp.gradient_magnitude(z, z)
+        np.testing.assert_array_equal(gm, 0.0)
+
+    def test_sqrt_sum_of_squares(self):
+        gx = np.array([[3.0, 0.0], [0.0, 4.0]])
+        gy = np.array([[4.0, 0.0], [0.0, 3.0]])
+        gm = mpdsp.gradient_magnitude(gx, gy)
+        # sqrt(3^2 + 4^2) = 5 on both diagonal elements.
+        assert gm[0, 0] == pytest.approx(5.0)
+        assert gm[1, 1] == pytest.approx(5.0)
+        assert gm[0, 1] == 0.0
+
+    def test_shape_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.gradient_magnitude(np.zeros((4, 4)), np.zeros((4, 5)))
+
+
+class TestCanny:
+    def test_binary_output(self):
+        img = mpdsp.rectangle(32, 32, y=0, x=16, h=32, w=16)
+        edges = mpdsp.canny(img, low_threshold=0.1, high_threshold=0.3)
+        assert set(np.unique(edges).tolist()) == {0.0, 1.0}
+
+    def test_edges_appear_near_true_edge(self):
+        """For a half-image, Canny should place edge pixels near x=16."""
+        img = mpdsp.rectangle(32, 32, y=0, x=16, h=32, w=16)
+        edges = mpdsp.canny(img, low_threshold=0.1, high_threshold=0.3)
+        edge_cols = np.where(edges > 0.5)[1]
+        assert len(edge_cols) > 0
+        # Edges cluster near column 16.
+        assert abs(np.median(edge_cols) - 16) <= 2
+
+    def test_no_edges_on_uniform_image(self):
+        img = np.full((16, 16), 0.5)
+        edges = mpdsp.canny(img, low_threshold=0.1, high_threshold=0.3)
+        assert edges.sum() == 0.0
+
+    def test_invalid_thresholds_raise(self):
+        img = np.ones((8, 8))
+        # low > high
+        with pytest.raises(ValueError):
+            mpdsp.canny(img, low_threshold=0.5, high_threshold=0.1)
+        # negative low
+        with pytest.raises(ValueError):
+            mpdsp.canny(img, low_threshold=-0.1, high_threshold=0.3)
+
+    def test_non_positive_sigma_raises(self):
+        img = np.ones((8, 8))
+        with pytest.raises(ValueError):
+            mpdsp.canny(img, low_threshold=0.1, high_threshold=0.3, sigma=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Processor dtype dispatch — one parametrized sanity test covers all 9
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [
+    "reference", "gpu_baseline", "ml_hw", "cf24", "half",
+    "posit_full", "tiny_posit",
+])
+class TestProcessorDtypeDispatch:
+    def test_gaussian_blur_runs(self, dtype):
+        img = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        out = mpdsp.gaussian_blur(img, sigma=1.0, dtype=dtype)
+        assert out.shape == img.shape
+        assert np.all(np.isfinite(out))
+
+    def test_sobel_x_runs(self, dtype):
+        img = mpdsp.rectangle(16, 16, y=0, x=8, h=16, w=8)
+        out = mpdsp.sobel_x(img, dtype=dtype)
+        assert out.shape == img.shape
+
+    def test_gradient_magnitude_runs(self, dtype):
+        gx = mpdsp.gaussian_blob(8, 8, sigma=2.0)
+        gy = mpdsp.gaussian_blob(8, 8, sigma=2.0)
+        out = mpdsp.gradient_magnitude(gx, gy, dtype=dtype)
+        assert out.shape == gx.shape
+
+
+def test_canny_posit_differs_from_reference():
+    """Acceptance criterion from issue #7: canny(..., dtype='tiny_posit')
+    produces measurably different edges than reference."""
+    rng = np.random.default_rng(3)
+    img = mpdsp.gaussian_blob(32, 32, sigma=4.0) + 0.02 * rng.standard_normal((32, 32))
+    ref   = mpdsp.canny(img, low_threshold=0.05, high_threshold=0.15, dtype="reference")
+    posit = mpdsp.canny(img, low_threshold=0.05, high_threshold=0.15, dtype="tiny_posit")
+    # Each is a binary edge map; differences are pixels where one has an
+    # edge and the other doesn't.
+    different_pixels = int((ref != posit).sum())
+    assert different_pixels > 0
