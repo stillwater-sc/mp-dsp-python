@@ -32,6 +32,19 @@ set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
 set(MPDSP_MTL5_PIN      "v5.2.0" CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
 
+# Shallow-fetch is a big speedup for tags and branches, but git's shallow
+# protocol doesn't support fetching an arbitrary commit SHA — it needs a
+# refname. Detect SHA-looking pins (7–40 hex chars, no non-hex characters)
+# and turn off GIT_SHALLOW for those cases only.
+foreach(_pin IN ITEMS DSP UNIVERSAL MTL5)
+	if(MPDSP_${_pin}_PIN MATCHES "^[a-fA-F0-9]+$" AND
+	   NOT MPDSP_${_pin}_PIN MATCHES "^[a-fA-F0-9]{1,6}$")
+		set(_MPDSP_${_pin}_SHALLOW FALSE)
+	else()
+		set(_MPDSP_${_pin}_SHALLOW TRUE)
+	endif()
+endforeach()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -99,7 +112,7 @@ if(NOT _DSP_FOUND)
   FetchContent_Declare(dsp
     GIT_REPOSITORY https://github.com/stillwater-sc/mixed-precision-dsp.git
     GIT_TAG ${MPDSP_DSP_PIN}
-    GIT_SHALLOW TRUE
+    GIT_SHALLOW ${_MPDSP_DSP_SHALLOW}
   )
   FetchContent_Populate(dsp)
   target_include_directories(sw_dsp INTERFACE "${dsp_SOURCE_DIR}/include")
@@ -130,7 +143,7 @@ if(NOT _UNI_FOUND)
   FetchContent_Declare(universal
     GIT_REPOSITORY https://github.com/stillwater-sc/universal.git
     GIT_TAG ${MPDSP_UNIVERSAL_PIN}
-    GIT_SHALLOW TRUE
+    GIT_SHALLOW ${_MPDSP_UNIVERSAL_SHALLOW}
   )
   FetchContent_Populate(universal)
   target_include_directories(sw_dsp INTERFACE
@@ -164,7 +177,7 @@ else()
     FetchContent_Declare(mtl5
       GIT_REPOSITORY https://github.com/stillwater-sc/mtl5.git
       GIT_TAG ${MPDSP_MTL5_PIN}
-      GIT_SHALLOW TRUE
+      GIT_SHALLOW ${_MPDSP_MTL5_SHALLOW}
     )
     FetchContent_Populate(mtl5)
     target_include_directories(sw_dsp INTERFACE "${mtl5_SOURCE_DIR}/include")
