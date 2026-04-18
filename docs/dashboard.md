@@ -196,6 +196,42 @@ The payoff tab, and the reason this dashboard exists rather than
   coefficients drift the pole locations from reference. Computed via
   `IIRFilter.pole_displacement(dtype)`.
 
+### Tab 5: Compare A vs B
+
+Dedicated two-type side-by-side, driven by two dtype dropdowns in the
+sidebar ("Type A" and "Type B"). Three panels stacked vertically:
+
+- **Magnitude response** — reference in grey (context), A in blue
+  solid, B in red dashed.
+- **Phase response** — same styling.
+- **Impulse response (samples 0–255)** — this is where the two
+  dtypes actually diverge visibly, since `filt.process` runs through
+  the quantized state/sample types.
+
+A four-metric strip below the plot reports:
+
+| Metric | Meaning |
+|--------|---------|
+| `SQNR A vs B` | How close A and B are to each other |
+| `max |A − B|` | Worst per-sample disagreement |
+| `SQNR A vs ref` | How close A is to the reference (double) |
+| `SQNR B vs ref` | How close B is to the reference |
+
+Useful for deciding which of two candidate dtypes to deploy — the
+A-vs-B SQNR tells you "are these interchangeable?" and the two
+A-vs-ref / B-vs-ref numbers tell you "which one is closer to truth?"
+
+### Tab 6: Summary
+
+A single-row SQNR heatmap across all 7 arithmetic configurations
+plus the **precision-cost frontier** (SQNR vs bits/sample scatter
+with dtype labels). Both are computed live from the current design
+— not from a pre-collected CSV — so the visualizations move as you
+slide family / order / cutoff in the sidebar. The frontier is the
+go-to visualization for deciding "at this bit budget, which dtype
+gives the highest SQNR?". Pareto-optimal dtypes sit on the upper
+envelope of the scatter.
+
 ---
 
 ## Interpreting the mixed-precision comparison
