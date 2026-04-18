@@ -211,5 +211,9 @@ if(MSVC)
   target_compile_options(_core PRIVATE /std:c++20)
 endif()
 
-# Install the module into the Python package
-install(TARGETS _core LIBRARY DESTINATION mpdsp)
+# Install the module into the Python package.
+# scikit-build-core's `wheel.install-dir = "mpdsp"` already prefixes all CMake
+# install paths with `mpdsp/`, so DESTINATION must be `.` — using `mpdsp` here
+# double-nests the extension to `mpdsp/mpdsp/_core.so` and mpdsp.__init__.py's
+# `from mpdsp._core import ...` silently falls through to HAS_CORE=False.
+install(TARGETS _core LIBRARY DESTINATION .)
