@@ -50,6 +50,10 @@ using np_f64_ro    = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_con
 using np_f64_2d    = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
 using np_f64_2d_ro = nb::ndarray<nb::numpy, const double, nb::ndim<2>, nb::c_contig>;
 
+// Boolean 2D (used for morphology structuring elements).
+using np_bool_2d    = nb::ndarray<nb::numpy, bool, nb::ndim<2>>;
+using np_bool_2d_ro = nb::ndarray<nb::numpy, const bool, nb::ndim<2>, nb::c_contig>;
+
 // ---------------------------------------------------------------------------
 // Owning output-buffer builders. Ownership is transferred to the nb::capsule
 // only after the capsule constructor succeeds, so a throw on the capsule
@@ -66,6 +70,24 @@ inline np_f64 make_f64_array(std::size_t n, double*& out_ptr) {
 	out_ptr = data;
 	std::size_t shape[1] = { n };
 	return np_f64(data, 1, shape, owner);
+}
+
+inline np_bool_2d make_bool_2d_array(std::size_t rows, std::size_t cols,
+                                     bool*& out_ptr) {
+	if (cols != 0 && rows > std::numeric_limits<std::size_t>::max() / cols) {
+		throw std::overflow_error(
+			"make_bool_2d_array: rows * cols overflows size_t");
+	}
+	std::size_t total = rows * cols;
+	auto buf = std::unique_ptr<bool[]>(new bool[total]);
+	bool* data = buf.get();
+	nb::capsule owner(data, [](void* p) noexcept {
+		delete[] static_cast<bool*>(p);
+	});
+	buf.release();
+	out_ptr = data;
+	std::size_t shape[2] = { rows, cols };
+	return np_bool_2d(data, 2, shape, owner);
 }
 
 inline np_f64_2d make_f64_2d_array(std::size_t rows, std::size_t cols,
@@ -171,6 +193,35 @@ inline mtl::mat::dense2D<T> numpy_to_mat_fresh(np_f64_2d_ro src) {
 	for (std::size_t r = 0; r < rows; ++r) {
 		for (std::size_t c = 0; c < cols; ++c) {
 			dst(r, c) = static_cast<T>(data[r * cols + c]);
+		}
+	}
+	return dst;
+}
+
+// Boolean-matrix marshalling. dense2D<bool> -> NumPy bool array (copy).
+inline np_bool_2d bool_mat_to_numpy(const mtl::mat::dense2D<bool>& m) {
+	std::size_t rows = m.num_rows();
+	std::size_t cols = m.num_cols();
+	bool* out_ptr = nullptr;
+	auto arr = make_bool_2d_array(rows, cols, out_ptr);
+	for (std::size_t r = 0; r < rows; ++r) {
+		for (std::size_t c = 0; c < cols; ++c) {
+			out_ptr[r * cols + c] = m(r, c);
+		}
+	}
+	return arr;
+}
+
+// NumPy bool array -> freshly-allocated dense2D<bool>. Used by morphology
+// bindings that take a structuring element.
+inline mtl::mat::dense2D<bool> numpy_to_bool_mat_fresh(np_bool_2d_ro src) {
+	std::size_t rows = src.shape(0);
+	std::size_t cols = src.shape(1);
+	mtl::mat::dense2D<bool> dst(rows, cols);
+	const bool* data = src.data();
+	for (std::size_t r = 0; r < rows; ++r) {
+		for (std::size_t c = 0; c < cols; ++c) {
+			dst(r, c) = data[r * cols + c];
 		}
 	}
 	return dst;

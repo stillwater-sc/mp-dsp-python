@@ -625,3 +625,258 @@ def test_canny_posit_differs_from_reference():
     # edge and the other doesn't.
     different_pixels = int((ref != posit).sum())
     assert different_pixels > 0
+
+
+# ---------------------------------------------------------------------------
+# Morphology — structuring element constructors
+# ---------------------------------------------------------------------------
+
+
+class TestElementConstructors:
+    def test_rect_element_shape_and_dtype(self):
+        elem = mpdsp.make_rect_element(3, 5)
+        assert elem.shape == (3, 5)
+        assert elem.dtype == np.bool_
+
+    def test_rect_element_all_true(self):
+        elem = mpdsp.make_rect_element(4, 4)
+        assert elem.all()
+
+    def test_cross_element_shape(self):
+        elem = mpdsp.make_cross_element(5)
+        assert elem.shape == (5, 5)
+        assert elem.dtype == np.bool_
+
+    def test_cross_element_center_row_col_true(self):
+        elem = mpdsp.make_cross_element(5)
+        # Center row (row 2) and center column (col 2) are all True.
+        assert elem[2, :].all()
+        assert elem[:, 2].all()
+        # Off-cross corners are False.
+        assert not elem[0, 0]
+        assert not elem[0, 4]
+        assert not elem[4, 0]
+        assert not elem[4, 4]
+
+    def test_ellipse_element_shape(self):
+        elem = mpdsp.make_ellipse_element(5)
+        assert elem.shape == (5, 5)
+        assert elem.dtype == np.bool_
+
+    def test_ellipse_element_center_true(self):
+        elem = mpdsp.make_ellipse_element(7)
+        # Center pixel must be inside the ellipse.
+        assert elem[3, 3]
+
+    def test_ellipse_element_corners_false(self):
+        elem = mpdsp.make_ellipse_element(7)
+        assert not elem[0, 0]
+        assert not elem[0, 6]
+        assert not elem[6, 0]
+        assert not elem[6, 6]
+
+    @pytest.mark.parametrize("ctor,args", [
+        ("make_rect_element", (0, 3)),
+        ("make_rect_element", (3, 0)),
+        ("make_cross_element", (0,)),
+        ("make_ellipse_element", (0,)),
+    ])
+    def test_zero_dims_rejected(self, ctor, args):
+        with pytest.raises(ValueError):
+            getattr(mpdsp, ctor)(*args)
+
+
+# ---------------------------------------------------------------------------
+# Morphology — dilate / erode / open / close / gradient / tophat / blackhat
+# ---------------------------------------------------------------------------
+
+
+class TestDilateErode:
+    def test_dilate_grows_foreground(self):
+        """Dilation expands bright regions under a rect element."""
+        img = mpdsp.circle(21, 21, radius=3)
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.dilate(img, elem)
+        assert (out > 0.5).sum() > (img > 0.5).sum()
+
+    def test_erode_shrinks_foreground(self):
+        """Erosion shrinks bright regions."""
+        img = mpdsp.circle(21, 21, radius=5)
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.erode(img, elem)
+        assert (out > 0.5).sum() < (img > 0.5).sum()
+
+    def test_dilate_identity_element_unchanged(self):
+        """A 1x1 element (single true pixel) is the identity for dilation."""
+        img = mpdsp.gaussian_blob(9, 9, sigma=2.0)
+        elem = mpdsp.make_rect_element(1, 1)
+        out = mpdsp.dilate(img, elem)
+        np.testing.assert_array_equal(out, img)
+
+    def test_erode_identity_element_unchanged(self):
+        img = mpdsp.gaussian_blob(9, 9, sigma=2.0)
+        elem = mpdsp.make_rect_element(1, 1)
+        out = mpdsp.erode(img, elem)
+        np.testing.assert_array_equal(out, img)
+
+    def test_empty_image_raises(self):
+        elem = mpdsp.make_rect_element(3, 3)
+        with pytest.raises(ValueError):
+            mpdsp.dilate(np.zeros((0, 5)), elem)
+
+    def test_empty_element_raises(self):
+        img = mpdsp.circle(11, 11, radius=3)
+        with pytest.raises(ValueError):
+            mpdsp.dilate(img, np.zeros((0, 3), dtype=bool))
+
+
+class TestMorphologicalOpenClose:
+    def test_open_removes_small_peaks(self):
+        """Opening is erode-then-dilate; it removes isolated salt peaks."""
+        img = np.zeros((15, 15))
+        img[7, 7] = 1.0  # isolated peak
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.morphological_open(img, elem)
+        assert out[7, 7] == 0.0
+
+    def test_close_fills_small_holes(self):
+        """Closing is dilate-then-erode; it fills isolated pepper holes."""
+        img = np.ones((15, 15))
+        img[7, 7] = 0.0  # isolated hole
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.morphological_close(img, elem)
+        assert out[7, 7] == 1.0
+
+    def test_open_then_close_roughly_idempotent(self):
+        """Opening followed by closing should largely preserve a smooth
+        shape like a circle (aside from the edge-pixel effects)."""
+        img = mpdsp.circle(31, 31, radius=8)
+        elem = mpdsp.make_rect_element(3, 3)
+        oc = mpdsp.morphological_close(mpdsp.morphological_open(img, elem), elem)
+        # Majority of pixels unchanged.
+        diff = np.abs(oc - img)
+        assert (diff < 1e-9).mean() > 0.9
+
+
+class TestMorphologicalGradientTophatBlackhat:
+    def test_gradient_highlights_edges(self):
+        """Morphological gradient = dilate - erode; it's positive only at
+        edges of foreground regions."""
+        img = mpdsp.circle(21, 21, radius=5)
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.morphological_gradient(img, elem)
+        # Interior of the circle (far from edge): should be ~0.
+        assert out[10, 10] < 1e-9
+        # On the circle boundary (radius=5 from center): should be > 0.
+        assert out[10, 5] > 0.5 or out[5, 10] > 0.5
+
+    def test_tophat_extracts_small_bright(self):
+        """White tophat = image - opening; extracts small bright features
+        that opening removes."""
+        base = np.zeros((15, 15))
+        base[7, 7] = 1.0
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.tophat(base, elem)
+        # The isolated peak survives tophat (opening removes it, so
+        # image - opening preserves it).
+        assert out[7, 7] == pytest.approx(1.0)
+
+    def test_blackhat_extracts_small_dark(self):
+        """Black tophat = closing - image; extracts small dark features
+        that closing fills."""
+        base = np.ones((15, 15))
+        base[7, 7] = 0.0
+        elem = mpdsp.make_rect_element(3, 3)
+        out = mpdsp.blackhat(base, elem)
+        # The isolated hole becomes 1 in blackhat (closing fills it).
+        assert out[7, 7] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Morphology — dtype dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [
+    "reference", "gpu_baseline", "ml_hw", "cf24", "half",
+    "posit_full", "tiny_posit",
+])
+def test_dilate_runs_under_each_dtype(dtype):
+    img = mpdsp.circle(11, 11, radius=3)
+    elem = mpdsp.make_rect_element(3, 3)
+    out = mpdsp.dilate(img, elem, dtype=dtype)
+    assert out.shape == img.shape
+    assert np.all(np.isfinite(out))
+
+
+# ---------------------------------------------------------------------------
+# Multi-channel — rgb_to_gray + apply_per_channel
+# ---------------------------------------------------------------------------
+
+
+class TestRgbToGray:
+    def test_pure_red_gives_luminance_weight(self):
+        """Y = 0.299*R + 0.587*G + 0.114*B. Pure R=1 yields 0.299."""
+        r = np.ones((4, 4))
+        g = np.zeros((4, 4))
+        b = np.zeros((4, 4))
+        gray = mpdsp.rgb_to_gray(r, g, b)
+        assert gray.shape == r.shape
+        np.testing.assert_allclose(gray, 0.299)
+
+    def test_pure_green_gives_luminance_weight(self):
+        r = np.zeros((4, 4))
+        g = np.ones((4, 4))
+        b = np.zeros((4, 4))
+        gray = mpdsp.rgb_to_gray(r, g, b)
+        np.testing.assert_allclose(gray, 0.587)
+
+    def test_pure_blue_gives_luminance_weight(self):
+        r = np.zeros((4, 4))
+        g = np.zeros((4, 4))
+        b = np.ones((4, 4))
+        gray = mpdsp.rgb_to_gray(r, g, b)
+        np.testing.assert_allclose(gray, 0.114)
+
+    def test_white_input_white_output(self):
+        """R=G=B=1 -> Y = 0.299 + 0.587 + 0.114 = 1.0 exactly."""
+        r = np.ones((4, 4))
+        gray = mpdsp.rgb_to_gray(r, r, r)
+        np.testing.assert_allclose(gray, 1.0)
+
+    def test_shape_mismatch_raises(self):
+        r = np.ones((4, 4))
+        g = np.ones((5, 4))  # wrong shape
+        b = np.ones((4, 4))
+        with pytest.raises(ValueError):
+            mpdsp.rgb_to_gray(r, g, b)
+
+
+class TestApplyPerChannel:
+    def test_applies_to_each_plane_independently(self):
+        r = np.ones((3, 3))
+        g = np.ones((3, 3)) * 2.0
+        b = np.ones((3, 3)) * 3.0
+        out_r, out_g, out_b = mpdsp.apply_per_channel(r, g, b,
+                                                       lambda p: p * 10.0)
+        np.testing.assert_allclose(out_r, 10.0)
+        np.testing.assert_allclose(out_g, 20.0)
+        np.testing.assert_allclose(out_b, 30.0)
+
+    def test_composes_with_mpdsp_processors(self):
+        """Common usage: per-channel Gaussian blur."""
+        r = mpdsp.gaussian_blob(16, 16, sigma=3.0)
+        g = mpdsp.gaussian_blob(16, 16, sigma=4.0)
+        b = mpdsp.gaussian_blob(16, 16, sigma=5.0)
+        out_r, out_g, out_b = mpdsp.apply_per_channel(
+            r, g, b, lambda p: mpdsp.gaussian_blur(p, sigma=1.0))
+        assert out_r.shape == r.shape
+        assert out_g.shape == g.shape
+        assert out_b.shape == b.shape
+
+    def test_shape_mismatch_raises(self):
+        r = np.ones((4, 4))
+        g = np.ones((5, 4))
+        b = np.ones((4, 4))
+        with pytest.raises(ValueError):
+            mpdsp.apply_per_channel(r, g, b, lambda p: p)

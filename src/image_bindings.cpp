@@ -22,6 +22,7 @@
 #include <sw/dsp/image/edge.hpp>
 #include <sw/dsp/image/generators.hpp>
 #include <sw/dsp/image/image.hpp>
+#include <sw/dsp/image/morphology.hpp>
 #include <sw/dsp/image/separable.hpp>
 
 #include "_binding_helpers.hpp"
@@ -36,8 +37,12 @@ namespace nb = nanobind;
 using mpdsp::bindings::np_f64_ro;
 using mpdsp::bindings::np_f64_2d;
 using mpdsp::bindings::np_f64_2d_ro;
+using mpdsp::bindings::np_bool_2d;
+using mpdsp::bindings::np_bool_2d_ro;
 using mpdsp::bindings::mat_to_numpy;
+using mpdsp::bindings::bool_mat_to_numpy;
 using mpdsp::bindings::numpy_to_mat_fresh;
+using mpdsp::bindings::numpy_to_bool_mat_fresh;
 using mpdsp::bindings::numpy_to_vec_fresh;
 using mpdsp::bindings::dispatch_dtype_fn;
 
@@ -517,4 +522,133 @@ void bind_image(nb::module_& m) {
 		"Canny edge detector: Gaussian smooth, Sobel gradients, non-maximum "
 		"suppression, hysteresis thresholding. Returns a binary edge map "
 		"(0.0 for non-edge, 1.0 for edge).");
+
+	// =======================================================================
+	// Morphology — structuring-element constructors (return NumPy bool 2D)
+	// and the seven gray-level ops (image: float64 2D, element: bool 2D,
+	// dtype selects internal arithmetic).
+	// =======================================================================
+
+	m.def("make_rect_element",
+		[](std::size_t rows, std::size_t cols) {
+			if (rows == 0 || cols == 0) {
+				throw std::invalid_argument(
+					"make_rect_element: rows and cols must be positive");
+			}
+			return bool_mat_to_numpy(sw::dsp::make_rect_element(rows, cols));
+		},
+		nb::arg("rows"), nb::arg("cols"),
+		"Rectangular structuring element of shape (rows, cols), all True.");
+
+	m.def("make_cross_element",
+		[](std::size_t size) {
+			if (size == 0) {
+				throw std::invalid_argument(
+					"make_cross_element: size must be positive");
+			}
+			return bool_mat_to_numpy(sw::dsp::make_cross_element(size));
+		},
+		nb::arg("size"),
+		"Cross-shaped structuring element of size `size`x`size`: True along "
+		"the center row and center column, False elsewhere.");
+
+	m.def("make_ellipse_element",
+		[](std::size_t size) {
+			if (size == 0) {
+				throw std::invalid_argument(
+					"make_ellipse_element: size must be positive");
+			}
+			return bool_mat_to_numpy(sw::dsp::make_ellipse_element(size));
+		},
+		nb::arg("size"),
+		"Elliptical (disk-like) structuring element of size `size`x`size`.");
+
+	// Morphology ops share a dispatch body: fetch image + element, instantiate
+	// the right T, call upstream. Wrap the repeating shell in a lambda so each
+	// op registration stays one line.
+	auto bind_morph_op = [&m](const char* name, auto op) {
+		m.def(name,
+			[name, op](np_f64_2d_ro image, np_bool_2d_ro element,
+			            const std::string& dtype) {
+				if (image.shape(0) == 0 || image.shape(1) == 0) {
+					throw std::invalid_argument(
+						std::string(name) + ": image must have non-zero dimensions");
+				}
+				if (element.shape(0) == 0 || element.shape(1) == 0) {
+					throw std::invalid_argument(
+						std::string(name) + ": element must have non-zero dimensions");
+				}
+				auto config = mpdsp::parse_config(dtype);
+				auto elem_mat = numpy_to_bool_mat_fresh(element);
+				return dispatch_dtype_fn(config, name, [&]<typename T>() {
+					auto img_mat = numpy_to_mat_fresh<T>(image);
+					return mat_to_numpy(op.template operator()<T>(img_mat, elem_mat));
+				});
+			},
+			nb::arg("image"), nb::arg("element"),
+			nb::arg("dtype") = "reference");
+	};
+
+	bind_morph_op("dilate", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                        const mtl::mat::dense2D<bool>& elem) {
+		return sw::dsp::dilate<T>(img, elem);
+	});
+	bind_morph_op("erode", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                       const mtl::mat::dense2D<bool>& elem) {
+		return sw::dsp::erode<T>(img, elem);
+	});
+	bind_morph_op("morphological_open",
+		[]<typename T>(const mtl::mat::dense2D<T>& img,
+		               const mtl::mat::dense2D<bool>& elem) {
+			return sw::dsp::morphological_open<T>(img, elem);
+		});
+	bind_morph_op("morphological_close",
+		[]<typename T>(const mtl::mat::dense2D<T>& img,
+		               const mtl::mat::dense2D<bool>& elem) {
+			return sw::dsp::morphological_close<T>(img, elem);
+		});
+	bind_morph_op("morphological_gradient",
+		[]<typename T>(const mtl::mat::dense2D<T>& img,
+		               const mtl::mat::dense2D<bool>& elem) {
+			return sw::dsp::morphological_gradient<T>(img, elem);
+		});
+	bind_morph_op("tophat", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                        const mtl::mat::dense2D<bool>& elem) {
+		return sw::dsp::tophat<T>(img, elem);
+	});
+	bind_morph_op("blackhat", []<typename T>(const mtl::mat::dense2D<T>& img,
+	                                          const mtl::mat::dense2D<bool>& elem) {
+		return sw::dsp::blackhat<T>(img, elem);
+	});
+
+	// =======================================================================
+	// Multi-channel — rgb_to_gray. (apply_per_channel is a pure-Python
+	// convenience in mpdsp/image.py since it just iterates a callable.)
+	// =======================================================================
+
+	m.def("rgb_to_gray",
+		[](np_f64_2d_ro r, np_f64_2d_ro g, np_f64_2d_ro b,
+		   const std::string& dtype) {
+			if (r.shape(0) != g.shape(0) || r.shape(0) != b.shape(0) ||
+			    r.shape(1) != g.shape(1) || r.shape(1) != b.shape(1)) {
+				throw std::invalid_argument(
+					"rgb_to_gray: r, g, b must all have the same shape");
+			}
+			if (r.shape(0) == 0 || r.shape(1) == 0) {
+				throw std::invalid_argument(
+					"rgb_to_gray: channels must have non-zero dimensions");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "rgb_to_gray", [&]<typename T>() {
+				sw::dsp::Image<T, 3> rgb;
+				rgb[0] = numpy_to_mat_fresh<T>(r);
+				rgb[1] = numpy_to_mat_fresh<T>(g);
+				rgb[2] = numpy_to_mat_fresh<T>(b);
+				return mat_to_numpy(sw::dsp::rgb_to_gray<T>(rgb));
+			});
+		},
+		nb::arg("r"), nb::arg("g"), nb::arg("b"),
+		nb::arg("dtype") = "reference",
+		"Convert an RGB image (three NumPy 2D arrays) to grayscale using "
+		"ITU-R BT.601 weights: Y = 0.299*R + 0.587*G + 0.114*B.");
 }

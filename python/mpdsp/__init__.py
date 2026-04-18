@@ -61,6 +61,13 @@ try:
         # Image — edge detection
         sobel_x, sobel_y, prewitt_x, prewitt_y,
         gradient_magnitude, canny,
+        # Image — morphology
+        make_rect_element, make_cross_element, make_ellipse_element,
+        dilate, erode,
+        morphological_open, morphological_close,
+        morphological_gradient, tophat, blackhat,
+        # Image — multi-channel
+        rgb_to_gray,
         # Introspection
         available_dtypes,
     )
@@ -90,3 +97,7 @@ if HAS_CORE:
         plot_adaptive_convergence,
         collect_adaptive_weights,
     )
+
+# Image multi-channel helpers (pure Python; no matplotlib dependency yet)
+if HAS_CORE:
+    from mpdsp.image import apply_per_channel
