@@ -30,12 +30,19 @@ def test_version_attribute_is_well_formed():
 
 
 def test_dsp_version_attribute_is_well_formed():
-    """__dsp_version__ comes from the upstream C++ library."""
+    """__dsp_version__ comes from the upstream C++ library.
+
+    We accept any trailing suffix (e.g. `-dev`, `+git-abc123`) after the
+    numeric prefix so development builds of the peer library don't make
+    this test a liability. The strict invariant — that the numeric
+    triple reconstructs to the same string — is pinned in
+    `test_dsp_version_info_matches_string`.
+    """
     if not mpdsp.HAS_CORE:
         import pytest
         pytest.skip("mpdsp._core not available")
     assert isinstance(mpdsp.__dsp_version__, str)
-    assert re.match(r"^\d+\.\d+\.\d+$", mpdsp.__dsp_version__)
+    assert re.match(r"^\d+\.\d+\.\d+", mpdsp.__dsp_version__)
 
 
 def test_dsp_version_info_triple():
@@ -71,11 +78,11 @@ def test_lockstep_prefix():
     if not mpdsp.HAS_CORE:
         import pytest
         pytest.skip("mpdsp._core not available")
-    py_prefix = ".".join(mpdsp.__version__.split(".")[:3])
-    # Strip any pre-release marker in the third segment
-    # (e.g. "0.4.1rc1" -> "0.4.1"). Regex grabs the numeric prefix.
-    py_prefix_clean = re.match(r"^(\d+\.\d+\.\d+)", mpdsp.__version__).group(1)
-    assert py_prefix_clean == mpdsp.__dsp_version__, (
+    # Strip any pre-release or post-release marker in the third segment
+    # (e.g. "0.4.1rc1" or "0.4.1.post1" -> "0.4.1"). Regex grabs the
+    # numeric X.Y.Z prefix, which is what we pin against dsp_version.
+    py_prefix = re.match(r"^(\d+\.\d+\.\d+)", mpdsp.__version__).group(1)
+    assert py_prefix == mpdsp.__dsp_version__, (
         f"Version lockstep broken: mpdsp.__version__={mpdsp.__version__} "
-        f"prefix={py_prefix_clean} but __dsp_version__={mpdsp.__dsp_version__}"
+        f"prefix={py_prefix} but __dsp_version__={mpdsp.__dsp_version__}"
     )
