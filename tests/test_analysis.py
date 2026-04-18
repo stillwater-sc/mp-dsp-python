@@ -37,10 +37,16 @@ def test_biquad_poles_trivial_zero_denominator():
 
 def test_biquad_poles_known_quadratic():
     # (z - 0.5)(z - 0.5) = z² - z + 0.25, so a1 = -1, a2 = 0.25.
+    # Double roots are a numerical edge case: numpy.roots uses a companion-
+    # matrix eigensolve, and at a repeated root the conditioning is
+    # O(sqrt(eps)) ≈ 1.5e-8 regardless of LAPACK backend. Apple's
+    # Accelerate backend reliably lands near 5e-9 here; MKL tends to
+    # do a touch better. Tolerance sized to the theoretical floor plus
+    # headroom rather than one specific backend.
     poles = mpdsp.biquad_poles(1.0, 0.0, 0.0, -1.0, 0.25)
     for p in poles:
-        assert p.real == pytest.approx(0.5, abs=1e-10)
-        assert p.imag == pytest.approx(0.0, abs=1e-10)
+        assert p.real == pytest.approx(0.5, abs=1e-6)
+        assert p.imag == pytest.approx(0.0, abs=1e-6)
 
 
 def test_biquad_poles_complex_conjugate_pair():
@@ -109,5 +115,9 @@ def test_biquad_poles_agrees_with_iirfilter_poles():
     manual_sorted = sorted(manual, key=lambda p: (p.real, p.imag))
     iir_sorted = sorted(filt.poles(), key=lambda p: (p.real, p.imag))
     assert len(manual_sorted) == len(iir_sorted)
+    # Two independent eigensolves (numpy.roots via companion matrix in
+    # Python, upstream sw::dsp in C++) may use different LAPACK backends
+    # across platforms. 1e-8 leaves headroom for that without being
+    # sloppy about the math.
     for a, b in zip(manual_sorted, iir_sorted):
-        assert a == pytest.approx(b, abs=1e-10)
+        assert a == pytest.approx(b, abs=1e-8)
