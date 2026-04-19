@@ -487,20 +487,11 @@ def plot_summary_heatmap(filt, signal: np.ndarray):
 def plot_precision_cost_frontier(filt, signal: np.ndarray):
     """SQNR vs bits-per-sample scatter: identifies Pareto-optimal dtypes.
 
-    Uses the bit-width estimates below; mpdsp doesn't expose a formal
-    bits-per-sample accessor on the dtype name, so this dict lives here
-    as a documented constant the dashboard can use. It matches the
-    iir_precision_sweep CSV's `bits` column.
+    Bit widths come from `mpdsp.bits_of()` (issue #55) — the dashboard
+    used to duplicate this mapping as a local dict, which drifted every
+    time a new config was added. Now it queries the binding directly and
+    will automatically pick up any future sensor/FPGA configs.
     """
-    bits_by_dtype = {
-        "reference":    64,
-        "gpu_baseline": 32,
-        "ml_hw":        16,  # bfloat16 / half
-        "half":         16,
-        "cf24":         24,
-        "posit_full":   16,  # posit<16,1> is the dominant sample-path scalar
-        "tiny_posit":    8,
-    }
     ref_out = filt.process(signal, dtype="reference")
 
     rows = []
@@ -511,7 +502,7 @@ def plot_precision_cost_frontier(filt, signal: np.ndarray):
         except Exception:  # noqa: BLE001
             continue
         if np.isfinite(sqnr) and sqnr < 290:
-            rows.append({"dtype": dt, "bits": bits_by_dtype.get(dt, 0),
+            rows.append({"dtype": dt, "bits": mpdsp.bits_of(dt),
                           "sqnr_db": sqnr})
     df = pd.DataFrame(rows)
 

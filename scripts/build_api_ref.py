@@ -592,10 +592,15 @@ these string keys. Query the live set at runtime with
 | `tiny_posit` | double | posit<8,2> | posit<8,2> | Ultra-low-power edge |
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
+| `sensor_8bit` | double | double | integer<8> | Standard 8-bit sensor ADC |
+| `sensor_6bit` | double | double | integer<6> | Noise-limited sensor |
+| `fpga_fixed` | double | fixpnt<32,24> | fixpnt<16,12> | FPGA fixed-point datapath |
 
-Planned for `0.5.0` (issue #55): fixed-point / integer configs
-(`sensor_8bit`, `fpga_fixed`, ...) plus an `mpdsp.bits_of(dtype)`
-accessor. Dtype dispatch on the spectral transforms shipped in #54.
+Use `mpdsp.bits_of(dtype)` to query the sample-scalar bit width for any
+config (useful for precision-vs-cost plots). The sensor configs keep
+coefficient and state at double; only the ADC sample path quantizes
+through `integer<N>`, which is the common case for ingesting real-world
+ADC streams without re-architecting the downstream filter.
 
 ## Module attributes
 

@@ -77,7 +77,11 @@ static void process_dispatch(const CascadeD& cascade,
                              mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -96,6 +100,16 @@ static void process_dispatch(const CascadeD& cascade,
 		process_typed<p32, p16>(cascade, in, out, n); break;
 	case ArithConfig::tiny_posit:
 		process_typed<tiny_posit_t, tiny_posit_t>(cascade, in, out, n); break;
+	// Sensor configs: coefficient/state in double, sample quantized through
+	// integer<N>. integer<N> is ADL-castable from double via static_cast, so
+	// process_typed<double, int8_sample_t> models "signal arrives on an 8-bit
+	// ADC, filter state stays wide" — matches issue #55's sensor semantics.
+	case ArithConfig::sensor_8bit:
+		process_typed<double, int8_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::sensor_6bit:
+		process_typed<double, int6_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::fpga_fixed:
+		process_typed<fx3224_t, fx1612_t>(cascade, in, out, n); break;
 	}
 }
 
@@ -331,7 +345,11 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
                                  mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -350,6 +368,12 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
 		fir_process_typed<p32, p16>(taps_d, in, out, n); break;
 	case ArithConfig::tiny_posit:
 		fir_process_typed<tiny_posit_t, tiny_posit_t>(taps_d, in, out, n); break;
+	case ArithConfig::sensor_8bit:
+		fir_process_typed<double, int8_sample_t>(taps_d, in, out, n); break;
+	case ArithConfig::sensor_6bit:
+		fir_process_typed<double, int6_sample_t>(taps_d, in, out, n); break;
+	case ArithConfig::fpga_fixed:
+		fir_process_typed<fx3224_t, fx1612_t>(taps_d, in, out, n); break;
 	}
 }
 
@@ -419,6 +443,7 @@ static double pole_displacement_dispatch(const CascadeD& src,
                                          mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p16;
 	using mpdsp::p32;
@@ -432,6 +457,13 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	case ArithConfig::half_config:  quantized = quantize_cascade<half_>(src); break;
 	case ArithConfig::posit_full:   quantized = quantize_cascade<p32>(src); break;
 	case ArithConfig::tiny_posit:   quantized = quantize_cascade<tiny_posit_t>(src); break;
+	// sensor_* keep coefficients at double (only the sample path quantizes),
+	// so coefficient-level pole displacement is zero for them.
+	case ArithConfig::sensor_8bit:
+	case ArithConfig::sensor_6bit:
+		return 0.0;
+	case ArithConfig::fpga_fixed:
+		quantized = quantize_cascade<fx3224_t>(src); break;
 	}
 	return sw::dsp::pole_displacement(src, quantized);
 }

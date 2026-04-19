@@ -109,7 +109,7 @@ try:
         # Analysis — free-function primitives (method-form lives on IIRFilter)
         coefficient_sensitivity, biquad_condition_number,
         # Introspection
-        available_dtypes,
+        available_dtypes, bits_of,
     )
     # The underlying mixed-precision-dsp C++ library version the wheel
     # was built against, sourced from sw::dsp::version.hpp. Matches

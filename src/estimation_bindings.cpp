@@ -284,6 +284,7 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
                    std::size_t num_taps, DoubleArgs... args) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -309,6 +310,16 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::tiny_posit:
 		return std::make_unique<AdaptiveFilterImpl<Filter, tiny_posit_t>>(
 			num_taps, static_cast<tiny_posit_t>(args)...);
+	// Sensor configs keep the filter state at double; the sample-path
+	// quantization lives in project_dispatch / adc_dispatch rather than
+	// the adaptive update itself.
+	case ArithConfig::sensor_8bit:
+	case ArithConfig::sensor_6bit:
+		return std::make_unique<AdaptiveFilterImpl<Filter, double>>(
+			num_taps, static_cast<double>(args)...);
+	case ArithConfig::fpga_fixed:
+		return std::make_unique<AdaptiveFilterImpl<Filter, fx3224_t>>(
+			num_taps, static_cast<fx3224_t>(args)...);
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }
