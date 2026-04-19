@@ -205,6 +205,24 @@ class TestContinuousTransferFunction:
         np.testing.assert_allclose(ctf.numerator, [1.0, 1.0], atol=1e-15)
         np.testing.assert_allclose(ctf.denominator, [1.0, 0.5, 1.0], atol=1e-15)
 
+    def test_setter_round_trip(self):
+        # Pin the writable property contract: assign new arrays, read them
+        # back. A broken def_prop_rw binding or ndarray-to-vector conversion
+        # would slip past the constructor + getter-only tests otherwise.
+        ctf = mpdsp.ContinuousTransferFunction(
+            np.array([1.0]), np.array([1.0]))
+        ctf.numerator = np.array([1.0, 0.5, 0.25])
+        ctf.denominator = np.array([1.0, 0.3, 1.0, 0.5])
+        np.testing.assert_allclose(ctf.numerator,
+                                    [1.0, 0.5, 0.25], atol=1e-15)
+        np.testing.assert_allclose(ctf.denominator,
+                                    [1.0, 0.3, 1.0, 0.5], atol=1e-15)
+        # After a setter round-trip, evaluate should reflect the new
+        # coefficients, not the constructor's.
+        # H(s) = (1 + 0.5s + 0.25s^2) / (1 + 0.3s + s^2 + 0.5s^3) at s=0
+        # is just 1/1 = 1.
+        assert ctf.evaluate(0.0 + 0j) == pytest.approx(1.0 + 0j, abs=1e-12)
+
     def test_evaluate_pure_gain_at_any_s_is_the_gain(self):
         ctf = mpdsp.ContinuousTransferFunction(
             np.array([2.0]), np.array([1.0]))

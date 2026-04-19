@@ -142,7 +142,7 @@ public:
 //
 // Same shape as PyTransferFunction but polynomials are in ascending powers
 // of s (the natural form for Laplace-plane analysis). Used by
-// `mpdsp.laplace_freqs` (bound in spectral_bindings.cpp) for frequency-
+// `mpdsp.laplace_freqs` (registered later in this same file) for frequency-
 // response evaluation of analog prototype filters.
 //
 // Like the discrete TransferFunction, bound on double only — multi-
