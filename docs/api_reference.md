@@ -23,6 +23,7 @@ the note at the bottom.
 - [Image — processing](#image--processing)
 - [Image — morphology](#image--morphology)
 - [Image — file I/O](#image--file-i/o)
+- [Types — transfer function and type projection](#types--transfer-function-and-type-projection)
 - [Numerical-analysis helpers (pure Python)](#numerical-analysis-helpers-pure-python)
 - [Mixed-precision helpers](#mixed-precision-helpers)
 - [CSV + image-pipeline helpers (pure Python)](#csv-+-image-pipeline-helpers-pure-python)
@@ -38,6 +39,7 @@ the note at the bottom.
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
   - [`RLSFilter`](#rlsfilter)
+  - [`TransferFunction`](#transferfunction)
 
 ---
 
@@ -258,6 +260,16 @@ PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Read
 | `write_bmp` | `(path: str, image: ndarray2d[ro]) -> None` | Write a grayscale image to a 24-bit BMP file (R=G=B=image). |
 | `write_bmp_rgb` | `(path: str, r: ndarray2d[ro], g: ndarray2d[ro], b: ndarray2d[ro]) -> None` | Write an RGB image to a 24-bit BMP file. |
 
+## Types — transfer function and type projection
+
+`TransferFunction` is bound on double in 0.5.0 and represents the rational H(z) = B(z)/A(z) directly (as opposed to `IIRFilter`'s cascade-of-biquads form). Use `to_transfer_function(filt)` to fold an IIR cascade into a single TF for evaluation, cascade composition, or handing to the upcoming `ztransform` (Phase 5 / #54). `project_onto` / `projection_error` are the round-trip primitives underlying `measure_sqnr_db` — use them when you want the quantized samples or the raw error magnitude rather than the SQNR number.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `project_onto` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> ndarray` | Project data through the sample scalar of `dtype` and back to float64. The round-trip surfaces the quantization error you'd see feeding a signal through an ADC at that precision — it's the underlying mechanic of `measure_sqnr_db`, exposed directly for when you want the quantized samples rather than just the SQNR. |
+| `projection_error` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> float` | Max absolute error between data and its round-trip through `dtype`. Equivalent to max(abs(data - project_onto(data, dtype))) but computed without allocating the intermediate ndarray. |
+| `to_transfer_function` | `(filt)` | Fold an `IIRFilter` cascade into a single `TransferFunction`. |
+
 ## Numerical-analysis helpers (pure Python)
 
 Thin layer over already-bound `IIRFilter` methods. `biquad_poles` is a standalone quadratic solver that takes a 5-tuple of coefficients. See `IIRFilter.stability_margin()`, `.condition_number()`, `.worst_case_sensitivity()`, and `.pole_displacement(dtype)` for the per-filter metrics.
@@ -466,6 +478,22 @@ Recursive least-squares adaptive filter. Faster convergence than LMS/NLMS at the
 | `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop  |
 | `.reset` | `(self) -> None` — Zero the weights, delay line, and reset P to delta*I. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
+
+### `TransferFunction`
+
+Rational H(z) = B(z)/A(z) with double-precision coefficients. Construct from numerator + denominator ndarrays; the leading `1` in the denominator is implicit (don't pass `a0`). Cascade via `*`. The `to_transfer_function(filt)` helper folds an IIRFilter cascade into one of these, useful when evaluating the full filter's H(z) directly rather than staging by stage.
+
+> Rational transfer function H(z) = B(z) / A(z).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.denominator` | Denominator coefficients a1, a2, ... as a float64 ndarray (a0 = 1 implicit). |
+| `.evaluate` | `(self, z: complex) -> complex` — Evaluate H(z) at a single complex point. Returns complex128. |
+| `.evaluate_many` | `(self, z: numpy.ndarray[dtype=complex128, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Evaluate H(z) at each point in a complex128 ndarray. Returns a complex128 ndarray of the same length. |
+| `.frequency_response` | `(self, f: float) -> complex` — Evaluate H(e^{j 2*pi*f}) at normalized frequency f in [0, 0.5]. |
+| `.frequency_response_many` | `(self, freqs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Vectorized frequency_response(...) over a float64 ndarray of normalized frequencies. Returns complex128. |
+| `.is_stable` | `(self) -> bool` — Check stability via a 360-angle sampling of the denominator on the unit circle. False if any sample is within 1e-6 of zero. |
+| `.numerator` | Numerator coefficients b0, b1, b2, ... as a float64 ndarray. |
 
 ---
 

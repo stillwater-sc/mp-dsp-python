@@ -98,6 +98,9 @@ try:
         read_pgm, write_pgm,
         read_ppm, write_ppm,
         read_bmp, write_bmp, write_bmp_rgb,
+        # Types — rational transfer function + type projection
+        TransferFunction,
+        project_onto, projection_error,
         # Introspection
         available_dtypes,
     )
@@ -138,7 +141,8 @@ except ImportError:
 
 # Filter helpers (pure Python; requires mpdsp._core; plotting needs matplotlib)
 if HAS_CORE:
-    from mpdsp.filters import compare_filters, plot_filter_comparison
+    from mpdsp.filters import (compare_filters, plot_filter_comparison,
+                                 to_transfer_function)
 
 # Analysis helpers (pure Python; build only on stdlib + numpy + _core methods)
 from mpdsp.analysis import biquad_poles, is_stable, max_pole_radius
