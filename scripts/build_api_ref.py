@@ -227,9 +227,12 @@ INTROS = {
         "measure how far a quantized signal drifted from its reference."
     ),
     "Spectral analysis": (
-        "All spectral primitives in 0.4.x operate in double precision — "
-        "dtype dispatch on FFT/PSD/spectrogram is planned for 0.5.0 "
-        "(see issue #40). Signal inputs must be 1D float64."
+        "All five primitives accept a `dtype=` parameter selecting the "
+        "internal arithmetic (see `mpdsp.available_dtypes()`). Inputs "
+        "and outputs at the Python layer remain double/complex128; only "
+        "the C++ computation runs at the target precision. For rational-"
+        "transfer-function evaluation see `ztransform`, `freqz`, "
+        "`group_delay`, `laplace_freqs` in the Types section."
     ),
     "IIR filter design — classical families": (
         "Each function designs the filter in double precision and returns "
@@ -590,9 +593,9 @@ these string keys. Query the live set at runtime with
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
 
-Planned for `0.5.0` (issue #40): fixed-point / integer configs
-(`sensor_8bit`, `fpga_fixed`, ...) and dtype dispatch on the spectral
-transforms.
+Planned for `0.5.0` (issue #55): fixed-point / integer configs
+(`sensor_8bit`, `fpga_fixed`, ...) plus an `mpdsp.bits_of(dtype)`
+accessor. Dtype dispatch on the spectral transforms shipped in #54.
 
 ## Module attributes
 

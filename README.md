@@ -81,7 +81,7 @@ public name with signatures and one-line descriptions, see
 | **quantization** ✓ | `adc.hpp`, `dac.hpp`, `dither.hpp`, `noise_shaping.hpp`, `sqnr.hpp` | `mpdsp.adc()`, `mpdsp.dac()`, `mpdsp.sqnr_db()`, `mpdsp.measure_sqnr_db()`, `mpdsp.RPDFDither()`, `mpdsp.TPDFDither()`, `mpdsp.FirstOrderNoiseShaper()`, ... | ADC/DAC modeling with type dispatch. RPDF/TPDF dithering and first-order error-feedback noise shaping for quantization improvement. SQNR measurement — the core metric for mixed-precision evaluation. |
 | **filter/iir** ✓ | `butterworth.hpp`, `chebyshev1.hpp`, `chebyshev2.hpp`, `elliptic.hpp`, `bessel.hpp`, `legendre.hpp`, `rbj.hpp` | `mpdsp.butterworth_lowpass()`, `mpdsp.chebyshev1_highpass()`, `mpdsp.elliptic_bandpass()`, `mpdsp.rbj_lowshelf()`, ... | All 7 IIR families with LP/HP/BP/BS (and RBJ shelf/allpass) variants. Design in double, process with type dispatch. Filter objects expose `poles()`, `frequency_response()`, `stability_margin()`, `condition_number()`, `pole_displacement()`, `worst_case_sensitivity()` as methods. |
 | **filter/fir** ✓ | `fir_filter.hpp`, `fir_design.hpp` | `mpdsp.fir_lowpass()`, `mpdsp.fir_bandpass()`, `mpdsp.fir_filter()`, ... | FIR filter design (window method). Direct convolution. |
-| **spectral** ✓ partial | `fft.hpp`, `dft.hpp`, `psd.hpp`, `spectrogram.hpp`, `ztransform.hpp`, `laplace.hpp` | `mpdsp.fft()`, `mpdsp.ifft()`, `mpdsp.fft_magnitude_db()`, `mpdsp.psd()`, `mpdsp.periodogram()`, `mpdsp.spectrogram()` (⏳ `ztransform`, `laplace`) | FFT (Cooley-Tukey), power spectral density, STFT/spectrogram. |
+| **spectral** ✓ | `fft.hpp`, `dft.hpp`, `psd.hpp`, `spectrogram.hpp`, `ztransform.hpp`, `laplace.hpp` | `mpdsp.fft()`, `mpdsp.ifft()`, `mpdsp.fft_magnitude_db()`, `mpdsp.psd()`, `mpdsp.periodogram()`, `mpdsp.spectrogram()`, `mpdsp.ztransform()`, `mpdsp.freqz()`, `mpdsp.group_delay()`, `mpdsp.laplace_freqs()` | FFT (Cooley-Tukey), power spectral density, STFT/spectrogram, Z-transform and Laplace evaluation. All five standard primitives accept `dtype=` for mixed-precision arithmetic. |
 | **conditioning** ✓ | `envelope.hpp`, `compressor.hpp`, `agc.hpp` | `mpdsp.PeakEnvelope()`, `mpdsp.RMSEnvelope()`, `mpdsp.Compressor()`, `mpdsp.AGC()` | Envelope followers (peak, RMS). Dynamic range compressor with soft knee. Automatic gain control. |
 | **estimation** ✓ | `kalman.hpp`, `lms.hpp`, `rls.hpp` | `mpdsp.KalmanFilter()`, `mpdsp.LMSFilter()`, `mpdsp.NLMSFilter()`, `mpdsp.RLSFilter()` | Linear Kalman filter with predict/update. LMS/NLMS adaptive filters. RLS with forgetting factor. State matrices as NumPy 2D arrays. |
 | **image** ✓ | `image.hpp`, `convolve2d.hpp`, `separable.hpp`, `morphology.hpp`, `edge.hpp`, `generators.hpp` | `mpdsp.convolve2d()`, `mpdsp.gaussian_blur()`, `mpdsp.sobel_x()`, `mpdsp.canny()`, `mpdsp.dilate()`, `mpdsp.checkerboard()`, ... | 2D convolution, separable filters, Gaussian/box blur. Morphological operations (erode, dilate, open, close, gradient, tophat). Sobel, Prewitt, Canny edge detection. Image generators (checkerboard, zone plate, gradients, noise, blobs). |
@@ -118,10 +118,11 @@ comp = mpdsp.Compressor(sample_rate=44100, threshold_db=-12.0, ratio=4.0,
 kf = mpdsp.KalmanFilter(2, 1, dtype="cf24")
 ```
 
-Spectral primitives (`fft`, `psd`, `spectrogram`, ...) are pure double-precision
-in `0.4.x` — mixed-precision dispatch on transforms is planned for `0.5.0`.
-Signal generators and window functions are intentionally reference-precision
-(they are not part of a mixed-precision datapath).
+Spectral primitives (`fft`, `ifft`, `psd`, `periodogram`, `spectrogram`) accept
+`dtype=` in `0.5.0+`; inputs and outputs stay double/complex128 at the Python
+layer while the internal arithmetic runs at the selected precision. Signal
+generators and window functions are intentionally reference-precision (they
+aren't part of a mixed-precision datapath).
 
 #### Pre-Instantiated Configurations
 
@@ -291,9 +292,9 @@ for dtype in ["reference", "gpu_baseline", "posit_full", "half"]:
         print(f"  {dtype:20s}  SQNR = {sqnr:.1f} dB")
 
 # --- Spectral Analysis ---
-# FFT is pure double-precision in 0.4.x (mixed-precision dispatch on
-# transforms is planned for 0.5.0). The returned tuple is (real, imag).
-real, imag = mpdsp.fft(signal)
+# fft / ifft / psd / periodogram / spectrogram all accept dtype=.
+# Returned tuple is (real, imag).
+real, imag = mpdsp.fft(signal, dtype="posit_full")
 
 # --- Image Processing ---
 # Full image pipeline
