@@ -70,7 +70,9 @@ sensitivity = filt.worst_case_sensitivity()
 `mp-dsp-python` exposes every module of the C++ library to Python:
 
 Bindings marked ✓ are available today; ⏳ are planned for `0.5.0` (see issue
-tracker for the per-module roadmap).
+tracker for the per-module roadmap). For the complete enumeration of every
+public name with signatures and one-line descriptions, see
+[`docs/api_reference.md`](docs/api_reference.md).
 
 | Module | C++ Headers | Python API | Description |
 |--------|-------------|------------|-------------|
