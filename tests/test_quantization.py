@@ -196,6 +196,53 @@ class TestTPDFDither:
         assert np.max(np.abs(out)) <= 0.1 + 1e-12
 
 
+class TestDitherPreservesSignalPrecision:
+    """Regression guard for a PR #57 review finding: `apply()` must draw
+    dither in the dtype's precision and add it to the ORIGINAL
+    high-precision signal. An earlier implementation pre-quantized the
+    signal to `T` before the dither was added, which defeated the whole
+    point of dithering upstream of an explicit ADC stage.
+
+    The cleanest way to pin this is a zero-amplitude dither — every
+    drawn sample is exactly `amplitude * uniform(...) = 0`, so apply()
+    reduces to the identity on the signal. A buggy "quantize first"
+    implementation would show quantization error even at amplitude=0.
+    """
+
+    def test_rpdf_apply_is_identity_at_zero_amplitude_half(self):
+        # High-precision signal that does NOT lie on the half-precision
+        # grid — if apply() secretly round-trips through half, every
+        # sample will have observable error.
+        rng = np.random.default_rng(13)
+        signal = rng.normal(0.0, 0.3, size=256).astype(np.float64)
+        d = mpdsp.RPDFDither(amplitude=0.0, dtype="half", seed=1)
+        out = d.apply(signal)
+        # Exact equality — every dither draw is 0.0 because amplitude is 0.
+        np.testing.assert_array_equal(out, signal)
+
+    def test_tpdf_apply_is_identity_at_zero_amplitude_tiny_posit(self):
+        rng = np.random.default_rng(17)
+        signal = rng.normal(0.0, 0.3, size=256).astype(np.float64)
+        d = mpdsp.TPDFDither(amplitude=0.0, dtype="tiny_posit", seed=1)
+        out = d.apply(signal)
+        np.testing.assert_array_equal(out, signal)
+
+    def test_rpdf_apply_half_bounds_are_half_precision_noise(self):
+        # With non-zero amplitude at half dtype, each sample's drift from
+        # the input is bounded by amplitude (plus a tiny slack for the
+        # T→double conversion). Signal values themselves are preserved
+        # exactly — the delta from signal to output IS the dither, no
+        # signal-quantization leaking in.
+        rng = np.random.default_rng(21)
+        signal = rng.normal(0.0, 0.3, size=256).astype(np.float64)
+        d = mpdsp.RPDFDither(amplitude=0.001, dtype="half", seed=3)
+        out = d.apply(signal)
+        diff = out - signal
+        # Bound is amplitude * (1 + small half-rounding slack). Generous
+        # cap; the point is that the signal isn't being round-tripped.
+        assert np.max(np.abs(diff)) <= 0.001 + 1e-4
+
+
 class TestDitherDecorrelation:
     """Classic dither benefit: quantization error gets decorrelated from
     the signal — its correlation with the signal drops toward zero."""

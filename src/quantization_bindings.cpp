@@ -78,15 +78,16 @@ adc_dispatch(const mtl::vec::dense_vector<double>& signal, mpdsp::ArithConfig co
 template <typename T>
 static mtl::vec::dense_vector<double>
 dac_typed(const mtl::vec::dense_vector<double>& quantized) {
-	// quantized is already float64 holding narrow-type-representable values.
-	// Cast narrow → double explicitly to document the DAC step, even though
-	// for float-family T the conversion is mathematically identity.
-	mtl::vec::dense_vector<double> result(quantized.size());
+	// Mirror adc_typed's shape: cast input to the narrow type T once,
+	// then use the vector-level convert() overload upstream provides.
+	// This keeps dac_typed / adc_typed structurally symmetric — important
+	// for a "companion" binding that readers will compare side by side.
+	mtl::vec::dense_vector<T> narrow(quantized.size());
 	for (std::size_t i = 0; i < quantized.size(); ++i) {
-		T narrow = static_cast<T>(quantized[i]);
-		result[i] = static_cast<double>(sw::dsp::DAC<T, double>{}.convert(narrow));
+		narrow[i] = static_cast<T>(quantized[i]);
 	}
-	return result;
+	sw::dsp::DAC<T, double> dac;
+	return dac.convert(narrow);
 }
 
 static mtl::vec::dense_vector<double>
@@ -149,17 +150,18 @@ struct DitherImpl : IDitherImpl {
 	}
 	mtl::vec::dense_vector<double>
 	apply(const mtl::vec::dense_vector<double>& signal) override {
-		// Upstream apply() mutates in-place on a dense_vector<T>. Python
-		// users expect a new ndarray — copy the signal into a T-typed
-		// vector, apply, cast back to double.
-		mtl::vec::dense_vector<T> tmp(signal.size());
+		// Draw each dither sample in type T (dtype selects the dither's
+		// precision), promote to double, add to the original double signal.
+		// Critically, the signal itself is NOT cast to T — that would
+		// quantize the signal before dither is added, defeating the point
+		// of dithering upstream of an explicit ADC stage. A user calling
+		//   RPDFDither(amplitude=1e-3, dtype="half").apply(signal)
+		// means "add half-precision dither of amplitude 1e-3 to this
+		// high-precision signal", not "quantize this signal to half first".
+		mtl::vec::dense_vector<double> out(signal.size());
 		for (std::size_t i = 0; i < signal.size(); ++i) {
-			tmp[i] = static_cast<T>(signal[i]);
-		}
-		inner.apply(tmp);
-		mtl::vec::dense_vector<double> out(tmp.size());
-		for (std::size_t i = 0; i < tmp.size(); ++i) {
-			out[i] = static_cast<double>(tmp[i]);
+			T noise_t = inner();
+			out[i] = signal[i] + static_cast<double>(noise_t);
 		}
 		return out;
 	}
