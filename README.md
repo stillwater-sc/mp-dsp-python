@@ -135,10 +135,13 @@ aren't part of a mixed-precision datapath).
 | `tiny_posit` | double | posit<8,2> | posit<8,2> | Ultra-low-power edge |
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float research |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
+| `sensor_8bit` | double | double | integer<8> | Standard 8-bit sensor ADC |
+| `sensor_6bit` | double | double | integer<6> | Noise-limited sensor |
+| `fpga_fixed` | double | fixpnt<32,24> | fixpnt<16,12> | FPGA fixed-point datapath |
 
-Query the live set at runtime with `mpdsp.available_dtypes()`. Fixed-point
-and integer configurations (sensor ADCs, FPGA datapaths) are planned for
-`0.5.0` alongside the remaining upstream bindings.
+Query the live set at runtime with `mpdsp.available_dtypes()`. Sample-scalar
+bit width per config is available via `mpdsp.bits_of(dtype)` — useful for
+labeling the x-axis of precision-vs-cost plots.
 
 Coefficients are always designed in `double` — design-time precision is
 non-negotiable for IIR filters (see the

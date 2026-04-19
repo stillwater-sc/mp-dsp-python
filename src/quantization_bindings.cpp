@@ -42,17 +42,44 @@ static np_array vec_to_numpy(const mtl::vec::dense_vector<double>& v) {
 	return np_array(data, 1, shape, owner);
 }
 
-// ADC: quantize a double signal through a target type and back
+// ADC: quantize a double signal through a target type and back.
+//
+// For float-like T (float, posit, cfloat, fixpnt), `static_cast<T>(x)` is a
+// faithful narrowing because those types can represent fractional values —
+// upstream sw::dsp::ADC handles this path directly.
+//
+// For integer<N>, `static_cast` truncates any |x| < 1 to zero — that's not a
+// quantization model, it's signal annihilation. Physical N-bit ADCs instead
+// map the full-scale analog range [-1, 1] onto the integer's representable
+// range [-(2^(N-1)-1), 2^(N-1)-1], quantize, then scale back to [-1, 1] for
+// downstream math. We detect integer<N> via a concept check and route through
+// a scale-quantize-unscale pipeline so sensor_* configs produce the
+// quantization noise users expect instead of all zeros.
 template <typename T>
 static mtl::vec::dense_vector<double>
 adc_typed(const mtl::vec::dense_vector<double>& signal) {
-	sw::dsp::ADC<double, T> adc;
-	auto quantized = adc.convert(signal);
-	mtl::vec::dense_vector<double> result(signal.size());
-	for (std::size_t i = 0; i < signal.size(); ++i) {
-		result[i] = static_cast<double>(quantized[i]);
+	if constexpr (sw::universal::is_integer<T>) {
+		// Full-scale magnitude for an N-bit signed integer (N = T::nbits).
+		// Subtract 1 so we don't hit the asymmetric -2^(N-1) value, keeping
+		// the mapping symmetric around zero. Reasonable for an audio-like
+		// signal normalized to [-1, 1]; asymmetric real-world ADCs are out
+		// of scope for this binding-layer ADC model.
+		constexpr double fs = static_cast<double>((1LL << (T::nbits - 1)) - 1);
+		mtl::vec::dense_vector<double> result(signal.size());
+		for (std::size_t i = 0; i < signal.size(); ++i) {
+			T q = static_cast<T>(signal[i] * fs);
+			result[i] = static_cast<double>(q) / fs;
+		}
+		return result;
+	} else {
+		sw::dsp::ADC<double, T> adc;
+		auto quantized = adc.convert(signal);
+		mtl::vec::dense_vector<double> result(signal.size());
+		for (std::size_t i = 0; i < signal.size(); ++i) {
+			result[i] = static_cast<double>(quantized[i]);
+		}
+		return result;
 	}
-	return result;
 }
 
 static mtl::vec::dense_vector<double>
@@ -65,6 +92,9 @@ adc_dispatch(const mtl::vec::dense_vector<double>& signal, mpdsp::ArithConfig co
 	case mpdsp::ArithConfig::ml_hw:         return adc_typed<mpdsp::half_>(signal);
 	case mpdsp::ArithConfig::posit_full:    return adc_typed<mpdsp::p16>(signal);
 	case mpdsp::ArithConfig::tiny_posit:    return adc_typed<sw::universal::posit<8,2>>(signal);
+	case mpdsp::ArithConfig::sensor_8bit:   return adc_typed<mpdsp::int8_sample_t>(signal);
+	case mpdsp::ArithConfig::sensor_6bit:   return adc_typed<mpdsp::int6_sample_t>(signal);
+	case mpdsp::ArithConfig::fpga_fixed:    return adc_typed<mpdsp::fx1612_t>(signal);
 	}
 	return signal;
 }
@@ -82,12 +112,26 @@ dac_typed(const mtl::vec::dense_vector<double>& quantized) {
 	// then use the vector-level convert() overload upstream provides.
 	// This keeps dac_typed / adc_typed structurally symmetric — important
 	// for a "companion" binding that readers will compare side by side.
-	mtl::vec::dense_vector<T> narrow(quantized.size());
-	for (std::size_t i = 0; i < quantized.size(); ++i) {
-		narrow[i] = static_cast<T>(quantized[i]);
+	//
+	// For integer<N> we apply the same scale-quantize-unscale loop as
+	// adc_typed so adc(signal, "sensor_8bit") -> dac stays an idempotent
+	// round-trip rather than collapsing to zero.
+	if constexpr (sw::universal::is_integer<T>) {
+		constexpr double fs = static_cast<double>((1LL << (T::nbits - 1)) - 1);
+		mtl::vec::dense_vector<double> result(quantized.size());
+		for (std::size_t i = 0; i < quantized.size(); ++i) {
+			T q = static_cast<T>(quantized[i] * fs);
+			result[i] = static_cast<double>(q) / fs;
+		}
+		return result;
+	} else {
+		mtl::vec::dense_vector<T> narrow(quantized.size());
+		for (std::size_t i = 0; i < quantized.size(); ++i) {
+			narrow[i] = static_cast<T>(quantized[i]);
+		}
+		sw::dsp::DAC<T, double> dac;
+		return dac.convert(narrow);
 	}
-	sw::dsp::DAC<T, double> dac;
-	return dac.convert(narrow);
 }
 
 static mtl::vec::dense_vector<double>
@@ -101,6 +145,9 @@ dac_dispatch(const mtl::vec::dense_vector<double>& quantized,
 	case mpdsp::ArithConfig::ml_hw:         return dac_typed<mpdsp::half_>(quantized);
 	case mpdsp::ArithConfig::posit_full:    return dac_typed<mpdsp::p16>(quantized);
 	case mpdsp::ArithConfig::tiny_posit:    return dac_typed<sw::universal::posit<8,2>>(quantized);
+	case mpdsp::ArithConfig::sensor_8bit:   return dac_typed<mpdsp::int8_sample_t>(quantized);
+	case mpdsp::ArithConfig::sensor_6bit:   return dac_typed<mpdsp::int6_sample_t>(quantized);
+	case mpdsp::ArithConfig::fpga_fixed:    return dac_typed<mpdsp::fx1612_t>(quantized);
 	}
 	// Unreachable: switch is exhaustive over mpdsp::ArithConfig.
 	return quantized;
@@ -370,6 +417,11 @@ void bind_quantization(nb::module_& m) {
 
 	m.def("available_dtypes", &mpdsp::available_configs,
 	   "List available arithmetic configuration names.");
+
+	m.def("bits_of", &mpdsp::bits_of, nb::arg("dtype"),
+	   "Return the sample-scalar bit width for `dtype`. Use this to label "
+	   "a precision-vs-cost axis instead of hardcoding the mapping. "
+	   "Raises ValueError for unknown dtype strings.");
 
 	// RPDFDither — uniform [-amplitude, +amplitude] additive noise.
 	nb::class_<PyRPDFDither>(m, "RPDFDither",

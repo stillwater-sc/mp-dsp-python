@@ -220,12 +220,28 @@ project_typed(const mtl::vec::dense_vector<double>& src) {
 	// each element back to double so the Python caller always sees
 	// float64 — matches the issue's signature
 	// `project_onto(ndarray, dtype: str) -> ndarray`.
-	auto narrowed = sw::dsp::project_onto<T>(src);
-	mtl::vec::dense_vector<double> out(narrowed.size());
-	for (std::size_t i = 0; i < narrowed.size(); ++i) {
-		out[i] = static_cast<double>(narrowed[i]);
+	//
+	// For integer<N> the direct cast collapses |x| < 1 to zero, so mirror
+	// the scale-quantize-unscale path used in adc_typed: map the
+	// full-scale [-1, 1] input range onto integer's representable range,
+	// quantize, then scale back. See quantization_bindings.cpp for the
+	// design rationale.
+	if constexpr (sw::universal::is_integer<T>) {
+		constexpr double fs = static_cast<double>((1LL << (T::nbits - 1)) - 1);
+		mtl::vec::dense_vector<double> out(src.size());
+		for (std::size_t i = 0; i < src.size(); ++i) {
+			T q = static_cast<T>(src[i] * fs);
+			out[i] = static_cast<double>(q) / fs;
+		}
+		return out;
+	} else {
+		auto narrowed = sw::dsp::project_onto<T>(src);
+		mtl::vec::dense_vector<double> out(narrowed.size());
+		for (std::size_t i = 0; i < narrowed.size(); ++i) {
+			out[i] = static_cast<double>(narrowed[i]);
+		}
+		return out;
 	}
-	return out;
 }
 
 static mtl::vec::dense_vector<double>
@@ -237,7 +253,10 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 	// `measure_sqnr_db` already does. If a future request needs
 	// coefficient-path projection specifically, we add a second function.
 	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
 	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
 
@@ -256,12 +275,14 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 		return project_typed<cf24>(src);
 	case mpdsp::ArithConfig::half_config:
 		return project_typed<half_>(src);
+	case mpdsp::ArithConfig::sensor_8bit:
+		return project_typed<int8_sample_t>(src);
+	case mpdsp::ArithConfig::sensor_6bit:
+		return project_typed<int6_sample_t>(src);
+	case mpdsp::ArithConfig::fpga_fixed:
+		return project_typed<fx1612_t>(src);
 	}
 	// Unreachable: the switch above is exhaustive over mpdsp::ArithConfig.
-	// This return exists only to keep the compiler quiet without reaching for
-	// [[noreturn]] or a warning pragma. When a new ArithConfig enumerator
-	// lands (e.g. sensor_8bit in #55), add a case above and this line stays
-	// inert.
 	return src;
 }
 

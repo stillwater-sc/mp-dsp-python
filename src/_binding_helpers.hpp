@@ -273,6 +273,7 @@ inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
                                Callable&& f) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -284,6 +285,13 @@ inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::half_config:  return f.template operator()<half_>();
 	case ArithConfig::posit_full:   return f.template operator()<p32>();
 	case ArithConfig::tiny_posit:   return f.template operator()<tiny_posit_t>();
+	// Sensor configs dispatch to the STATE scalar (double). The quantization
+	// effect that distinguishes sensor_* from `reference` surfaces through
+	// the sample-path dispatchers (project_dispatch / adc_dispatch), not
+	// here. See issue #55 for the design rationale.
+	case ArithConfig::sensor_8bit:  return f.template operator()<double>();
+	case ArithConfig::sensor_6bit:  return f.template operator()<double>();
+	case ArithConfig::fpga_fixed:   return f.template operator()<fx3224_t>();
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }
@@ -293,6 +301,7 @@ inline std::unique_ptr<Base>
 make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -311,6 +320,14 @@ make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) 
 		return std::make_unique<Impl<p32>>(std::forward<Args>(args)...);
 	case ArithConfig::tiny_posit:
 		return std::make_unique<Impl<tiny_posit_t>>(std::forward<Args>(args)...);
+	case ArithConfig::sensor_8bit:
+	case ArithConfig::sensor_6bit:
+		// Sensor configs keep the state/compute scalar at double — the
+		// 8/6-bit path only shows up in ADC quantization, not in the
+		// filter/processor state. See types.hpp.
+		return std::make_unique<Impl<double>>(std::forward<Args>(args)...);
+	case ArithConfig::fpga_fixed:
+		return std::make_unique<Impl<fx3224_t>>(std::forward<Args>(args)...);
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }

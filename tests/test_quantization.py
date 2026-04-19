@@ -99,10 +99,105 @@ class TestAvailableDtypes:
         assert "posit_full" in dtypes
         assert "half" in dtypes
 
+    def test_available_dtypes_includes_sensor_and_fpga(self):
+        # Phase 6 (#55) added the sensor/FPGA configs — guard against a
+        # future refactor silently dropping them from the registry.
+        dtypes = mpdsp.available_dtypes()
+        assert "sensor_8bit" in dtypes
+        assert "sensor_6bit" in dtypes
+        assert "fpga_fixed" in dtypes
+        assert len(dtypes) == 10
+
     def test_invalid_dtype_raises(self):
         sig = mpdsp.sine(100, frequency=440.0, sample_rate=44100.0)
         with pytest.raises(ValueError):
             mpdsp.adc(sig, dtype="nonexistent_type")
+
+
+class TestBitsOf:
+    """Regression guards for the bits_of() accessor (issue #55).
+
+    The sample-scalar bit width is the x-axis of the precision-cost
+    frontier; the dashboard used to hardcode this mapping. Pin the
+    numbers here so a future rename or reshape of ArithConfig can't
+    silently shift the frontier.
+    """
+
+    @pytest.mark.parametrize("dtype,expected", [
+        ("reference",    64),
+        ("gpu_baseline", 32),
+        ("ml_hw",        16),
+        ("half",         16),
+        ("cf24",         24),
+        ("posit_full",   16),
+        ("tiny_posit",    8),
+        ("sensor_8bit",   8),
+        ("sensor_6bit",   6),
+        ("fpga_fixed",   16),
+    ])
+    def test_bits_of_returns_expected_width(self, dtype, expected):
+        assert mpdsp.bits_of(dtype) == expected
+
+    def test_bits_of_covers_every_available_dtype(self):
+        # No dtype can be enumerated by available_dtypes() without also
+        # having a bits_of() answer — that's the invariant the dashboard
+        # relies on when iterating.
+        for dt in mpdsp.available_dtypes():
+            assert isinstance(mpdsp.bits_of(dt), int)
+
+    def test_bits_of_rejects_unknown_dtype(self):
+        with pytest.raises(ValueError):
+            mpdsp.bits_of("nonexistent_type")
+
+
+class TestSensorAndFpgaQuantization:
+    """End-to-end SQNR sweep through the three new (#55) configs.
+
+    Sensor configs quantize the sample path to integer<N>; the coarser the
+    N, the worse the SQNR. `fpga_fixed` keeps 12 fractional bits so SQNR
+    should land above the 8-bit sensor but well below `reference`. We
+    don't pin tight dB bounds — just the ordering that makes the frontier
+    plot meaningful.
+    """
+
+    def test_sensor_6bit_loses_more_sqnr_than_sensor_8bit(self):
+        sig = mpdsp.sine(4096, frequency=440.0, sample_rate=44100.0,
+                          amplitude=0.5)
+        sqnr_8 = mpdsp.measure_sqnr_db(sig, "sensor_8bit")
+        sqnr_6 = mpdsp.measure_sqnr_db(sig, "sensor_6bit")
+        # 6-bit quantization loses ~12 dB more than 8-bit per the 6 dB/bit
+        # rule of thumb — just assert direction, not magnitude.
+        assert sqnr_6 < sqnr_8
+
+    def test_fpga_fixed_beats_6bit_sensor(self):
+        sig = mpdsp.sine(4096, frequency=440.0, sample_rate=44100.0,
+                          amplitude=0.5)
+        sqnr_fpga = mpdsp.measure_sqnr_db(sig, "fpga_fixed")
+        sqnr_6    = mpdsp.measure_sqnr_db(sig, "sensor_6bit")
+        assert sqnr_fpga > sqnr_6
+
+    def test_adc_roundtrip_produces_different_output_per_new_dtype(self):
+        # Each new config should visibly quantize the signal — if two
+        # configs produce identical adc() output, dispatch is broken.
+        sig = mpdsp.sine(256, frequency=100.0, sample_rate=1024.0,
+                          amplitude=0.5)
+        q_8   = mpdsp.adc(sig, dtype="sensor_8bit")
+        q_6   = mpdsp.adc(sig, dtype="sensor_6bit")
+        q_fx  = mpdsp.adc(sig, dtype="fpga_fixed")
+        assert not np.array_equal(q_8, q_6)
+        assert not np.array_equal(q_8, q_fx)
+        assert not np.array_equal(q_6, q_fx)
+
+    def test_project_onto_sensor_8bit_quantizes(self):
+        # project_onto round-trips through the sample scalar. integer<8>
+        # has ~8 bits of precision so a mid-amplitude sine should show
+        # non-trivial quantization error.
+        sig = mpdsp.sine(512, frequency=10.0, sample_rate=512.0,
+                          amplitude=0.5)
+        projected = mpdsp.project_onto(sig, "sensor_8bit")
+        assert projected.shape == sig.shape
+        err = np.max(np.abs(sig - projected))
+        assert err > 1e-3  # integer<8> can't represent 0.5 exactly
 
 
 # ---------------------------------------------------------------------------

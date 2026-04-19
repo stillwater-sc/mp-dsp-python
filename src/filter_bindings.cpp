@@ -42,6 +42,10 @@
 #include <string>
 #include <vector>
 
+// sw::universal::is_integer trait used by the sample quantization helpers
+// below — #include <universal/traits/integer_traits.hpp> is pulled in
+// transitively via types.hpp's integer.hpp include.
+
 namespace nb = nanobind;
 
 // Max biquad stages exposed to Python. For Butterworth/Cheby/Bessel/Legendre:
@@ -57,6 +61,41 @@ using CascadeD = sw::dsp::Cascade<double, kMaxStages>;
 namespace {
 
 // ---------------------------------------------------------------------------
+// Sample quantization helpers.
+//
+// For float-like SampleScalar (float, posit, cfloat, fixpnt) a plain cast is
+// a faithful narrowing — the type represents fractional values natively.
+// For integer<N>, a plain static_cast truncates |x|<1 to zero, annihilating
+// any audio-range signal. Mirror the scale-quantize-unscale pipeline from
+// adc_typed / project_typed: map the full-scale [-1, 1] input range onto the
+// integer's representable range, quantize, then scale back. Keeps the
+// filter's sample-path quantization semantics consistent with what the ADC
+// binding exposes, so sensor_8bit FIR/IIR output isn't silently zero.
+// ---------------------------------------------------------------------------
+
+template <typename SampleScalar>
+static inline SampleScalar quantize_sample_in(double x) {
+	if constexpr (sw::universal::is_integer<SampleScalar>) {
+		constexpr double fs =
+			static_cast<double>((1LL << (SampleScalar::nbits - 1)) - 1);
+		return static_cast<SampleScalar>(x * fs);
+	} else {
+		return static_cast<SampleScalar>(x);
+	}
+}
+
+template <typename SampleScalar>
+static inline double quantize_sample_out(SampleScalar y) {
+	if constexpr (sw::universal::is_integer<SampleScalar>) {
+		constexpr double fs =
+			static_cast<double>((1LL << (SampleScalar::nbits - 1)) - 1);
+		return static_cast<double>(y) / fs;
+	} else {
+		return static_cast<double>(y);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Type-dispatched per-sample processing.
 // ---------------------------------------------------------------------------
 
@@ -65,10 +104,10 @@ static void process_typed(const CascadeD& cascade,
                           const double* in, double* out, std::size_t n) {
 	std::array<sw::dsp::DirectFormI<StateScalar>, kMaxStages> state{};
 	for (std::size_t i = 0; i < n; ++i) {
-		SampleScalar x = static_cast<SampleScalar>(in[i]);
+		SampleScalar x = quantize_sample_in<SampleScalar>(in[i]);
 		SampleScalar y = cascade.template process<sw::dsp::DirectFormI<StateScalar>,
 		                                          SampleScalar>(x, state);
-		out[i] = static_cast<double>(y);
+		out[i] = quantize_sample_out<SampleScalar>(y);
 	}
 }
 
@@ -77,7 +116,11 @@ static void process_dispatch(const CascadeD& cascade,
                              mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -96,6 +139,16 @@ static void process_dispatch(const CascadeD& cascade,
 		process_typed<p32, p16>(cascade, in, out, n); break;
 	case ArithConfig::tiny_posit:
 		process_typed<tiny_posit_t, tiny_posit_t>(cascade, in, out, n); break;
+	// Sensor configs: coefficient/state in double, sample quantized through
+	// integer<N>. integer<N> is ADL-castable from double via static_cast, so
+	// process_typed<double, int8_sample_t> models "signal arrives on an 8-bit
+	// ADC, filter state stays wide" — matches issue #55's sensor semantics.
+	case ArithConfig::sensor_8bit:
+		process_typed<double, int8_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::sensor_6bit:
+		process_typed<double, int6_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::fpga_fixed:
+		process_typed<fx3224_t, fx1612_t>(cascade, in, out, n); break;
 	}
 }
 
@@ -321,8 +374,8 @@ static void fir_process_typed(const mtl::vec::dense_vector<double>& taps_d,
 	}
 	sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar> filt(taps);
 	for (std::size_t i = 0; i < n; ++i) {
-		SampleScalar x = static_cast<SampleScalar>(in[i]);
-		out[i] = static_cast<double>(filt.process(x));
+		SampleScalar x = quantize_sample_in<SampleScalar>(in[i]);
+		out[i] = quantize_sample_out<SampleScalar>(filt.process(x));
 	}
 }
 
@@ -331,7 +384,11 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
                                  mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
 	using tiny_posit_t = sw::universal::posit<8, 2>;
@@ -350,6 +407,12 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
 		fir_process_typed<p32, p16>(taps_d, in, out, n); break;
 	case ArithConfig::tiny_posit:
 		fir_process_typed<tiny_posit_t, tiny_posit_t>(taps_d, in, out, n); break;
+	case ArithConfig::sensor_8bit:
+		fir_process_typed<double, int8_sample_t>(taps_d, in, out, n); break;
+	case ArithConfig::sensor_6bit:
+		fir_process_typed<double, int6_sample_t>(taps_d, in, out, n); break;
+	case ArithConfig::fpga_fixed:
+		fir_process_typed<fx3224_t, fx1612_t>(taps_d, in, out, n); break;
 	}
 }
 
@@ -419,6 +482,7 @@ static double pole_displacement_dispatch(const CascadeD& src,
                                          mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
+	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p16;
 	using mpdsp::p32;
@@ -432,6 +496,13 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	case ArithConfig::half_config:  quantized = quantize_cascade<half_>(src); break;
 	case ArithConfig::posit_full:   quantized = quantize_cascade<p32>(src); break;
 	case ArithConfig::tiny_posit:   quantized = quantize_cascade<tiny_posit_t>(src); break;
+	// sensor_* keep coefficients at double (only the sample path quantizes),
+	// so coefficient-level pole displacement is zero for them.
+	case ArithConfig::sensor_8bit:
+	case ArithConfig::sensor_6bit:
+		return 0.0;
+	case ArithConfig::fpga_fixed:
+		quantized = quantize_cascade<fx3224_t>(src); break;
 	}
 	return sw::dsp::pole_displacement(src, quantized);
 }
