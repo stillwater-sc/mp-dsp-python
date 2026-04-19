@@ -45,8 +45,9 @@ try:
         # Window functions
         hamming, hanning, blackman, kaiser, rectangular, flat_top,
         # Quantization
-        adc, sqnr_db, measure_sqnr_db,
+        adc, dac, sqnr_db, measure_sqnr_db,
         max_absolute_error, max_relative_error,
+        RPDFDither, TPDFDither, FirstOrderNoiseShaper,
         # Spectral
         fft, fft_magnitude_db, ifft, periodogram, psd, spectrogram,
         # Filters

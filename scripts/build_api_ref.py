@@ -110,7 +110,7 @@ CATEGORIES = [
         "hamming", "hanning", "blackman", "kaiser", "rectangular", "flat_top",
     ]),
     ("Quantization", [
-        "adc", "sqnr_db", "measure_sqnr_db",
+        "adc", "dac", "sqnr_db", "measure_sqnr_db",
         "max_absolute_error", "max_relative_error",
     ]),
     ("Spectral analysis", [
@@ -186,6 +186,7 @@ CATEGORIES = [
 
 CLASSES = [
     "IIRFilter", "FIRFilter",
+    "RPDFDither", "TPDFDither", "FirstOrderNoiseShaper",
     "PeakEnvelope", "RMSEnvelope", "Compressor", "AGC",
     "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
     "TransferFunction",
@@ -207,10 +208,15 @@ INTROS = {
         "`kaiser` additionally takes a shape parameter `beta`."
     ),
     "Quantization": (
-        "`adc` is the only generator here that takes a `dtype=` dispatch "
-        "parameter (it simulates an ADC at the target precision). The "
-        "rest are error-measurement primitives used to evaluate how far "
-        "a quantized signal drifted from its reference."
+        "`adc` / `dac` round-trip a signal through the target precision — "
+        "ADC models the quantization step, DAC the reconstruction step "
+        "(in Python, both sides are float64, so they're mechanically "
+        "symmetric but serve different roles in pipeline code). "
+        "`RPDFDither`, `TPDFDither` (stateful classes in the Classes "
+        "section below) add decorrelating noise before quantization; "
+        "`FirstOrderNoiseShaper` pushes quantization-noise energy out of "
+        "the signal band via error feedback. The remaining primitives "
+        "measure how far a quantized signal drifted from its reference."
     ),
     "Spectral analysis": (
         "All spectral primitives in 0.4.x operate in double precision — "
@@ -349,6 +355,25 @@ CLASS_INTROS = {
         "LMS/NLMS at the cost of O(N²) memory for the P matrix. Known to "
         "diverge under reduced precision when P loses symmetry — see "
         "`notebooks/06_estimation.ipynb`."
+    ),
+    "RPDFDither": (
+        "Rectangular-PDF (uniform) dither generator. Produces noise in "
+        "`[-amplitude, +amplitude]`. Use before quantization to decorrelate "
+        "error from the signal, at the cost of a flat noise floor. "
+        "Stateful because it carries a `std::mt19937` internally."
+    ),
+    "TPDFDither": (
+        "Triangular-PDF dither generator — sum of two RPDF draws. "
+        "Eliminates the noise-modulation artifact that RPDF leaves on "
+        "low-level signals, at a +3 dB noise-power cost. Generally "
+        "preferred over RPDF when the added noise power is tolerable."
+    ),
+    "FirstOrderNoiseShaper": (
+        "First-order error-feedback noise shaper. Quantizes `double → "
+        "dtype → double` while feeding the quantization error back "
+        "(negated) onto the next input. First-order shaping is a high-"
+        "pass on the noise floor — most useful upstream of a lowpass "
+        "reconstruction that rejects the shifted noise."
     ),
     "TransferFunction": (
         "Rational H(z) = B(z)/A(z) with double-precision coefficients. "

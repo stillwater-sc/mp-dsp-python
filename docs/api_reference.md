@@ -31,6 +31,9 @@ the note at the bottom.
 - [Classes](#classes)
   - [`IIRFilter`](#iirfilter)
   - [`FIRFilter`](#firfilter)
+  - [`RPDFDither`](#rpdfdither)
+  - [`TPDFDither`](#tpdfdither)
+  - [`FirstOrderNoiseShaper`](#firstordernoiseshaper)
   - [`PeakEnvelope`](#peakenvelope)
   - [`RMSEnvelope`](#rmsenvelope)
   - [`Compressor`](#compressor)
@@ -108,11 +111,12 @@ Return a length-N float64 NumPy array. Apply by element-wise multiplication agai
 
 ## Quantization
 
-`adc` is the only generator here that takes a `dtype=` dispatch parameter (it simulates an ADC at the target precision). The rest are error-measurement primitives used to evaluate how far a quantized signal drifted from its reference.
+`adc` / `dac` round-trip a signal through the target precision — ADC models the quantization step, DAC the reconstruction step (in Python, both sides are float64, so they're mechanically symmetric but serve different roles in pipeline code). `RPDFDither`, `TPDFDither` (stateful classes in the Classes section below) add decorrelating noise before quantization; `FirstOrderNoiseShaper` pushes quantization-noise energy out of the signal band via error feedback. The remaining primitives measure how far a quantized signal drifted from its reference.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `adc` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Quantize signal through target type (double -> T -> double). |
+| `dac` | `(quantized: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Reconstruct a quantized signal through target type (T -> double). Companion to adc(): in Python both sides are float64 so the call is mechanically symmetric to adc, but dac models the DAC reconstruction step of a full ADC->DAC pipeline explicitly. |
 | `sqnr_db` | `(reference: ndarray1d[ro], quantized: ndarray1d[ro]) -> float` | Compute SQNR (dB) between reference and quantized signals. |
 | `measure_sqnr_db` | `(signal: ndarray1d[ro], dtype: str) -> float` | Measure SQNR of a signal after ADC round-trip through target type. |
 | `max_absolute_error` | `(reference: ndarray1d[ro], test: ndarray1d[ro]) -> float` | Maximum absolute error between two signals. |
@@ -354,6 +358,45 @@ Returned by `fir_lowpass` / `fir_highpass` / `fir_bandpass` / `fir_bandstop` / `
 | `.impulse_response` | `(self, length: int) -> numpy.ndarray[dtype=float64]` — Impulse response — the taps, padded or truncated to `length`. |
 | `.num_taps` | `(self) -> int` — Number of tap coefficients. |
 | `.process` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False], dtype: str = 'reference') -> numpy.ndarray[dtype=float64]` — Filter a signal. dtype selects arithmetic for taps, state, and samples (see available_dtypes()). Returns NumPy float64. |
+
+### `RPDFDither`
+
+Rectangular-PDF (uniform) dither generator. Produces noise in `[-amplitude, +amplitude]`. Use before quantization to decorrelate error from the signal, at the cost of a flat noise floor. Stateful because it carries a `std::mt19937` internally.
+
+> Rectangular-PDF dither generator.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.amplitude` | (self) -> float |
+| `.apply` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=float64]` — Dither `signal` (float64 ndarray). Returns a new float64 ndarray. |
+| `.dtype` | Arithmetic configuration selected at construction. |
+| `.sample` | `(self) -> float` — Draw a single dither sample as a Python float. |
+
+### `TPDFDither`
+
+Triangular-PDF dither generator — sum of two RPDF draws. Eliminates the noise-modulation artifact that RPDF leaves on low-level signals, at a +3 dB noise-power cost. Generally preferred over RPDF when the added noise power is tolerable.
+
+> Triangular-PDF dither generator.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.amplitude` | (self) -> float |
+| `.apply` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=float64]` — Dither `signal` (float64 ndarray). Returns a new float64 ndarray. |
+| `.dtype` | Arithmetic configuration selected at construction. |
+| `.sample` | `(self) -> float` — Draw a single dither sample as a Python float. |
+
+### `FirstOrderNoiseShaper`
+
+First-order error-feedback noise shaper. Quantizes `double → dtype → double` while feeding the quantization error back (negated) onto the next input. First-order shaping is a high-pass on the noise floor — most useful upstream of a lowpass reconstruction that rejects the shifted noise.
+
+> First-order error-feedback noise shaper.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.dtype` | Arithmetic configuration selected at construction. |
+| `.process` | `(self, input: float) -> float` — Process a single sample. Returns the shaped+quantized output. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=float64]` — Process a float64 ndarray signal. Returns a new float64 ndarray with the shaped+quantized output. |
+| `.reset` | `(self) -> None` — Clear the error-feedback state to zero. |
 
 ### `PeakEnvelope`
 
