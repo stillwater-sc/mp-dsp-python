@@ -201,6 +201,7 @@ nanobind_add_module(_core
   src/estimation_bindings.cpp
   src/image_bindings.cpp
   src/types_bindings.cpp
+  src/analysis_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 

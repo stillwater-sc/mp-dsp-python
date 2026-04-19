@@ -65,3 +65,32 @@ def is_stable(filt, tol: float = 0.0) -> bool:
     ``max|pole|`` can drift outward by a quantization-dependent amount.
     """
     return max_pole_radius(filt) < (1.0 - tol)
+
+
+def cascade_condition_number(filt, num_freqs: int = 512) -> float:
+    """Condition number of an entire IIR cascade.
+
+    Free-function companion to the per-biquad ``biquad_condition_number``
+    (bound in C++). Equivalent to ``filt.condition_number(num_freqs)`` —
+    the upstream ``sw::dsp::cascade_condition_number`` is exactly what the
+    ``IIRFilter.condition_number`` method already wraps. This Python
+    wrapper exists to surface the free-function spelling (useful when
+    writing design-time sweeps that accept a filter plus a custom
+    ``num_freqs`` as separate arguments) without duplicating the C++
+    side.
+
+    Note: ``num_freqs`` defaults to 512 here to match the 0.5.0 free-
+    function API contract in issue #53, while the existing
+    ``IIRFilter.condition_number`` method retains its 256 default from
+    #8 for backwards compatibility. Both accept an explicit
+    ``num_freqs`` if you want to override.
+
+    Parameters
+    ----------
+    filt : mpdsp.IIRFilter
+        A designed IIR filter.
+    num_freqs : int
+        Number of frequency points sampled on [0, 0.5]. Larger values give
+        a more accurate condition-number estimate at proportional cost.
+    """
+    return float(filt.condition_number(num_freqs))

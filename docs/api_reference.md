@@ -25,7 +25,8 @@ the note at the bottom.
 - [Image — file I/O](#image--file-io)
 - [Audio — WAV file I/O](#audio--wav-file-io)
 - [Types — transfer function and type projection](#types--transfer-function-and-type-projection)
-- [Numerical-analysis helpers (pure Python)](#numerical-analysis-helpers-pure-python)
+- [Numerical analysis — pure-Python helpers](#numerical-analysis--pure-python-helpers)
+- [Numerical analysis — free-function primitives (bound)](#numerical-analysis--free-function-primitives-bound)
 - [Mixed-precision helpers](#mixed-precision-helpers)
 - [CSV + image-pipeline helpers (pure Python)](#csv--image-pipeline-helpers-pure-python)
 - [Matplotlib plotting helpers](#matplotlib-plotting-helpers)
@@ -284,15 +285,25 @@ PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Read
 | `projection_error` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> float` | Max absolute error between data and its round-trip through `dtype`. Equivalent to max(abs(data - project_onto(data, dtype))) but computed without allocating the intermediate ndarray. |
 | `to_transfer_function` | `(filt)` | Fold an `IIRFilter` cascade into a single `TransferFunction`. |
 
-## Numerical-analysis helpers (pure Python)
+## Numerical analysis — pure-Python helpers
 
-Thin layer over already-bound `IIRFilter` methods. `biquad_poles` is a standalone quadratic solver that takes a 5-tuple of coefficients. See `IIRFilter.stability_margin()`, `.condition_number()`, `.worst_case_sensitivity()`, and `.pole_displacement(dtype)` for the per-filter metrics.
+Thin layer over already-bound `IIRFilter` methods. `biquad_poles` is a standalone quadratic solver that takes a 5-tuple of coefficients. `cascade_condition_number(filt, num_freqs)` is the free-function companion to `filt.condition_number(num_freqs)` — identical upstream call, just different calling convention. See `IIRFilter.stability_margin()`, `.condition_number()`, `.worst_case_sensitivity()`, and `.pole_displacement(dtype)` for the per-filter metrics.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `biquad_poles` | `(b0: 'float', b1: 'float', b2: 'float', a1: 'float', a2: 'float') -> 'list[complex]'` | Two poles of a single biquad section. |
 | `max_pole_radius` | `(filt) -> 'float'` | Largest ``\|pole\|`` in the filter's z-plane. |
 | `is_stable` | `(filt, tol: 'float' = 0.0) -> 'bool'` | True iff all poles are strictly inside the unit circle. |
+| `cascade_condition_number` | `(filt, num_freqs: 'int' = 512) -> 'float'` | Condition number of an entire IIR cascade. |
+
+## Numerical analysis — free-function primitives (bound)
+
+Coefficient-level analysis that doesn't require a constructed IIRFilter — useful for design-time coefficient sweeps. `coefficient_sensitivity` returns the finite-difference pole-radius sensitivities `(dp_da1, dp_da2)`; `biquad_condition_number` returns the max relative response change per unit coefficient perturbation over a frequency sweep. Both bound on double only — mixed-precision analysis of the full filter lives on the IIRFilter methods, which dispatch through `ArithConfig`.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `coefficient_sensitivity` | `(b0: float, b1: float, b2: float, a1: float, a2: float, epsilon: float = 1e-08) -> tuple` | Coefficient sensitivity of a biquad, as a (dp_da1, dp_da2) tuple of doubles. |
+| `biquad_condition_number` | `(b0: float, b1: float, b2: float, a1: float, a2: float, num_freqs: int = 512) -> float` | Condition number of a single biquad section. |
 
 ## Mixed-precision helpers
 
