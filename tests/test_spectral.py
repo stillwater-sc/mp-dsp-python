@@ -100,3 +100,111 @@ class TestSpectrogram:
         assert mag.min() < 0
         # But should have some positive peaks
         assert mag.max() > -20
+
+
+# ---------------------------------------------------------------------------
+# Dtype dispatch on all 5 spectral primitives (#54 Phase 5 PR-B).
+#
+# Every primitive now accepts a `dtype=` string selecting the internal
+# arithmetic. Inputs and outputs stay double/complex128 at the Python layer;
+# only the C++ computation runs at the target precision.
+# ---------------------------------------------------------------------------
+
+
+# Every primitive should accept every config listed in available_dtypes().
+# Check this by construction so adding a new ArithConfig enumerator (e.g.
+# #55's sensor/fpga types) automatically exercises each primitive.
+ALL_DTYPES = list(mpdsp.available_dtypes())
+
+
+class TestSpectralDtypeDispatch:
+    """One test per primitive at `reference` + one narrow dtype, plus a
+    sweep that hits every config. The sweep guards against a new config
+    landing without a corresponding dispatch case."""
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_fft_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        r, i = mpdsp.fft(sig, dtype=dtype)
+        assert r.shape == i.shape == (256,)
+        assert np.all(np.isfinite(r))
+        assert np.all(np.isfinite(i))
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_fft_magnitude_db_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        mag = mpdsp.fft_magnitude_db(sig, dtype=dtype)
+        assert mag.shape == (256,)
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_ifft_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        r, i = mpdsp.fft(sig, dtype="reference")
+        recovered = mpdsp.ifft(r, i, dtype=dtype)
+        assert recovered.shape == sig.shape
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_periodogram_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        p = mpdsp.periodogram(sig, dtype=dtype)
+        assert p.shape == (129,)  # N/2 + 1 for real-input periodogram
+        assert np.all(p >= 0)
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_psd_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        f, p = mpdsp.psd(sig, sample_rate=256.0, dtype=dtype)
+        assert f.shape == p.shape == (129,)
+
+    @pytest.mark.parametrize("dtype", ALL_DTYPES)
+    def test_spectrogram_runs_for_every_dtype(self, dtype):
+        sig = mpdsp.sine(512, frequency=10.0, sample_rate=256.0)
+        t, f, m = mpdsp.spectrogram(
+            sig, sample_rate=256.0, window_size=128, hop_size=32,
+            dtype=dtype)
+        assert m.ndim == 2
+        assert m.shape == (len(t), len(f))
+
+
+class TestSpectralDtypeFidelity:
+    """Precision semantics: narrower dtypes should produce observably
+    different (generally lower-fidelity) output than `reference`. These
+    aren't looking for specific SQNR floors — just confirming dispatch is
+    actually routing to different typed implementations."""
+
+    def test_fft_narrow_dtype_differs_from_reference(self):
+        # A mid-amplitude sine quantized through tiny_posit should show
+        # meaningful divergence from the double-precision FFT.
+        sig = mpdsp.sine(512, frequency=10.0, sample_rate=512.0,
+                          amplitude=0.5)
+        r_ref, i_ref = mpdsp.fft(sig, dtype="reference")
+        r_narrow, i_narrow = mpdsp.fft(sig, dtype="tiny_posit")
+        max_diff = max(np.max(np.abs(r_ref - r_narrow)),
+                        np.max(np.abs(i_ref - i_narrow)))
+        assert max_diff > 1e-3, \
+            "tiny_posit FFT shouldn't be bit-identical to reference"
+
+    def test_periodogram_narrow_dtype_differs_from_reference(self):
+        sig = mpdsp.sine(512, frequency=10.0, sample_rate=512.0,
+                          amplitude=0.5)
+        p_ref = mpdsp.periodogram(sig, dtype="reference")
+        p_narrow = mpdsp.periodogram(sig, dtype="tiny_posit")
+        # Peak bin location should still agree (that's a structural
+        # invariant), but magnitudes will diverge.
+        assert np.argmax(p_ref) == np.argmax(p_narrow)
+        assert np.max(np.abs(p_ref - p_narrow)) > 1e-6
+
+    def test_fft_ifft_roundtrip_reference_is_near_exact(self):
+        # At reference dtype, fft -> ifft must recover the input to
+        # machine precision.
+        sig = mpdsp.sine(256, frequency=12.0, sample_rate=256.0)
+        r, i = mpdsp.fft(sig, dtype="reference")
+        recovered = mpdsp.ifft(r, i, dtype="reference")
+        np.testing.assert_allclose(recovered, sig, atol=1e-10)
+
+    def test_invalid_dtype_raises(self):
+        sig = mpdsp.sine(64, frequency=10.0, sample_rate=64.0)
+        with pytest.raises(ValueError):
+            mpdsp.fft(sig, dtype="nonexistent")
+        with pytest.raises(ValueError):
+            mpdsp.periodogram(sig, dtype="nonexistent")

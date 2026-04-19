@@ -127,16 +127,16 @@ Return a length-N float64 NumPy array. Apply by element-wise multiplication agai
 
 ## Spectral analysis
 
-All spectral primitives in 0.4.x operate in double precision — dtype dispatch on FFT/PSD/spectrogram is planned for 0.5.0 (see issue #40). Signal inputs must be 1D float64.
+All five primitives accept a `dtype=` parameter selecting the internal arithmetic (see `mpdsp.available_dtypes()`). Inputs and outputs at the Python layer remain double/complex128; only the C++ computation runs at the target precision. For rational-transfer-function evaluation see `ztransform`, `freqz`, `group_delay`, `laplace_freqs` in the Types section.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `fft` | `(signal: ndarray1d[ro]) -> tuple` | Compute FFT of a real signal. Returns (real, imag) tuple of NumPy arrays. |
-| `ifft` | `(real: ndarray1d[ro], imag: ndarray1d[ro]) -> ndarray` | Compute inverse FFT from (real, imag) arrays. Returns real signal. |
-| `fft_magnitude_db` | `(signal: ndarray1d[ro]) -> ndarray` | Compute FFT magnitude spectrum in dB. |
-| `psd` | `(signal: ndarray1d[ro], sample_rate: float) -> tuple` | Compute PSD with frequency axis. Returns (freqs_hz, power) tuple. |
-| `periodogram` | `(signal: ndarray1d[ro]) -> ndarray` | Compute periodogram power spectral density estimate. |
-| `spectrogram` | `(signal: ndarray1d[ro], sample_rate: float, window_size: int = 1024, hop_size: int = 256) -> tuple` | Compute spectrogram. Returns (times, freqs, magnitude_db) tuple. magnitude_db is a 2D array [n_frames x n_freqs]. |
+| `fft` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> tuple` | Compute FFT of a real signal. Returns (real, imag) tuple of NumPy arrays. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `ifft` | `(real: ndarray1d[ro], imag: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Compute inverse FFT from (real, imag) arrays. Returns real signal. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `fft_magnitude_db` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Compute FFT magnitude spectrum in dB. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `psd` | `(signal: ndarray1d[ro], sample_rate: float, dtype: str = 'reference') -> tuple` | Compute PSD with frequency axis. Returns (freqs_hz, power) tuple. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `periodogram` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Compute periodogram power spectral density estimate. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `spectrogram` | `(signal: ndarray1d[ro], sample_rate: float, window_size: int = 1024, hop_size: int = 256, dtype: str = 'reference') -> tuple` | Compute spectrogram. Returns (times, freqs, magnitude_db) tuple. magnitude_db is a 2D array [n_frames x n_freqs]. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
 
 ## IIR filter design — classical families
 
