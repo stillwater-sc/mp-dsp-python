@@ -99,6 +99,8 @@ try:
         read_pgm, write_pgm,
         read_ppm, write_ppm,
         read_bmp, write_bmp, write_bmp_rgb,
+        # Audio — file I/O
+        read_wav, write_wav,
         # Types — rational transfer function + type projection
         TransferFunction,
         project_onto, projection_error,

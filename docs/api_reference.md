@@ -23,6 +23,7 @@ the note at the bottom.
 - [Image — processing](#image--processing)
 - [Image — morphology](#image--morphology)
 - [Image — file I/O](#image--file-io)
+- [Audio — WAV file I/O](#audio--wav-file-io)
 - [Types — transfer function and type projection](#types--transfer-function-and-type-projection)
 - [Numerical-analysis helpers (pure Python)](#numerical-analysis-helpers-pure-python)
 - [Mixed-precision helpers](#mixed-precision-helpers)
@@ -252,7 +253,7 @@ The `make_*_element` helpers construct structuring elements (boolean 2D arrays) 
 
 ## Image — file I/O
 
-PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Reads return float64 arrays normalized to `[0.0, 1.0]`; writes expect the same range. WAV support is planned for 0.5.0 (see issue #40).
+PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Reads return float64 arrays normalized to `[0.0, 1.0]`; writes expect the same range.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
@@ -263,6 +264,15 @@ PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Read
 | `read_bmp` | `(path: str) -> tuple[ndarray2d, ndarray2d, ndarray2d, bool]` | Read a BMP file (8-bit palette or 24-bit RGB). Returns (r, g, b, is_grayscale) — channels normalized to [0, 1]. |
 | `write_bmp` | `(path: str, image: ndarray2d[ro]) -> None` | Write a grayscale image to a 24-bit BMP file (R=G=B=image). |
 | `write_bmp_rgb` | `(path: str, r: ndarray2d[ro], g: ndarray2d[ro], b: ndarray2d[ro]) -> None` | Write an RGB image to a 24-bit BMP file. |
+
+## Audio — WAV file I/O
+
+8/16/24/32-bit integer PCM (read + write) and 32-bit float PCM (read only — upstream doesn't write float PCM even though it reads it). Samples normalized to `[-1, 1]`. `read_wav` returns 1D for mono files, 2D `(N, channels)` for multi-channel — same convention as `scipy.io.wavfile`.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `read_wav` | `(path: str) -> tuple` | Read a WAV file. Returns (data, sample_rate): data is a float64 ndarray normalized to [-1, 1] — shape (N,) for mono files, shape (N, channels) for multi-channel. Supports 8/16/24/32-bit integer PCM and 32-bit float PCM. |
+| `write_wav` | `(path: str, data: ndarray[], sample_rate: int, bits_per_sample: int = 16) -> None` | Write a WAV file. `data` is a float64 ndarray — 1D for mono or 2D (N, channels) for multi-channel. Values outside [-1, 1] are clipped. bits_per_sample must be 8, 16, 24, or 32 (integer PCM only — float32-PCM write is not supported by upstream even though float32-PCM read is). |
 
 ## Types — transfer function and type projection
 

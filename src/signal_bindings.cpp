@@ -1,13 +1,19 @@
-// signal_bindings.cpp: signal generators and window functions → NumPy
+// signal_bindings.cpp: signal generators, window functions, WAV I/O → NumPy
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 
+#include <sw/dsp/io/wav.hpp>
 #include <sw/dsp/signals/generators.hpp>
 #include <sw/dsp/windows/windows.hpp>
 
 #include <cstddef>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace nb = nanobind;
 
@@ -120,4 +126,122 @@ void bind_signals(nb::module_& m) {
 	m.def("flat_top", [](std::size_t N) {
 		return vec_to_numpy(flat_top_window<double>(N));
 	}, nb::arg("N"), "Flat-top window of length N.");
+
+	// ---------------------------------------------------------------
+	// WAV I/O. Binds upstream sw::dsp::io::read_wav / write_wav_channels.
+	//
+	// Shape convention (matches scipy.io.wavfile and librosa):
+	//   - read_wav returns 1D ndarray for mono files, 2D (N, channels)
+	//     for multi-channel files. The sample_rate is returned as an int
+	//     alongside the audio data.
+	//   - write_wav accepts 1D for mono, 2D (N, channels) for multi.
+	//     Upstream only supports integer-PCM writes (8/16/24/32-bit);
+	//     float32-PCM write isn't available even though float32-PCM
+	//     read is. This asymmetry is documented rather than papered over.
+	// ---------------------------------------------------------------
+
+	using np_rw_1d = nb::ndarray<nb::numpy, const double,
+	                               nb::ndim<1>, nb::c_contig>;
+	using np_rw_2d = nb::ndarray<nb::numpy, const double,
+	                               nb::ndim<2>, nb::c_contig>;
+	using np_out_1d = nb::ndarray<nb::numpy, double>;
+	using np_out_2d = nb::ndarray<nb::numpy, double>;
+
+	m.def("read_wav",
+		[](const std::string& path) {
+			auto data = sw::dsp::io::read_wav(path);
+			int nc = data.num_channels;
+			std::size_t ns = data.num_samples();
+
+			if (nc == 1) {
+				// Mono — return a 1D array.
+				auto* out = new double[ns];
+				nb::capsule owner(out, [](void* p) noexcept {
+					delete[] static_cast<double*>(p);
+				});
+				for (std::size_t i = 0; i < ns; ++i) out[i] = data.channels[0][i];
+				std::size_t shape[1] = { ns };
+				return nb::make_tuple(
+					np_out_1d(out, 1, shape, owner), data.sample_rate);
+			}
+
+			// Multi-channel — return (N, channels) in C-contiguous layout,
+			// which is the scipy.io.wavfile convention.
+			auto* out = new double[ns * static_cast<std::size_t>(nc)];
+			nb::capsule owner(out, [](void* p) noexcept {
+				delete[] static_cast<double*>(p);
+			});
+			for (std::size_t i = 0; i < ns; ++i) {
+				for (int c = 0; c < nc; ++c) {
+					out[i * nc + c] = data.channels[c][i];
+				}
+			}
+			std::size_t shape[2] = { ns, static_cast<std::size_t>(nc) };
+			return nb::make_tuple(
+				np_out_2d(out, 2, shape, owner), data.sample_rate);
+		},
+		nb::arg("path"),
+		"Read a WAV file. Returns (data, sample_rate): data is a float64 "
+		"ndarray normalized to [-1, 1] — shape (N,) for mono files, "
+		"shape (N, channels) for multi-channel. Supports 8/16/24/32-bit "
+		"integer PCM and 32-bit float PCM.");
+
+	m.def("write_wav",
+		[](const std::string& path, nb::ndarray<> data, int sample_rate,
+		   int bits_per_sample) {
+			if (bits_per_sample != 8 && bits_per_sample != 16 &&
+			    bits_per_sample != 24 && bits_per_sample != 32) {
+				throw std::invalid_argument(
+					"write_wav: bits_per_sample must be 8, 16, 24, or 32");
+			}
+			if (!(sample_rate > 0)) {
+				throw std::invalid_argument(
+					"write_wav: sample_rate must be positive");
+			}
+
+			// Accept 1D (mono) and 2D (multi-channel) float64 C-contiguous
+			// arrays. nb::ndarray<> is intentionally untyped so we can
+			// branch on ndim after checking the dtype.
+			if (data.dtype() != nb::dtype<double>()) {
+				throw std::invalid_argument(
+					"write_wav: data must be a float64 ndarray");
+			}
+
+			const double* base = static_cast<const double*>(data.data());
+
+			if (data.ndim() == 1) {
+				std::size_t ns = data.shape(0);
+				std::span<const double> mono(base, ns);
+				sw::dsp::io::write_wav(path, mono, sample_rate, bits_per_sample);
+			} else if (data.ndim() == 2) {
+				std::size_t ns = data.shape(0);
+				std::size_t nc = data.shape(1);
+				// De-interleave into per-channel contiguous vectors so we can
+				// hand each one as a span to upstream. A zero-copy view isn't
+				// possible because C-contiguous (N, C) has channel samples
+				// interleaved, but upstream wants channel-major layout.
+				std::vector<std::vector<double>> per_channel(nc);
+				for (std::size_t c = 0; c < nc; ++c) {
+					per_channel[c].resize(ns);
+					for (std::size_t i = 0; i < ns; ++i) {
+						per_channel[c][i] = base[i * nc + c];
+					}
+				}
+				std::vector<std::span<const double>> channels;
+				channels.reserve(nc);
+				for (auto& ch : per_channel) channels.emplace_back(ch);
+				sw::dsp::io::write_wav_channels(
+					path, channels, sample_rate, bits_per_sample);
+			} else {
+				throw std::invalid_argument(
+					"write_wav: data must be 1D (mono) or 2D (N, channels)");
+			}
+		},
+		nb::arg("path"), nb::arg("data"), nb::arg("sample_rate"),
+		nb::arg("bits_per_sample") = 16,
+		"Write a WAV file. `data` is a float64 ndarray — 1D for mono or "
+		"2D (N, channels) for multi-channel. Values outside [-1, 1] are "
+		"clipped. bits_per_sample must be 8, 16, 24, or 32 (integer PCM "
+		"only — float32-PCM write is not supported by upstream even though "
+		"float32-PCM read is).");
 }
