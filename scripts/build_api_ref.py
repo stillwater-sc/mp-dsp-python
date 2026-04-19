@@ -161,6 +161,9 @@ CATEGORIES = [
         "read_pgm", "write_pgm", "read_ppm", "write_ppm",
         "read_bmp", "write_bmp", "write_bmp_rgb",
     ]),
+    ("Audio — WAV file I/O", [
+        "read_wav", "write_wav",
+    ]),
     ("Types — transfer function and type projection", [
         "project_onto", "projection_error", "to_transfer_function",
     ]),
@@ -264,8 +267,14 @@ INTROS = {
     "Image — file I/O": (
         "PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit "
         "grayscale + RGB). Reads return float64 arrays normalized to "
-        "`[0.0, 1.0]`; writes expect the same range. WAV support is "
-        "planned for 0.5.0 (see issue #40)."
+        "`[0.0, 1.0]`; writes expect the same range."
+    ),
+    "Audio — WAV file I/O": (
+        "8/16/24/32-bit integer PCM (read + write) and 32-bit float PCM "
+        "(read only — upstream doesn't write float PCM even though it "
+        "reads it). Samples normalized to `[-1, 1]`. `read_wav` returns "
+        "1D for mono files, 2D `(N, channels)` for multi-channel — same "
+        "convention as `scipy.io.wavfile`."
     ),
     "Types — transfer function and type projection": (
         "`TransferFunction` is bound on double in 0.5.0 and represents the "
