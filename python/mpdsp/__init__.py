@@ -102,8 +102,10 @@ try:
         # Audio — file I/O
         read_wav, write_wav,
         # Types — rational transfer function + type projection
-        TransferFunction,
+        TransferFunction, ContinuousTransferFunction,
         project_onto, projection_error,
+        # Types — spectral-analysis free functions over transfer functions
+        ztransform, freqz, group_delay, laplace_freqs,
         # Analysis — free-function primitives (method-form lives on IIRFilter)
         coefficient_sensitivity, biquad_condition_number,
         # Introspection
