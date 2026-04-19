@@ -310,16 +310,25 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::tiny_posit:
 		return std::make_unique<AdaptiveFilterImpl<Filter, tiny_posit_t>>(
 			num_taps, static_cast<tiny_posit_t>(args)...);
-	// Sensor configs keep the filter state at double; the sample-path
-	// quantization lives in project_dispatch / adc_dispatch rather than
-	// the adaptive update itself.
+	// Reject the Phase-6 sensor/FPGA configs here. Adaptive filters only
+	// accept a single scalar T, so we can't independently honour both a
+	// double state and an integer<N> / fixpnt<16,12> sample path — either
+	// the sensor_* configs would silently collapse to `reference` (with
+	// no quantization visible), or fpga_fixed would claim a 16-bit sample
+	// path while actually running the adaptive update at fixpnt<32,24>
+	// and breaking dtype-to-dtype comparisons. Surface the limitation
+	// instead of fabricating a misleading answer; a future wrapper can
+	// add explicit pre/post sample quantization around the update if a
+	// real use case appears.
 	case ArithConfig::sensor_8bit:
 	case ArithConfig::sensor_6bit:
-		return std::make_unique<AdaptiveFilterImpl<Filter, double>>(
-			num_taps, static_cast<double>(args)...);
 	case ArithConfig::fpga_fixed:
-		return std::make_unique<AdaptiveFilterImpl<Filter, fx3224_t>>(
-			num_taps, static_cast<fx3224_t>(args)...);
+		throw std::invalid_argument(
+			std::string(cls) +
+			": dtype not supported by adaptive filters — sensor_* and "
+			"fpga_fixed mix state and sample precisions, which the "
+			"single-T adaptive update can't honour. Use reference, "
+			"gpu_baseline, ml_hw, posit_full, tiny_posit, cf24, or half.");
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }

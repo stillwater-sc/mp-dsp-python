@@ -42,6 +42,10 @@
 #include <string>
 #include <vector>
 
+// sw::universal::is_integer trait used by the sample quantization helpers
+// below — #include <universal/traits/integer_traits.hpp> is pulled in
+// transitively via types.hpp's integer.hpp include.
+
 namespace nb = nanobind;
 
 // Max biquad stages exposed to Python. For Butterworth/Cheby/Bessel/Legendre:
@@ -57,6 +61,41 @@ using CascadeD = sw::dsp::Cascade<double, kMaxStages>;
 namespace {
 
 // ---------------------------------------------------------------------------
+// Sample quantization helpers.
+//
+// For float-like SampleScalar (float, posit, cfloat, fixpnt) a plain cast is
+// a faithful narrowing — the type represents fractional values natively.
+// For integer<N>, a plain static_cast truncates |x|<1 to zero, annihilating
+// any audio-range signal. Mirror the scale-quantize-unscale pipeline from
+// adc_typed / project_typed: map the full-scale [-1, 1] input range onto the
+// integer's representable range, quantize, then scale back. Keeps the
+// filter's sample-path quantization semantics consistent with what the ADC
+// binding exposes, so sensor_8bit FIR/IIR output isn't silently zero.
+// ---------------------------------------------------------------------------
+
+template <typename SampleScalar>
+static inline SampleScalar quantize_sample_in(double x) {
+	if constexpr (sw::universal::is_integer<SampleScalar>) {
+		constexpr double fs =
+			static_cast<double>((1LL << (SampleScalar::nbits - 1)) - 1);
+		return static_cast<SampleScalar>(x * fs);
+	} else {
+		return static_cast<SampleScalar>(x);
+	}
+}
+
+template <typename SampleScalar>
+static inline double quantize_sample_out(SampleScalar y) {
+	if constexpr (sw::universal::is_integer<SampleScalar>) {
+		constexpr double fs =
+			static_cast<double>((1LL << (SampleScalar::nbits - 1)) - 1);
+		return static_cast<double>(y) / fs;
+	} else {
+		return static_cast<double>(y);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Type-dispatched per-sample processing.
 // ---------------------------------------------------------------------------
 
@@ -65,10 +104,10 @@ static void process_typed(const CascadeD& cascade,
                           const double* in, double* out, std::size_t n) {
 	std::array<sw::dsp::DirectFormI<StateScalar>, kMaxStages> state{};
 	for (std::size_t i = 0; i < n; ++i) {
-		SampleScalar x = static_cast<SampleScalar>(in[i]);
+		SampleScalar x = quantize_sample_in<SampleScalar>(in[i]);
 		SampleScalar y = cascade.template process<sw::dsp::DirectFormI<StateScalar>,
 		                                          SampleScalar>(x, state);
-		out[i] = static_cast<double>(y);
+		out[i] = quantize_sample_out<SampleScalar>(y);
 	}
 }
 
@@ -335,8 +374,8 @@ static void fir_process_typed(const mtl::vec::dense_vector<double>& taps_d,
 	}
 	sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar> filt(taps);
 	for (std::size_t i = 0; i < n; ++i) {
-		SampleScalar x = static_cast<SampleScalar>(in[i]);
-		out[i] = static_cast<double>(filt.process(x));
+		SampleScalar x = quantize_sample_in<SampleScalar>(in[i]);
+		out[i] = quantize_sample_out<SampleScalar>(filt.process(x));
 	}
 }
 

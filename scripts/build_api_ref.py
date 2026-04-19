@@ -176,7 +176,7 @@ CATEGORIES = [
         "coefficient_sensitivity", "biquad_condition_number",
     ]),
     ("Mixed-precision helpers", [
-        "available_dtypes", "compare_filters",
+        "available_dtypes", "bits_of", "compare_filters",
     ]),
     ("CSV + image-pipeline helpers (pure Python)", [
         "load_sweep", "apply_per_channel", "collect_adaptive_weights",

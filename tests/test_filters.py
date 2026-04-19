@@ -124,6 +124,20 @@ class TestProcessing:
         with pytest.raises(Exception):
             filt.process(sig, dtype="not_a_real_dtype")
 
+    def test_sensor_8bit_output_stays_in_signal_range(self):
+        # Sensor dtypes route samples through integer<N> with the
+        # scale-quantize-unscale pipeline, so output of a unit-amplitude
+        # sine must stay in roughly [-1, 1] — not collapse to zero (the
+        # naive-cast failure mode) and not explode into integer units.
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)  # amplitude 1.0
+        y = filt.process(sig, dtype="sensor_8bit")
+        assert np.max(np.abs(y)) > 0.1   # not annihilated
+        assert np.max(np.abs(y)) < 2.0   # not in integer units (would be ~127)
+        # 8-bit quantization should noticeably differ from reference.
+        ref = filt.process(sig, dtype="reference")
+        assert not np.array_equal(y, ref)
+
 
 # ---------------------------------------------------------------------------
 # Helpers reused across families.

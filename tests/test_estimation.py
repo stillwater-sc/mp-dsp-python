@@ -284,6 +284,16 @@ class TestLMSFilter:
         with pytest.raises(ValueError):
             mpdsp.LMSFilter(num_taps=4, step_size=0.01, dtype="not_a_dtype")
 
+    @pytest.mark.parametrize("dtype", ["sensor_8bit", "sensor_6bit", "fpga_fixed"])
+    def test_sensor_and_fpga_configs_rejected(self, dtype):
+        # Adaptive filters have a single scalar T — there's no way to honour
+        # a mixed state/sample precision pair the way the IIR/FIR cascades
+        # can. The binding rejects the #55 configs rather than silently
+        # collapsing sensor_* to `reference` or routing fpga_fixed's sample
+        # path through the coefficient scalar. See estimation_bindings.cpp.
+        with pytest.raises(ValueError):
+            mpdsp.LMSFilter(num_taps=4, step_size=0.01, dtype=dtype)
+
     def test_process_returns_tuple(self):
         f = mpdsp.LMSFilter(num_taps=3, step_size=0.05)
         y, e = f.process(1.0, 0.5)

@@ -322,6 +322,7 @@ Coefficient-level analysis that doesn't require a constructed IIRFilter — usef
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `available_dtypes` | `() -> list[str]` | List available arithmetic configuration names. |
+| `bits_of` | `(dtype: str) -> int` | Return the sample-scalar bit width for `dtype`. Use this to label a precision-vs-cost axis instead of hardcoding the mapping. Raises ValueError for unknown dtype strings. |
 | `compare_filters` | `(filt, signal, dtypes=None)` | Process `signal` through `filt` at multiple dtypes and report error metrics. |
 
 ## CSV + image-pipeline helpers (pure Python)
