@@ -104,6 +104,8 @@ try:
         # Types — rational transfer function + type projection
         TransferFunction,
         project_onto, projection_error,
+        # Analysis — free-function primitives (method-form lives on IIRFilter)
+        coefficient_sensitivity, biquad_condition_number,
         # Introspection
         available_dtypes,
     )
@@ -148,7 +150,8 @@ if HAS_CORE:
                                  to_transfer_function)
 
 # Analysis helpers (pure Python; build only on stdlib + numpy + _core methods)
-from mpdsp.analysis import biquad_poles, is_stable, max_pole_radius
+from mpdsp.analysis import (biquad_poles, cascade_condition_number,
+                              is_stable, max_pole_radius)
 
 # Estimation helpers (pure Python; plotting needs matplotlib)
 if HAS_CORE:

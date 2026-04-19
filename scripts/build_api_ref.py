@@ -167,8 +167,12 @@ CATEGORIES = [
     ("Types — transfer function and type projection", [
         "project_onto", "projection_error", "to_transfer_function",
     ]),
-    ("Numerical-analysis helpers (pure Python)", [
+    ("Numerical analysis — pure-Python helpers", [
         "biquad_poles", "max_pole_radius", "is_stable",
+        "cascade_condition_number",
+    ]),
+    ("Numerical analysis — free-function primitives (bound)", [
+        "coefficient_sensitivity", "biquad_condition_number",
     ]),
     ("Mixed-precision helpers", [
         "available_dtypes", "compare_filters",
@@ -287,12 +291,26 @@ INTROS = {
         "the quantized samples or the raw error magnitude rather than the "
         "SQNR number."
     ),
-    "Numerical-analysis helpers (pure Python)": (
+    "Numerical analysis — pure-Python helpers": (
         "Thin layer over already-bound `IIRFilter` methods. "
         "`biquad_poles` is a standalone quadratic solver that takes a "
-        "5-tuple of coefficients. See `IIRFilter.stability_margin()`, "
+        "5-tuple of coefficients. `cascade_condition_number(filt, "
+        "num_freqs)` is the free-function companion to `filt.condition_"
+        "number(num_freqs)` — identical upstream call, just different "
+        "calling convention. See `IIRFilter.stability_margin()`, "
         "`.condition_number()`, `.worst_case_sensitivity()`, and "
         "`.pole_displacement(dtype)` for the per-filter metrics."
+    ),
+    "Numerical analysis — free-function primitives (bound)": (
+        "Coefficient-level analysis that doesn't require a constructed "
+        "IIRFilter — useful for design-time coefficient sweeps. "
+        "`coefficient_sensitivity` returns the finite-difference pole-"
+        "radius sensitivities `(dp_da1, dp_da2)`; `biquad_condition_"
+        "number` returns the max relative response change per unit "
+        "coefficient perturbation over a frequency sweep. Both bound "
+        "on double only — mixed-precision analysis of the full filter "
+        "lives on the IIRFilter methods, which dispatch through "
+        "`ArithConfig`."
     ),
     "Mixed-precision helpers": (
         "`available_dtypes()` is the runtime-queryable source of truth for "
