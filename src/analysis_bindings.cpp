@@ -26,6 +26,7 @@
 #include <sw/dsp/analysis/sensitivity.hpp>
 #include <sw/dsp/types/biquad_coefficients.hpp>
 
+#include <cmath>
 #include <stdexcept>
 
 namespace nb = nanobind;
@@ -36,6 +37,14 @@ void bind_analysis(nb::module_& m) {
 	m.def("coefficient_sensitivity",
 		[](double b0, double b1, double b2, double a1, double a2,
 		   double epsilon) {
+			// Guard at the binding boundary: upstream forwards epsilon
+			// straight into finite-differencing, so 0 / negative / NaN /
+			// inf would silently produce meaningless derivatives.
+			if (!(epsilon > 0.0) || !std::isfinite(epsilon)) {
+				throw std::invalid_argument(
+					"coefficient_sensitivity: epsilon must be finite "
+					"and strictly positive");
+			}
 			BQ bq(b0, b1, b2, a1, a2);
 			auto s = sw::dsp::coefficient_sensitivity(bq, epsilon);
 			return nb::make_tuple(s.dp_da1, s.dp_da2);
@@ -68,7 +77,7 @@ void bind_analysis(nb::module_& m) {
 		},
 		nb::arg("b0"), nb::arg("b1"), nb::arg("b2"),
 		nb::arg("a1"), nb::arg("a2"),
-		nb::arg("num_freqs") = 256,
+		nb::arg("num_freqs") = 512,
 		"Condition number of a single biquad section.\n\n"
 		"Sweeps the unit circle at `num_freqs` points, measuring the "
 		"maximum relative change in |H(e^{j2*pi*f})| per unit "

@@ -207,6 +207,39 @@ class TestBiquadConditionNumber:
             mpdsp.biquad_condition_number(1.0, 0.0, 0.0, -0.5, 0.1,
                                            num_freqs=-1)
 
+    def test_default_num_freqs_is_512(self):
+        # Issue #53 contract pins the default at 512. Agreement between
+        # default-arg call and explicit num_freqs=512 catches a silent
+        # default-value regression.
+        default = mpdsp.biquad_condition_number(1.0, 0.0, 0.0, -0.5, 0.1)
+        explicit = mpdsp.biquad_condition_number(1.0, 0.0, 0.0, -0.5, 0.1,
+                                                   num_freqs=512)
+        assert default == pytest.approx(explicit, rel=0.0, abs=0.0)
+
+
+class TestCoefficientSensitivityEpsilonValidation:
+    """Guard at the binding boundary: epsilon must be finite and > 0."""
+
+    def test_rejects_zero_epsilon(self):
+        with pytest.raises(ValueError):
+            mpdsp.coefficient_sensitivity(1.0, 0.0, 0.0, -0.5, 0.1,
+                                            epsilon=0.0)
+
+    def test_rejects_negative_epsilon(self):
+        with pytest.raises(ValueError):
+            mpdsp.coefficient_sensitivity(1.0, 0.0, 0.0, -0.5, 0.1,
+                                            epsilon=-1e-6)
+
+    def test_rejects_nan_epsilon(self):
+        with pytest.raises(ValueError):
+            mpdsp.coefficient_sensitivity(1.0, 0.0, 0.0, -0.5, 0.1,
+                                            epsilon=float("nan"))
+
+    def test_rejects_inf_epsilon(self):
+        with pytest.raises(ValueError):
+            mpdsp.coefficient_sensitivity(1.0, 0.0, 0.0, -0.5, 0.1,
+                                            epsilon=float("inf"))
+
 
 # ---- cascade_condition_number (Python wrapper) -------------------------
 
@@ -230,3 +263,14 @@ class TestCascadeConditionNumber:
                                               cutoff=1000.0)
         assert (mpdsp.cascade_condition_number(filt_hi)
                 > mpdsp.cascade_condition_number(filt_lo))
+
+    def test_default_num_freqs_is_512(self):
+        # Per issue #53 the default is 512. The existing
+        # IIRFilter.condition_number method keeps 256 for backwards
+        # compatibility, so the wrapper default must differ from the
+        # underlying method default at call-through time.
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=44100.0,
+                                          cutoff=1000.0)
+        default = mpdsp.cascade_condition_number(filt)
+        explicit_512 = mpdsp.cascade_condition_number(filt, num_freqs=512)
+        assert default == pytest.approx(explicit_512, rel=0.0, abs=0.0)

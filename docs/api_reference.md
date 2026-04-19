@@ -294,7 +294,7 @@ Thin layer over already-bound `IIRFilter` methods. `biquad_poles` is a standalon
 | `biquad_poles` | `(b0: 'float', b1: 'float', b2: 'float', a1: 'float', a2: 'float') -> 'list[complex]'` | Two poles of a single biquad section. |
 | `max_pole_radius` | `(filt) -> 'float'` | Largest ``\|pole\|`` in the filter's z-plane. |
 | `is_stable` | `(filt, tol: 'float' = 0.0) -> 'bool'` | True iff all poles are strictly inside the unit circle. |
-| `cascade_condition_number` | `(filt, num_freqs: 'int' = 256) -> 'float'` | Condition number of an entire IIR cascade. |
+| `cascade_condition_number` | `(filt, num_freqs: 'int' = 512) -> 'float'` | Condition number of an entire IIR cascade. |
 
 ## Numerical analysis — free-function primitives (bound)
 
@@ -303,7 +303,7 @@ Coefficient-level analysis that doesn't require a constructed IIRFilter — usef
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `coefficient_sensitivity` | `(b0: float, b1: float, b2: float, a1: float, a2: float, epsilon: float = 1e-08) -> tuple` | Coefficient sensitivity of a biquad, as a (dp_da1, dp_da2) tuple of doubles. |
-| `biquad_condition_number` | `(b0: float, b1: float, b2: float, a1: float, a2: float, num_freqs: int = 256) -> float` | Condition number of a single biquad section. |
+| `biquad_condition_number` | `(b0: float, b1: float, b2: float, a1: float, a2: float, num_freqs: int = 512) -> float` | Condition number of a single biquad section. |
 
 ## Mixed-precision helpers
 

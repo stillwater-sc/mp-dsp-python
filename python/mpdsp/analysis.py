@@ -67,7 +67,7 @@ def is_stable(filt, tol: float = 0.0) -> bool:
     return max_pole_radius(filt) < (1.0 - tol)
 
 
-def cascade_condition_number(filt, num_freqs: int = 256) -> float:
+def cascade_condition_number(filt, num_freqs: int = 512) -> float:
     """Condition number of an entire IIR cascade.
 
     Free-function companion to the per-biquad ``biquad_condition_number``
@@ -78,6 +78,12 @@ def cascade_condition_number(filt, num_freqs: int = 256) -> float:
     writing design-time sweeps that accept a filter plus a custom
     ``num_freqs`` as separate arguments) without duplicating the C++
     side.
+
+    Note: ``num_freqs`` defaults to 512 here to match the 0.5.0 free-
+    function API contract in issue #53, while the existing
+    ``IIRFilter.condition_number`` method retains its 256 default from
+    #8 for backwards compatibility. Both accept an explicit
+    ``num_freqs`` if you want to override.
 
     Parameters
     ----------
