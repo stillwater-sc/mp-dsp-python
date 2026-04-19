@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <stdexcept>
 
+#include "_binding_helpers.hpp"
 #include "types.hpp"
 
 namespace nb = nanobind;
@@ -124,182 +125,31 @@ complex_vec_to_magnitude_db(const mtl::vec::dense_vector<std::complex<double>>& 
 }
 
 // ---------------------------------------------------------------------------
-// Typed wrappers + dispatchers for each spectral primitive.
-// ---------------------------------------------------------------------------
-
-template <typename T>
-static mtl::vec::dense_vector<std::complex<double>>
-fft_typed(const mtl::vec::dense_vector<double>& signal) {
-	auto typed = cast_double_to_T<T>(signal);
-	auto spectrum = sw::dsp::spectral::fft<T>(typed);
-	return cast_complex_to_double<T>(spectrum);
-}
-
-template <typename T>
-static mtl::vec::dense_vector<double>
-ifft_typed(const mtl::vec::dense_vector<std::complex<double>>& spectrum) {
-	using complex_T = sw::dsp::complex_for_t<T>;
-	mtl::vec::dense_vector<complex_T> typed_spectrum(spectrum.size());
-	for (std::size_t i = 0; i < spectrum.size(); ++i) {
-		typed_spectrum[i] = complex_T(
-			static_cast<T>(spectrum[i].real()),
-			static_cast<T>(spectrum[i].imag()));
-	}
-	auto typed_signal = sw::dsp::spectral::ifft_real<T>(typed_spectrum);
-	mtl::vec::dense_vector<double> out(typed_signal.size());
-	for (std::size_t i = 0; i < typed_signal.size(); ++i) {
-		out[i] = static_cast<double>(typed_signal[i]);
-	}
-	return out;
-}
-
-template <typename T>
-static mtl::vec::dense_vector<double>
-periodogram_typed(const mtl::vec::dense_vector<double>& signal) {
-	auto typed = cast_double_to_T<T>(signal);
-	return sw::dsp::spectral::periodogram<T>(typed);  // already returns double
-}
-
-// Dispatch switches — one per primitive. Each follows the same shape so
-// the pattern is easy to extend when Phase 6 (#55) adds new ArithConfig
-// enumerators. A missing case here would fail at compile time with the
-// compiler's "enumeration value not handled" warning (-Wswitch).
-
-#define DISPATCH_SPECTRAL(fn, ret_type, input)                             \
-	switch (config) {                                                      \
-	case mpdsp::ArithConfig::reference:                                    \
-		return fn<double>(input);                                          \
-	case mpdsp::ArithConfig::gpu_baseline:                                 \
-		return fn<float>(input);                                           \
-	case mpdsp::ArithConfig::ml_hw:                                        \
-	case mpdsp::ArithConfig::half_config:                                  \
-		return fn<mpdsp::half_>(input);                                    \
-	case mpdsp::ArithConfig::posit_full:                                   \
-		return fn<mpdsp::p16>(input);                                      \
-	case mpdsp::ArithConfig::tiny_posit:                                   \
-		return fn<sw::universal::posit<8, 2>>(input);                      \
-	case mpdsp::ArithConfig::cf24_config:                                  \
-		return fn<mpdsp::cf24>(input);                                     \
-	}                                                                      \
-	/* Unreachable: exhaustive switch over ArithConfig. */                 \
-	return ret_type{};
-
-static mtl::vec::dense_vector<std::complex<double>>
-fft_dispatch(const mtl::vec::dense_vector<double>& signal,
-              mpdsp::ArithConfig config) {
-	DISPATCH_SPECTRAL(fft_typed, mtl::vec::dense_vector<std::complex<double>>,
-	                  signal);
-}
-
-static mtl::vec::dense_vector<double>
-ifft_dispatch(const mtl::vec::dense_vector<std::complex<double>>& spectrum,
-               mpdsp::ArithConfig config) {
-	DISPATCH_SPECTRAL(ifft_typed, mtl::vec::dense_vector<double>, spectrum);
-}
-
-static mtl::vec::dense_vector<double>
-periodogram_dispatch(const mtl::vec::dense_vector<double>& signal,
-                      mpdsp::ArithConfig config) {
-	DISPATCH_SPECTRAL(periodogram_typed, mtl::vec::dense_vector<double>,
-	                  signal);
-}
-
-// Spectrogram needs its own dispatcher because of the extra
-// window / hop_size parameters and the more complex return shape.
-template <typename T>
-static nb::tuple
-spectrogram_typed(const mtl::vec::dense_vector<double>& signal,
-                   double sample_rate, std::size_t window_size,
-                   std::size_t hop_size) {
-	using std::imag;
-	using std::real;
-
-	auto typed_signal = cast_double_to_T<T>(signal);
-	auto typed_window = sw::dsp::hanning_window<T>(window_size);
-	auto stft = sw::dsp::spectral::spectrogram<T>(typed_signal, typed_window, hop_size);
-
-	std::size_t n_frames = stft.frames.size();
-	std::size_t n_freqs = (n_frames > 0) ? stft.frames[0].size() / 2 + 1 : 0;
-	auto* mag_data = new double[n_frames * n_freqs];
-
-	for (std::size_t f = 0; f < n_frames; ++f) {
-		for (std::size_t k = 0; k < n_freqs; ++k) {
-			auto z = stft.frames[f][k];
-			double re = static_cast<double>(real(z));
-			double im = static_cast<double>(imag(z));
-			double mag = std::hypot(re, im);
-			mag_data[f * n_freqs + k] =
-				(mag > 1e-20) ? 20.0 * std::log10(mag) : -120.0;
-		}
-	}
-
-	nb::capsule mag_owner(mag_data, [](void* p) noexcept {
-		delete[] static_cast<double*>(p);
-	});
-	std::size_t mag_shape[2] = { n_frames, n_freqs };
-	auto magnitudes = nb::ndarray<nb::numpy, double>(
-		mag_data, 2, mag_shape, mag_owner);
-
-	auto* time_data = new double[n_frames];
-	for (std::size_t f = 0; f < n_frames; ++f) {
-		time_data[f] = (static_cast<double>(f) * static_cast<double>(hop_size)
-		               + static_cast<double>(window_size) * 0.5) / sample_rate;
-	}
-	nb::capsule time_owner(time_data, [](void* p) noexcept {
-		delete[] static_cast<double*>(p);
-	});
-	std::size_t time_shape[1] = { n_frames };
-	auto times = nb::ndarray<nb::numpy, double>(
-		time_data, 1, time_shape, time_owner);
-
-	auto* freq_data = new double[n_freqs];
-	for (std::size_t k = 0; k < n_freqs; ++k) {
-		freq_data[k] = static_cast<double>(k) * sample_rate
-		             / static_cast<double>(stft.fft_size);
-	}
-	nb::capsule freq_owner(freq_data, [](void* p) noexcept {
-		delete[] static_cast<double*>(p);
-	});
-	std::size_t freq_shape[1] = { n_freqs };
-	auto freqs = nb::ndarray<nb::numpy, double>(
-		freq_data, 1, freq_shape, freq_owner);
-
-	return nb::make_tuple(times, freqs, magnitudes);
-}
-
-static nb::tuple
-spectrogram_dispatch(const mtl::vec::dense_vector<double>& signal,
-                      double sample_rate, std::size_t window_size,
-                      std::size_t hop_size, mpdsp::ArithConfig config) {
-	switch (config) {
-	case mpdsp::ArithConfig::reference:
-		return spectrogram_typed<double>(signal, sample_rate, window_size, hop_size);
-	case mpdsp::ArithConfig::gpu_baseline:
-		return spectrogram_typed<float>(signal, sample_rate, window_size, hop_size);
-	case mpdsp::ArithConfig::ml_hw:
-	case mpdsp::ArithConfig::half_config:
-		return spectrogram_typed<mpdsp::half_>(signal, sample_rate, window_size, hop_size);
-	case mpdsp::ArithConfig::posit_full:
-		return spectrogram_typed<mpdsp::p16>(signal, sample_rate, window_size, hop_size);
-	case mpdsp::ArithConfig::tiny_posit:
-		return spectrogram_typed<sw::universal::posit<8, 2>>(
-			signal, sample_rate, window_size, hop_size);
-	case mpdsp::ArithConfig::cf24_config:
-		return spectrogram_typed<mpdsp::cf24>(
-			signal, sample_rate, window_size, hop_size);
-	}
-	return spectrogram_typed<double>(signal, sample_rate, window_size, hop_size);
-}
-
-// ---------------------------------------------------------------------------
 // Python bindings.
+//
+// Each primitive uses the shared `dispatch_dtype_fn<Callable>` helper from
+// `_binding_helpers.hpp` rather than a hand-rolled switch. This keeps the
+// ArithConfig → compute-type mapping centralized — when #55 adds new
+// enumerators, they only need to land in the shared helper, and every
+// spectral primitive picks them up automatically.
+//
+// Using the shared helper also matters for consistency: it maps
+// `posit_full` to `p32` (state scalar), matching how filter / image /
+// conditioning bindings dispatch. An earlier hand-rolled version of this
+// file used `p16` (sample scalar) for posit_full — inconsistent with the
+// rest of the library.
 // ---------------------------------------------------------------------------
 
 void bind_spectral(nb::module_& m) {
+	using mpdsp::bindings::dispatch_dtype_fn;
+
 	m.def("fft", [](np_array_ro signal, const std::string& dtype) {
 		auto v = numpy_to_vec(signal);
 		auto config = mpdsp::parse_config(dtype);
-		auto spectrum = fft_dispatch(v, config);
+		auto spectrum = dispatch_dtype_fn(config, "fft", [&]<typename T>() {
+			auto typed = cast_double_to_T<T>(v);
+			return cast_complex_to_double<T>(sw::dsp::spectral::fft<T>(typed));
+		});
 		return nb::make_tuple(
 			complex_vec_to_numpy_real(spectrum),
 			complex_vec_to_numpy_imag(spectrum));
@@ -312,7 +162,12 @@ void bind_spectral(nb::module_& m) {
 		[](np_array_ro signal, const std::string& dtype) {
 			auto v = numpy_to_vec(signal);
 			auto config = mpdsp::parse_config(dtype);
-			auto spectrum = fft_dispatch(v, config);
+			auto spectrum = dispatch_dtype_fn(config, "fft_magnitude_db",
+				[&]<typename T>() {
+					auto typed = cast_double_to_T<T>(v);
+					return cast_complex_to_double<T>(
+						sw::dsp::spectral::fft<T>(typed));
+				});
 			return complex_vec_to_magnitude_db(spectrum);
 		},
 		nb::arg("signal"), nb::arg("dtype") = "reference",
@@ -334,7 +189,22 @@ void bind_spectral(nb::module_& m) {
 				spectrum[i] = std::complex<double>(re[i], im[i]);
 			}
 			auto config = mpdsp::parse_config(dtype);
-			return vec_to_numpy(ifft_dispatch(spectrum, config));
+			auto result = dispatch_dtype_fn(config, "ifft", [&]<typename T>() {
+				using complex_T = sw::dsp::complex_for_t<T>;
+				mtl::vec::dense_vector<complex_T> typed_spectrum(spectrum.size());
+				for (std::size_t i = 0; i < spectrum.size(); ++i) {
+					typed_spectrum[i] = complex_T(
+						static_cast<T>(spectrum[i].real()),
+						static_cast<T>(spectrum[i].imag()));
+				}
+				auto typed_signal = sw::dsp::spectral::ifft_real<T>(typed_spectrum);
+				mtl::vec::dense_vector<double> out(typed_signal.size());
+				for (std::size_t i = 0; i < typed_signal.size(); ++i) {
+					out[i] = static_cast<double>(typed_signal[i]);
+				}
+				return out;
+			});
+			return vec_to_numpy(result);
 		},
 		nb::arg("real"), nb::arg("imag"), nb::arg("dtype") = "reference",
 		"Compute inverse FFT from (real, imag) arrays. Returns real signal. "
@@ -345,7 +215,12 @@ void bind_spectral(nb::module_& m) {
 		[](np_array_ro signal, const std::string& dtype) {
 			auto v = numpy_to_vec(signal);
 			auto config = mpdsp::parse_config(dtype);
-			return vec_to_numpy(periodogram_dispatch(v, config));
+			auto result = dispatch_dtype_fn(config, "periodogram",
+				[&]<typename T>() {
+					auto typed = cast_double_to_T<T>(v);
+					return sw::dsp::spectral::periodogram<T>(typed);
+				});
+			return vec_to_numpy(result);
 		},
 		nb::arg("signal"), nb::arg("dtype") = "reference",
 		"Compute periodogram power spectral density estimate. `dtype` "
@@ -353,9 +228,16 @@ void bind_spectral(nb::module_& m) {
 
 	m.def("psd",
 		[](np_array_ro signal, double sample_rate, const std::string& dtype) {
+			if (!(sample_rate > 0.0)) {
+				throw std::invalid_argument(
+					"psd: sample_rate must be > 0");
+			}
 			auto v = numpy_to_vec(signal);
 			auto config = mpdsp::parse_config(dtype);
-			auto power = periodogram_dispatch(v, config);
+			auto power = dispatch_dtype_fn(config, "psd", [&]<typename T>() {
+				auto typed = cast_double_to_T<T>(v);
+				return sw::dsp::spectral::periodogram<T>(typed);
+			});
 			std::size_t n_freqs = power.size();
 			auto* freq_data = new double[n_freqs];
 			for (std::size_t i = 0; i < n_freqs; ++i) {
@@ -379,10 +261,80 @@ void bind_spectral(nb::module_& m) {
 		[](np_array_ro signal, double sample_rate,
 		   std::size_t window_size, std::size_t hop_size,
 		   const std::string& dtype) {
+			if (!(sample_rate > 0.0)) {
+				throw std::invalid_argument(
+					"spectrogram: sample_rate must be > 0");
+			}
+			if (window_size == 0) {
+				throw std::invalid_argument(
+					"spectrogram: window_size must be > 0");
+			}
+			if (hop_size == 0) {
+				throw std::invalid_argument(
+					"spectrogram: hop_size must be > 0");
+			}
 			auto v = numpy_to_vec(signal);
 			auto config = mpdsp::parse_config(dtype);
-			return spectrogram_dispatch(v, sample_rate, window_size,
-			                             hop_size, config);
+			using std::imag;
+			using std::real;
+			return dispatch_dtype_fn(config, "spectrogram",
+				[&]<typename T>() -> nb::tuple {
+					auto typed_signal = cast_double_to_T<T>(v);
+					auto typed_window = sw::dsp::hanning_window<T>(window_size);
+					auto stft = sw::dsp::spectral::spectrogram<T>(
+						typed_signal, typed_window, hop_size);
+
+					std::size_t n_frames = stft.frames.size();
+					std::size_t n_freqs = (n_frames > 0)
+						? stft.frames[0].size() / 2 + 1 : 0;
+					auto* mag_data = new double[n_frames * n_freqs];
+
+					for (std::size_t f = 0; f < n_frames; ++f) {
+						for (std::size_t k = 0; k < n_freqs; ++k) {
+							auto z = stft.frames[f][k];
+							double re = static_cast<double>(real(z));
+							double im = static_cast<double>(imag(z));
+							double mag = std::hypot(re, im);
+							mag_data[f * n_freqs + k] =
+								(mag > 1e-20) ? 20.0 * std::log10(mag) : -120.0;
+						}
+					}
+
+					nb::capsule mag_owner(mag_data, [](void* p) noexcept {
+						delete[] static_cast<double*>(p);
+					});
+					std::size_t mag_shape[2] = { n_frames, n_freqs };
+					auto magnitudes = nb::ndarray<nb::numpy, double>(
+						mag_data, 2, mag_shape, mag_owner);
+
+					auto* time_data = new double[n_frames];
+					for (std::size_t f = 0; f < n_frames; ++f) {
+						time_data[f] = (static_cast<double>(f)
+						              * static_cast<double>(hop_size)
+						              + static_cast<double>(window_size) * 0.5)
+						             / sample_rate;
+					}
+					nb::capsule time_owner(time_data, [](void* p) noexcept {
+						delete[] static_cast<double*>(p);
+					});
+					std::size_t time_shape[1] = { n_frames };
+					auto times = nb::ndarray<nb::numpy, double>(
+						time_data, 1, time_shape, time_owner);
+
+					auto* freq_data = new double[n_freqs];
+					for (std::size_t k = 0; k < n_freqs; ++k) {
+						freq_data[k] = static_cast<double>(k) * sample_rate
+						             / static_cast<double>(stft.fft_size);
+					}
+					nb::capsule freq_owner(freq_data, [](void* p) noexcept {
+						delete[] static_cast<double*>(p);
+					});
+					std::size_t freq_shape[1] = { n_freqs };
+					auto freqs = nb::ndarray<nb::numpy, double>(
+						freq_data, 1, freq_shape, freq_owner);
+
+					return nb::make_tuple(times, freqs, magnitudes);
+				});
 		},
 		nb::arg("signal"), nb::arg("sample_rate"),
 		nb::arg("window_size") = static_cast<std::size_t>(1024),

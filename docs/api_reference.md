@@ -66,9 +66,9 @@ these string keys. Query the live set at runtime with
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
 
-Planned for `0.5.0` (issue #40): fixed-point / integer configs
-(`sensor_8bit`, `fpga_fixed`, ...) and dtype dispatch on the spectral
-transforms.
+Planned for `0.5.0` (issue #55): fixed-point / integer configs
+(`sensor_8bit`, `fpga_fixed`, ...) plus an `mpdsp.bits_of(dtype)`
+accessor. Dtype dispatch on the spectral transforms shipped in #54.
 
 ## Module attributes
 

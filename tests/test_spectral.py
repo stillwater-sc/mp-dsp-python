@@ -208,3 +208,37 @@ class TestSpectralDtypeFidelity:
             mpdsp.fft(sig, dtype="nonexistent")
         with pytest.raises(ValueError):
             mpdsp.periodogram(sig, dtype="nonexistent")
+
+
+class TestSpectralParameterValidation:
+    """Boundary guards: psd/spectrogram reject non-positive parameters
+    so callers get a clean ValueError instead of silently producing
+    inf-filled time axes or passing zero sizes to the STFT kernel."""
+
+    def test_psd_rejects_zero_sample_rate(self):
+        sig = mpdsp.sine(64, frequency=10.0, sample_rate=64.0)
+        with pytest.raises(ValueError):
+            mpdsp.psd(sig, sample_rate=0.0)
+
+    def test_psd_rejects_negative_sample_rate(self):
+        sig = mpdsp.sine(64, frequency=10.0, sample_rate=64.0)
+        with pytest.raises(ValueError):
+            mpdsp.psd(sig, sample_rate=-8000.0)
+
+    def test_spectrogram_rejects_zero_sample_rate(self):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        with pytest.raises(ValueError):
+            mpdsp.spectrogram(sig, sample_rate=0.0,
+                              window_size=64, hop_size=16)
+
+    def test_spectrogram_rejects_zero_window_size(self):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        with pytest.raises(ValueError):
+            mpdsp.spectrogram(sig, sample_rate=256.0,
+                              window_size=0, hop_size=16)
+
+    def test_spectrogram_rejects_zero_hop_size(self):
+        sig = mpdsp.sine(256, frequency=10.0, sample_rate=256.0)
+        with pytest.raises(ValueError):
+            mpdsp.spectrogram(sig, sample_rate=256.0,
+                              window_size=64, hop_size=0)

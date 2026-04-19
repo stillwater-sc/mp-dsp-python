@@ -118,10 +118,11 @@ comp = mpdsp.Compressor(sample_rate=44100, threshold_db=-12.0, ratio=4.0,
 kf = mpdsp.KalmanFilter(2, 1, dtype="cf24")
 ```
 
-Spectral primitives (`fft`, `psd`, `spectrogram`, ...) are pure double-precision
-in `0.4.x` — mixed-precision dispatch on transforms is planned for `0.5.0`.
-Signal generators and window functions are intentionally reference-precision
-(they are not part of a mixed-precision datapath).
+Spectral primitives (`fft`, `ifft`, `psd`, `periodogram`, `spectrogram`) accept
+`dtype=` in `0.5.0+`; inputs and outputs stay double/complex128 at the Python
+layer while the internal arithmetic runs at the selected precision. Signal
+generators and window functions are intentionally reference-precision (they
+aren't part of a mixed-precision datapath).
 
 #### Pre-Instantiated Configurations
 
@@ -291,9 +292,9 @@ for dtype in ["reference", "gpu_baseline", "posit_full", "half"]:
         print(f"  {dtype:20s}  SQNR = {sqnr:.1f} dB")
 
 # --- Spectral Analysis ---
-# FFT is pure double-precision in 0.4.x (mixed-precision dispatch on
-# transforms is planned for 0.5.0). The returned tuple is (real, imag).
-real, imag = mpdsp.fft(signal)
+# fft / ifft / psd / periodogram / spectrogram all accept dtype=.
+# Returned tuple is (real, imag).
+real, imag = mpdsp.fft(signal, dtype="posit_full")
 
 # --- Image Processing ---
 # Full image pipeline
