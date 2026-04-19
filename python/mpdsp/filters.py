@@ -1,9 +1,10 @@
 """Mixed-precision filter comparison helpers.
 
 Built on top of the C++ bindings in `mpdsp._core` (IIRFilter and FIRFilter).
-Use `compare_filters` to quantify precision loss across dtypes and
+Use `compare_filters` to quantify precision loss across dtypes,
 `plot_filter_comparison` to visualize magnitude, phase, and pole locations
-side by side.
+side by side, and `to_transfer_function` to fold a designed IIR cascade into
+a single `TransferFunction` for direct evaluation or composition.
 """
 
 import numpy as np
@@ -33,6 +34,41 @@ DEFAULT_DTYPES = [
     "posit_full",
     "tiny_posit",
 ]
+
+
+def to_transfer_function(filt):
+    """Fold an `IIRFilter` cascade into a single `TransferFunction`.
+
+    The cascade ``H(z) = H_0(z) * H_1(z) * ... * H_{k-1}(z)`` is computed by
+    polynomial convolution of the per-stage numerators and denominators.
+    Each biquad `(b0, b1, b2, a1, a2)` contributes a numerator `[b0, b1, b2]`
+    and denominator `[1, a1, a2]`; the cascade numerator is the convolution
+    of all stage numerators, and similarly for the denominator. The leading
+    `1` is stripped from the cascade denominator before returning (matching
+    upstream `TransferFunction<T>`'s implicit-a0 convention).
+
+    Parameters
+    ----------
+    filt : mpdsp.IIRFilter
+        A designed IIR filter.
+
+    Returns
+    -------
+    mpdsp.TransferFunction
+        A new TransferFunction with equivalent frequency response.
+    """
+    # Deferred import so the module imports cleanly even when the C++
+    # extension (which provides TransferFunction) isn't available.
+    from mpdsp._core import TransferFunction
+
+    num = np.array([1.0])
+    # Cascade denominator including the implicit leading 1 for convolution;
+    # strip it before handing to TransferFunction which wants the a1, a2, ... tail.
+    den_with_a0 = np.array([1.0])
+    for b0, b1, b2, a1, a2 in filt.coefficients():
+        num = np.convolve(num, [b0, b1, b2])
+        den_with_a0 = np.convolve(den_with_a0, [1.0, a1, a2])
+    return TransferFunction(num, den_with_a0[1:])
 
 
 def compare_filters(filt, signal, dtypes=None):

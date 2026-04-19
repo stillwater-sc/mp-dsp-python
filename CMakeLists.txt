@@ -200,6 +200,7 @@ nanobind_add_module(_core
   src/conditioning_bindings.cpp
   src/estimation_bindings.cpp
   src/image_bindings.cpp
+  src/types_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 

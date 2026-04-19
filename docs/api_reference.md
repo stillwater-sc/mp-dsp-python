@@ -22,10 +22,11 @@ the note at the bottom.
 - [Image — generators](#image--generators)
 - [Image — processing](#image--processing)
 - [Image — morphology](#image--morphology)
-- [Image — file I/O](#image--file-i/o)
+- [Image — file I/O](#image--file-io)
+- [Types — transfer function and type projection](#types--transfer-function-and-type-projection)
 - [Numerical-analysis helpers (pure Python)](#numerical-analysis-helpers-pure-python)
 - [Mixed-precision helpers](#mixed-precision-helpers)
-- [CSV + image-pipeline helpers (pure Python)](#csv-+-image-pipeline-helpers-pure-python)
+- [CSV + image-pipeline helpers (pure Python)](#csv--image-pipeline-helpers-pure-python)
 - [Matplotlib plotting helpers](#matplotlib-plotting-helpers)
 - [Classes](#classes)
   - [`IIRFilter`](#iirfilter)
@@ -38,6 +39,7 @@ the note at the bottom.
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
   - [`RLSFilter`](#rlsfilter)
+  - [`TransferFunction`](#transferfunction)
 
 ---
 
@@ -216,7 +218,7 @@ All take and return `(rows, cols)` float64 2D arrays. Almost every processing fu
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `convolve2d` | `(image: ndarray2d[ro], kernel: ndarray2d[ro], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | 2D spatial correlation. `border` is one of constant, replicate, reflect, reflect_101, or wrap; `pad` is the fill value for border='constant'. `dtype` selects the internal arithmetic — see available_dtypes(). |
-| `separable_filter` | `(image: ndarray2d[ro], row_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], col_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | Apply a row kernel then a column kernel (separable 2D filter). Equivalent to convolve2d with an outer-product kernel but cheaper for K rows * L cols -> O(K+L) per pixel instead of O(K*L). |
+| `separable_filter` | `(image: ndarray2d[ro], row_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], col_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | Apply a row kernel then a column kernel (separable 2D filter). Equivalent to convolve2d with an outer-product kernel but cheaper for a KxL kernel: O(K+L) per pixel instead of O(KL). |
 | `gaussian_blur` | `(image: ndarray2d[ro], sigma: float, radius: int = 0, border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | Separable Gaussian blur. `radius=0` auto-selects a radius that captures most of the Gaussian tail (usually ceil(3*sigma)). |
 | `box_blur` | `(image: ndarray2d[ro], size: int, border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | Box-average blur with an `size x size` uniform kernel. |
 | `sobel_x` | `(image: ndarray2d[ro], border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | — |
@@ -257,6 +259,16 @@ PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Read
 | `read_bmp` | `(path: str) -> tuple[ndarray2d, ndarray2d, ndarray2d, bool]` | Read a BMP file (8-bit palette or 24-bit RGB). Returns (r, g, b, is_grayscale) — channels normalized to [0, 1]. |
 | `write_bmp` | `(path: str, image: ndarray2d[ro]) -> None` | Write a grayscale image to a 24-bit BMP file (R=G=B=image). |
 | `write_bmp_rgb` | `(path: str, r: ndarray2d[ro], g: ndarray2d[ro], b: ndarray2d[ro]) -> None` | Write an RGB image to a 24-bit BMP file. |
+
+## Types — transfer function and type projection
+
+`TransferFunction` is bound on double in 0.5.0 and represents the rational H(z) = B(z)/A(z) directly (as opposed to `IIRFilter`'s cascade-of-biquads form). Use `to_transfer_function(filt)` to fold an IIR cascade into a single TF for evaluation, cascade composition, or handing to the upcoming `ztransform` (Phase 5 / #54). `project_onto` / `projection_error` are the round-trip primitives underlying `measure_sqnr_db` — use them when you want the quantized samples or the raw error magnitude rather than the SQNR number.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `project_onto` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> ndarray` | Project data through the sample scalar of `dtype` and back to float64. The round-trip surfaces the quantization error you'd see feeding a signal through an ADC at that precision — it's the underlying mechanic of `measure_sqnr_db`, exposed directly for when you want the quantized samples rather than just the SQNR. |
+| `projection_error` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> float` | Max absolute error between data and its round-trip through `dtype`. Equivalent to max(abs(data - project_onto(data, dtype))) but computed without allocating the intermediate ndarray. |
+| `to_transfer_function` | `(filt)` | Fold an `IIRFilter` cascade into a single `TransferFunction`. |
 
 ## Numerical-analysis helpers (pure Python)
 
@@ -467,20 +479,36 @@ Recursive least-squares adaptive filter. Faster convergence than LMS/NLMS at the
 | `.reset` | `(self) -> None` — Zero the weights, delay line, and reset P to delta*I. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
 
+### `TransferFunction`
+
+Rational H(z) = B(z)/A(z) with double-precision coefficients. Construct from numerator + denominator ndarrays; the leading `1` in the denominator is implicit (don't pass `a0`). Cascade via `*`. The `to_transfer_function(filt)` helper folds an IIRFilter cascade into one of these, useful when evaluating the full filter's H(z) directly rather than staging by stage.
+
+> Rational transfer function H(z) = B(z) / A(z).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.denominator` | Denominator coefficients a1, a2, ... as a float64 ndarray (a0 = 1 implicit). |
+| `.evaluate` | `(self, z: complex) -> complex` — Evaluate H(z) at a single complex point. Returns complex128. |
+| `.evaluate_many` | `(self, z: numpy.ndarray[dtype=complex128, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Evaluate H(z) at each point in a complex128 ndarray. Returns a complex128 ndarray of the same length. |
+| `.frequency_response` | `(self, f: float) -> complex` — Evaluate H(e^{j 2*pi*f}) at normalized frequency f in [0, 0.5]. |
+| `.frequency_response_many` | `(self, freqs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Vectorized frequency_response(...) over a float64 ndarray of normalized frequencies. Returns complex128. |
+| `.is_stable` | `(self) -> bool` — Check stability via a 360-angle sampling of the denominator on the unit circle. False if any sample is within 1e-6 of zero. |
+| `.numerator` | Numerator coefficients b0, b1, b2, ... as a float64 ndarray. |
+
 ---
 
 ## Regenerating this document
 
-This file was generated from an installed `mpdsp` package via a script at
-`/tmp/build_api_ref.py` (not checked in — it's a one-shot harvester).
-Re-run after landing new bindings:
+This file was generated from an installed `mpdsp` package. Re-run
+after landing new bindings:
 
 ```bash
 pip install -e .
-.venv/bin/python /tmp/build_api_ref.py
+python scripts/build_api_ref.py
 ```
 
-Edit the `CATEGORIES`, `INTROS`, and `CLASS_INTROS` tables in the
-generator to add new bindings or revise prose. The function-table
-signatures come from nanobind's attached `__doc__` and don't need manual
-editing — they regenerate from the installed extension.
+Edit the `CATEGORIES`, `INTROS`, and `CLASS_INTROS` tables in
+`scripts/build_api_ref.py` to add new bindings or revise prose. The
+function-table signatures come from nanobind's attached `__doc__` and
+don't need manual editing — they regenerate from the installed
+extension.
