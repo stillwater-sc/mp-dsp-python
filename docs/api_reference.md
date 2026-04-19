@@ -45,6 +45,7 @@ the note at the bottom.
   - [`NLMSFilter`](#nlmsfilter)
   - [`RLSFilter`](#rlsfilter)
   - [`TransferFunction`](#transferfunction)
+  - [`ContinuousTransferFunction`](#continuoustransferfunction)
 
 ---
 
@@ -277,13 +278,17 @@ PGM (grayscale 8/16-bit), PPM (RGB 8-bit), and BMP (8-bit grayscale + RGB). Read
 
 ## Types — transfer function and type projection
 
-`TransferFunction` is bound on double in 0.5.0 and represents the rational H(z) = B(z)/A(z) directly (as opposed to `IIRFilter`'s cascade-of-biquads form). Use `to_transfer_function(filt)` to fold an IIR cascade into a single TF for evaluation, cascade composition, or handing to the upcoming `ztransform` (Phase 5 / #54). `project_onto` / `projection_error` are the round-trip primitives underlying `measure_sqnr_db` — use them when you want the quantized samples or the raw error magnitude rather than the SQNR number.
+`TransferFunction` (discrete-time H(z)) and `ContinuousTransferFunction` (analog H(s)) are the rational-function classes, bound on double. `to_transfer_function(filt)` folds an IIRFilter cascade into a single TF; the spectral-analysis free functions (`ztransform`, `freqz`, `group_delay`, `laplace_freqs`) operate on those classes. `project_onto` / `projection_error` are the round-trip primitives underlying `measure_sqnr_db` — use them when you want the quantized samples or the raw error magnitude rather than the SQNR number.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `project_onto` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> ndarray` | Project data through the sample scalar of `dtype` and back to float64. The round-trip surfaces the quantization error you'd see feeding a signal through an ADC at that precision — it's the underlying mechanic of `measure_sqnr_db`, exposed directly for when you want the quantized samples rather than just the SQNR. |
 | `projection_error` | `(data: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str) -> float` | Max absolute error between data and its round-trip through `dtype`. Equivalent to max(abs(data - project_onto(data, dtype))) but computed without allocating the intermediate ndarray. |
 | `to_transfer_function` | `(filt)` | Fold an `IIRFilter` cascade into a single `TransferFunction`. |
+| `ztransform` | `(tf: mpdsp._core.TransferFunction, z: numpy.ndarray[dtype=complex128, shape=(*), order='C', writable=False]) -> ndarray[complex]` | Evaluate H(z) at each z-plane point. Free-function spelling of `tf.evaluate_many(z)`. Returns complex128 ndarray. |
+| `freqz` | `(tf: mpdsp._core.TransferFunction, num_points: int = 512) -> ndarray[complex]` | Evaluate H(e^{j 2*pi*f}) at `num_points` uniformly spaced normalized frequencies in [0, 0.5). Returns complex128 ndarray. |
+| `group_delay` | `(tf: mpdsp._core.TransferFunction, num_points: int = 512) -> ndarray` | Group delay at `num_points` uniformly spaced normalized frequencies in [0, 0.5). Returns float64 ndarray (samples of -d(phase)/d(omega)). |
+| `laplace_freqs` | `(tf: mpdsp._core.ContinuousTransferFunction, omega_max: float, num_points: int = 512) -> ndarray[complex]` | Evaluate H(j*omega) at `num_points` uniformly spaced angular frequencies in [0, omega_max). Returns complex128 ndarray. |
 
 ## Numerical analysis — pure-Python helpers
 
@@ -558,6 +563,21 @@ Rational H(z) = B(z)/A(z) with double-precision coefficients. Construct from num
 | `.frequency_response_many` | `(self, freqs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Vectorized frequency_response(...) over a float64 ndarray of normalized frequencies. Returns complex128. |
 | `.is_stable` | `(self) -> bool` — Check stability via a 360-angle sampling of the denominator on the unit circle. False if any sample is within 1e-6 of zero. |
 | `.numerator` | Numerator coefficients b0, b1, b2, ... as a float64 ndarray. |
+
+### `ContinuousTransferFunction`
+
+Analog (continuous-time) rational H(s) = N(s)/D(s) with coefficients in ascending powers of s. Use with `laplace_freqs(tf, omega_max, N)` to evaluate frequency response at uniformly spaced angular frequencies — the natural path for analyzing analog prototype filters before bilinear transformation to the digital domain.
+
+> Continuous-time (analog) rational transfer function H(s) = N(s) / D(s).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.denominator` | Denominator coefficients in ascending powers of s. |
+| `.evaluate` | `(self, s: complex) -> complex` — Evaluate H(s) at a single complex s-plane point. |
+| `.evaluate_many` | `(self, s: numpy.ndarray[dtype=complex128, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Evaluate H(s) at each point in a complex128 ndarray. Returns a complex128 ndarray of the same length. |
+| `.frequency_response` | `(self, omega: float) -> complex` — Evaluate H(j*omega) at angular frequency omega (rad/s). |
+| `.frequency_response_many` | `(self, omegas: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Vectorized frequency_response(...) over a float64 ndarray of angular frequencies. Returns complex128. |
+| `.numerator` | Numerator coefficients in ascending powers of s. |
 
 ---
 

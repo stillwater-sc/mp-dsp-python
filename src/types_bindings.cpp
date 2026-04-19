@@ -27,6 +27,8 @@
 #include <string>
 
 #include <mtl/vec/dense_vector.hpp>
+#include <sw/dsp/spectral/laplace.hpp>
+#include <sw/dsp/spectral/ztransform.hpp>
 #include <sw/dsp/types/projection.hpp>
 #include <sw/dsp/types/transfer_function.hpp>
 
@@ -132,6 +134,75 @@ public:
 	// Python side expects from `*`.
 	PyTransferFunction cascade(const PyTransferFunction& other) const {
 		return PyTransferFunction(inner * other.inner);
+	}
+};
+
+// ---------------------------------------------------------------------------
+// PyContinuousTransferFunction — analog-domain H(s) = N(s)/D(s).
+//
+// Same shape as PyTransferFunction but polynomials are in ascending powers
+// of s (the natural form for Laplace-plane analysis). Used by
+// `mpdsp.laplace_freqs` (registered later in this same file) for frequency-
+// response evaluation of analog prototype filters.
+//
+// Like the discrete TransferFunction, bound on double only — multi-
+// precision continuous-time analysis isn't a real-world use case today
+// and would need infrastructure we don't have.
+// ---------------------------------------------------------------------------
+
+using CTF = sw::dsp::spectral::ContinuousTransferFunction<double>;
+
+class PyContinuousTransferFunction {
+public:
+	CTF inner;
+
+	PyContinuousTransferFunction() = default;
+
+	PyContinuousTransferFunction(np_f64_ro numerator, np_f64_ro denominator) {
+		inner.numerator = numpy_to_vec_fresh<double>(numerator);
+		inner.denominator = numpy_to_vec_fresh<double>(denominator);
+	}
+
+	explicit PyContinuousTransferFunction(CTF ctf) : inner(std::move(ctf)) {}
+
+	np_f64 get_numerator() const { return vec_to_numpy(inner.numerator); }
+	np_f64 get_denominator() const { return vec_to_numpy(inner.denominator); }
+
+	void set_numerator(np_f64_ro a) {
+		inner.numerator = numpy_to_vec_fresh<double>(a);
+	}
+	void set_denominator(np_f64_ro a) {
+		inner.denominator = numpy_to_vec_fresh<double>(a);
+	}
+
+	std::complex<double> evaluate(std::complex<double> s) const {
+		return inner.evaluate(s);
+	}
+
+	np_complex evaluate_many(np_complex_ro s_points) const {
+		std::size_t n = s_points.shape(0);
+		std::complex<double>* out_ptr = nullptr;
+		auto arr = make_complex_array(n, out_ptr);
+		const auto* sp = s_points.data();
+		for (std::size_t i = 0; i < n; ++i) {
+			out_ptr[i] = inner.evaluate(sp[i]);
+		}
+		return arr;
+	}
+
+	std::complex<double> frequency_response(double omega) const {
+		return inner.frequency_response(omega);
+	}
+
+	np_complex frequency_response_many(np_f64_ro omegas) const {
+		std::size_t n = omegas.shape(0);
+		std::complex<double>* out_ptr = nullptr;
+		auto arr = make_complex_array(n, out_ptr);
+		const auto* wp = omegas.data();
+		for (std::size_t i = 0; i < n; ++i) {
+			out_ptr[i] = inner.frequency_response(wp[i]);
+		}
+		return arr;
 	}
 };
 
@@ -246,6 +317,48 @@ void bind_types(nb::module_& m) {
 		      "Cascade: H_self(z) * H_other(z). Returns a new "
 		      "TransferFunction; self is not modified.");
 
+	// -- ContinuousTransferFunction (analog H(s)) --------------------------
+
+	nb::class_<PyContinuousTransferFunction>(m, "ContinuousTransferFunction",
+			"Continuous-time (analog) rational transfer function "
+			"H(s) = N(s) / D(s).\n\n"
+			"Numerator and denominator store ascending powers of s "
+			"(coeffs[0] + coeffs[1]*s + coeffs[2]*s^2 + ...) — the natural "
+			"form for Laplace-plane analysis of analog prototype filters.\n\n"
+			"Bound on double only; mixed-precision continuous-time analysis "
+			"isn't a real-world use case today.")
+		.def(nb::init<np_f64_ro, np_f64_ro>(),
+		     nb::arg("numerator"), nb::arg("denominator"),
+		     "Construct from numerator and denominator coefficient arrays "
+		     "in ascending powers of s.")
+		.def_prop_rw("numerator",
+		              &PyContinuousTransferFunction::get_numerator,
+		              &PyContinuousTransferFunction::set_numerator,
+		              nb::rv_policy::take_ownership,
+		              "Numerator coefficients in ascending powers of s.")
+		.def_prop_rw("denominator",
+		              &PyContinuousTransferFunction::get_denominator,
+		              &PyContinuousTransferFunction::set_denominator,
+		              nb::rv_policy::take_ownership,
+		              "Denominator coefficients in ascending powers of s.")
+		.def("evaluate", &PyContinuousTransferFunction::evaluate,
+		      nb::arg("s"),
+		      "Evaluate H(s) at a single complex s-plane point.")
+		.def("evaluate_many",
+		      &PyContinuousTransferFunction::evaluate_many,
+		      nb::arg("s"),
+		      "Evaluate H(s) at each point in a complex128 ndarray. "
+		      "Returns a complex128 ndarray of the same length.")
+		.def("frequency_response",
+		      &PyContinuousTransferFunction::frequency_response,
+		      nb::arg("omega"),
+		      "Evaluate H(j*omega) at angular frequency omega (rad/s).")
+		.def("frequency_response_many",
+		      &PyContinuousTransferFunction::frequency_response_many,
+		      nb::arg("omegas"),
+		      "Vectorized frequency_response(...) over a float64 ndarray "
+		      "of angular frequencies. Returns complex128.");
+
 	// -- Projection round-trip free functions ------------------------------
 
 	m.def("project_onto",
@@ -277,4 +390,78 @@ void bind_types(nb::module_& m) {
 		"Max absolute error between data and its round-trip through "
 		"`dtype`. Equivalent to max(abs(data - project_onto(data, dtype))) "
 		"but computed without allocating the intermediate ndarray.");
+
+	// -- Z-transform free functions over TransferFunction ------------------
+
+	m.def("ztransform",
+		[](const PyTransferFunction& tf, np_complex_ro z_points) {
+			// Free-function spelling of tf.evaluate_many — matches upstream
+			// `sw::dsp::spectral::evaluate_at` naming for callers who
+			// prefer a free-function style. Functionally identical.
+			return tf.evaluate_many(z_points);
+		},
+		nb::arg("tf"), nb::arg("z"),
+		"Evaluate H(z) at each z-plane point. Free-function spelling of "
+		"`tf.evaluate_many(z)`. Returns complex128 ndarray.");
+
+	m.def("freqz",
+		[](const PyTransferFunction& tf, std::size_t num_points) {
+			// Uniform sweep of [0, 0.5) at num_points frequencies. Matches
+			// the shape of MATLAB/scipy's freqz.
+			std::complex<double>* out_ptr = nullptr;
+			auto arr = make_complex_array(num_points, out_ptr);
+			for (std::size_t k = 0; k < num_points; ++k) {
+				double f = static_cast<double>(k) /
+				            static_cast<double>(num_points) * 0.5;
+				out_ptr[k] = tf.inner.frequency_response(f);
+			}
+			return arr;
+		},
+		nb::arg("tf"), nb::arg("num_points") = 512,
+		"Evaluate H(e^{j 2*pi*f}) at `num_points` uniformly spaced "
+		"normalized frequencies in [0, 0.5). Returns complex128 ndarray.");
+
+	m.def("group_delay",
+		[](const PyTransferFunction& tf, std::size_t num_points) {
+			// Group delay at uniform frequency sweep. Computed as
+			// -d(phase)/d(omega) via central finite differences with a
+			// small step. Wraps upstream sw::dsp::spectral::group_delay,
+			// but call it explicitly so we can surface the result as a
+			// float64 ndarray with take_ownership semantics.
+			double* out_ptr = nullptr;
+			auto arr = make_f64_array(num_points, out_ptr);
+			auto gd = sw::dsp::spectral::group_delay(tf.inner, num_points);
+			for (std::size_t k = 0; k < num_points; ++k) {
+				out_ptr[k] = gd[k];
+			}
+			return arr;
+		},
+		nb::arg("tf"), nb::arg("num_points") = 512,
+		"Group delay at `num_points` uniformly spaced normalized "
+		"frequencies in [0, 0.5). Returns float64 ndarray (samples of "
+		"-d(phase)/d(omega)).");
+
+	// -- Laplace free function over ContinuousTransferFunction -------------
+
+	m.def("laplace_freqs",
+		[](const PyContinuousTransferFunction& tf, double omega_max,
+		   std::size_t num_points) {
+			// Uniform sweep of angular frequencies in [0, omega_max).
+			// Companion to `freqz` but in the s-plane rather than z-plane.
+			if (!(omega_max > 0.0)) {
+				throw std::invalid_argument(
+					"laplace_freqs: omega_max must be positive");
+			}
+			std::complex<double>* out_ptr = nullptr;
+			auto arr = make_complex_array(num_points, out_ptr);
+			for (std::size_t k = 0; k < num_points; ++k) {
+				double omega = static_cast<double>(k) /
+				                static_cast<double>(num_points) * omega_max;
+				out_ptr[k] = tf.inner.frequency_response(omega);
+			}
+			return arr;
+		},
+		nb::arg("tf"), nb::arg("omega_max"), nb::arg("num_points") = 512,
+		"Evaluate H(j*omega) at `num_points` uniformly spaced angular "
+		"frequencies in [0, omega_max). Returns complex128 ndarray.");
 }

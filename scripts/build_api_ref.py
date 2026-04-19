@@ -166,6 +166,7 @@ CATEGORIES = [
     ]),
     ("Types — transfer function and type projection", [
         "project_onto", "projection_error", "to_transfer_function",
+        "ztransform", "freqz", "group_delay", "laplace_freqs",
     ]),
     ("Numerical analysis — pure-Python helpers", [
         "biquad_poles", "max_pole_radius", "is_stable",
@@ -196,7 +197,7 @@ CLASSES = [
     "RPDFDither", "TPDFDither", "FirstOrderNoiseShaper",
     "PeakEnvelope", "RMSEnvelope", "Compressor", "AGC",
     "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
-    "TransferFunction",
+    "TransferFunction", "ContinuousTransferFunction",
 ]
 
 
@@ -281,15 +282,15 @@ INTROS = {
         "convention as `scipy.io.wavfile`."
     ),
     "Types — transfer function and type projection": (
-        "`TransferFunction` is bound on double in 0.5.0 and represents the "
-        "rational H(z) = B(z)/A(z) directly (as opposed to `IIRFilter`'s "
-        "cascade-of-biquads form). Use `to_transfer_function(filt)` to "
-        "fold an IIR cascade into a single TF for evaluation, cascade "
-        "composition, or handing to the upcoming `ztransform` (Phase 5 / "
-        "#54). `project_onto` / `projection_error` are the round-trip "
-        "primitives underlying `measure_sqnr_db` — use them when you want "
-        "the quantized samples or the raw error magnitude rather than the "
-        "SQNR number."
+        "`TransferFunction` (discrete-time H(z)) and "
+        "`ContinuousTransferFunction` (analog H(s)) are the rational-"
+        "function classes, bound on double. `to_transfer_function(filt)` "
+        "folds an IIRFilter cascade into a single TF; the spectral-"
+        "analysis free functions (`ztransform`, `freqz`, `group_delay`, "
+        "`laplace_freqs`) operate on those classes. `project_onto` / "
+        "`projection_error` are the round-trip primitives underlying "
+        "`measure_sqnr_db` — use them when you want the quantized samples "
+        "or the raw error magnitude rather than the SQNR number."
     ),
     "Numerical analysis — pure-Python helpers": (
         "Thin layer over already-bound `IIRFilter` methods. "
@@ -409,6 +410,14 @@ CLASS_INTROS = {
         "`*`. The `to_transfer_function(filt)` helper folds an IIRFilter "
         "cascade into one of these, useful when evaluating the full "
         "filter's H(z) directly rather than staging by stage."
+    ),
+    "ContinuousTransferFunction": (
+        "Analog (continuous-time) rational H(s) = N(s)/D(s) with "
+        "coefficients in ascending powers of s. Use with "
+        "`laplace_freqs(tf, omega_max, N)` to evaluate frequency "
+        "response at uniformly spaced angular frequencies — the natural "
+        "path for analyzing analog prototype filters before bilinear "
+        "transformation to the digital domain."
     ),
 }
 
