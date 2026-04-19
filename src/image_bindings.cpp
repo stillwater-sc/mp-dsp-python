@@ -384,7 +384,7 @@ void bind_image(nb::module_& m) {
 		nb::arg("dtype") = "reference",
 		"Apply a row kernel then a column kernel (separable 2D filter). "
 		"Equivalent to convolve2d with an outer-product kernel but cheaper "
-		"for K rows * L cols -> O(K+L) per pixel instead of O(K*L).");
+		"for a KxL kernel: O(K+L) per pixel instead of O(KL).");
 
 	m.def("gaussian_blur",
 		[](np_f64_2d_ro image, double sigma, std::size_t radius,

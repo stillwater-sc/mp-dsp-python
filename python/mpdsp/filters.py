@@ -1,9 +1,10 @@
 """Mixed-precision filter comparison helpers.
 
 Built on top of the C++ bindings in `mpdsp._core` (IIRFilter and FIRFilter).
-Use `compare_filters` to quantify precision loss across dtypes and
+Use `compare_filters` to quantify precision loss across dtypes,
 `plot_filter_comparison` to visualize magnitude, phase, and pole locations
-side by side.
+side by side, and `to_transfer_function` to fold a designed IIR cascade into
+a single `TransferFunction` for direct evaluation or composition.
 """
 
 import numpy as np

@@ -186,6 +186,11 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 	case mpdsp::ArithConfig::half_config:
 		return project_typed<half_>(src);
 	}
+	// Unreachable: the switch above is exhaustive over mpdsp::ArithConfig.
+	// This return exists only to keep the compiler quiet without reaching for
+	// [[noreturn]] or a warning pragma. When a new ArithConfig enumerator
+	// lands (e.g. sensor_8bit in #55), add a case above and this line stays
+	// inert.
 	return src;
 }
 

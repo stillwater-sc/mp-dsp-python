@@ -22,11 +22,11 @@ the note at the bottom.
 - [Image — generators](#image--generators)
 - [Image — processing](#image--processing)
 - [Image — morphology](#image--morphology)
-- [Image — file I/O](#image--file-i/o)
+- [Image — file I/O](#image--file-io)
 - [Types — transfer function and type projection](#types--transfer-function-and-type-projection)
 - [Numerical-analysis helpers (pure Python)](#numerical-analysis-helpers-pure-python)
 - [Mixed-precision helpers](#mixed-precision-helpers)
-- [CSV + image-pipeline helpers (pure Python)](#csv-+-image-pipeline-helpers-pure-python)
+- [CSV + image-pipeline helpers (pure Python)](#csv--image-pipeline-helpers-pure-python)
 - [Matplotlib plotting helpers](#matplotlib-plotting-helpers)
 - [Classes](#classes)
   - [`IIRFilter`](#iirfilter)
@@ -218,7 +218,7 @@ All take and return `(rows, cols)` float64 2D arrays. Almost every processing fu
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `convolve2d` | `(image: ndarray2d[ro], kernel: ndarray2d[ro], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | 2D spatial correlation. `border` is one of constant, replicate, reflect, reflect_101, or wrap; `pad` is the fill value for border='constant'. `dtype` selects the internal arithmetic — see available_dtypes(). |
-| `separable_filter` | `(image: ndarray2d[ro], row_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], col_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | Apply a row kernel then a column kernel (separable 2D filter). Equivalent to convolve2d with an outer-product kernel but cheaper for K rows * L cols -> O(K+L) per pixel instead of O(K*L). |
+| `separable_filter` | `(image: ndarray2d[ro], row_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], col_kernel: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], border: str = 'reflect_101', pad: float = 0.0, dtype: str = 'reference') -> ndarray2d` | Apply a row kernel then a column kernel (separable 2D filter). Equivalent to convolve2d with an outer-product kernel but cheaper for a KxL kernel: O(K+L) per pixel instead of O(KL). |
 | `gaussian_blur` | `(image: ndarray2d[ro], sigma: float, radius: int = 0, border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | Separable Gaussian blur. `radius=0` auto-selects a radius that captures most of the Gaussian tail (usually ceil(3*sigma)). |
 | `box_blur` | `(image: ndarray2d[ro], size: int, border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | Box-average blur with an `size x size` uniform kernel. |
 | `sobel_x` | `(image: ndarray2d[ro], border: str = 'reflect_101', dtype: str = 'reference') -> ndarray2d` | — |
@@ -499,16 +499,16 @@ Rational H(z) = B(z)/A(z) with double-precision coefficients. Construct from num
 
 ## Regenerating this document
 
-This file was generated from an installed `mpdsp` package via a script at
-`/tmp/build_api_ref.py` (not checked in — it's a one-shot harvester).
-Re-run after landing new bindings:
+This file was generated from an installed `mpdsp` package. Re-run
+after landing new bindings:
 
 ```bash
 pip install -e .
-.venv/bin/python /tmp/build_api_ref.py
+python scripts/build_api_ref.py
 ```
 
-Edit the `CATEGORIES`, `INTROS`, and `CLASS_INTROS` tables in the
-generator to add new bindings or revise prose. The function-table
-signatures come from nanobind's attached `__doc__` and don't need manual
-editing — they regenerate from the installed extension.
+Edit the `CATEGORIES`, `INTROS`, and `CLASS_INTROS` tables in
+`scripts/build_api_ref.py` to add new bindings or revise prose. The
+function-table signatures come from nanobind's attached `__doc__` and
+don't need manual editing — they regenerate from the installed
+extension.
