@@ -726,12 +726,12 @@ def main():
                                f"{tag}_coefficients.csv", "text/csv")
 
     with tab_gd:
+        fig = None
         try:
             fig = plot_group_delay(filt, sample_rate)
             st.pyplot(fig)
             st.download_button("Download PNG", figure_to_png_bytes(fig),
                                f"{tag}_groupdelay.png", "image/png")
-            plt.close(fig)
             st.caption(
                 "Group delay is the per-frequency latency τ(f) = "
                 "-d(phase)/d(ω). Bessel prototypes target a flat group "
@@ -741,6 +741,14 @@ def main():
                 "transition band.")
         except Exception as e:  # noqa: BLE001 - surface whatever upstream throws
             st.warning(f"Group-delay computation failed: {e}", icon="⚠️")
+        finally:
+            # Close the figure even if st.pyplot / figure_to_png_bytes /
+            # st.download_button throws after it was created — otherwise the
+            # pyplot registry accumulates figures across slider changes.
+            # plot_group_delay may have thrown before returning, in which
+            # case fig stays None and there's nothing to close.
+            if fig is not None:
+                plt.close(fig)
 
     with tab_time:
         fig, time_failures = plot_impulse_step(filt, selected_dtypes)
