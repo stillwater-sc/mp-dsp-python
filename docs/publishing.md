@@ -107,7 +107,11 @@ Before cutting the real release:
 1. Merge PR #35 (version sync) to `main`.
 2. Merge the reproducibility-pin PR.
 3. Trigger `publish.yml` manually via `workflow_dispatch`, target
-   `testpypi`. Wait for the matrix to finish (~20–40 min).
+   `testpypi`:
+   ```bash
+   gh workflow run publish.yml -f target=testpypi --ref main
+   gh run watch           # block until the matrix finishes (~20–40 min)
+   ```
 4. In a clean virtualenv:
    ```bash
    pip install -i https://test.pypi.org/simple/ \
@@ -125,22 +129,40 @@ retry. TestPyPI allows unlimited retries with post-release suffixes.
 ### 6. Cut the real release
 
 ```bash
-git tag v0.4.1
-git push --tags
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The tag triggers `release.yml`:
 
 1. Tests run on Linux / Windows / macOS.
-2. GitHub Release is created with auto-generated notes.
-3. The GitHub release event triggers `publish.yml`.
-4. Wheels are built via cibuildwheel and published to PyPI.
+2. GitHub Release is created with auto-generated notes via
+   `softprops/action-gh-release`.
 
-Users can then:
+The release **does not auto-trigger `publish.yml`.** `release.yml`
+creates the GitHub Release under the default `GITHUB_TOKEN`, and GitHub
+deliberately suppresses workflow chaining when events originate from
+`GITHUB_TOKEN` — a loop-prevention safeguard. So the `release:
+published` event fires, but the listener in `publish.yml` skips it.
+
+Dispatch `publish.yml` manually after the release is cut:
+
+```bash
+gh workflow run publish.yml -f target=pypi --ref main
+gh run watch
+```
+
+That runs the sdist + cibuildwheel matrix and uploads to real PyPI via
+the OIDC trusted publisher. Users can then:
 
 ```bash
 pip install mpdsp
 ```
+
+**Fixing the auto-chain would require a PAT** (swap `GITHUB_TOKEN` for a
+personal access token in `release.yml`'s `create-release` step — events
+from a PAT do chain). We chose the manual dispatch instead to avoid
+managing another secret.
 
 ## Considerations worth flagging
 
@@ -162,18 +184,52 @@ Once the machinery is proven, the flow for future releases is:
 2. Bump the peer `GIT_TAG` pins accordingly (`dsp` → `vX.Y.Z`, plus
    `universal` / `mtl5` if their versions changed).
 3. Merge to `main`.
-4. `git tag vX.Y.Z && git push --tags`.
+4. Tag and push:
+   ```bash
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+5. After `release.yml` publishes the GitHub Release, manually dispatch
+   `publish.yml` — the auto-chain is disabled (see §6 above for why):
+   ```bash
+   gh workflow run publish.yml -f target=pypi --ref main
+   gh run watch
+   ```
 
 For a Python-only bindings fix (e.g. a wrapper-layer bug that doesn't
 correspond to any C++ change):
 
-1. Bump `CMakeLists.txt` version to `X.Y.Z.postN` (PEP 440
-   post-release).
-2. Tag `vX.Y.Z.postN` and push.
+1. Bump `pyproject.toml`'s `[tool.scikit-build.metadata.version]
+   result` template from `"{value}"` to `"{value}.postN"` (PEP 440
+   post-release). `CMakeLists.txt` stays on `X.Y.Z` — CMake's
+   `project(VERSION)` doesn't accept `.postN`.
+2. Tag and push `vX.Y.Z.postN`, then manually dispatch `publish.yml`
+   as in the release flow above.
 
 The `X.Y.Z` prefix still identifies the C++ version being wrapped. The
 `.postN` suffix tells users "same C++ underneath, Python bindings
 repackaged".
+
+### gh CLI reference
+
+```bash
+# Dry-run to TestPyPI (useful when validating a release candidate)
+gh workflow run publish.yml -f target=testpypi --ref main
+
+# Real release to PyPI (after tagging and release.yml completes)
+gh workflow run publish.yml -f target=pypi --ref main
+
+# Watch the most recent dispatch finish
+gh run watch
+
+# List recent publish runs
+gh run list --workflow=publish.yml --limit 5
+```
+
+`--ref main` tells the dispatch which branch/tag to check out. Always
+use `main` for a published release — by the time you're publishing, the
+version bump has already been merged there. Dispatching against a
+feature branch would produce a wheel with that branch's `CMakeLists.txt`
+version, which is almost never what you want.
 
 ## Minimum path to first release
 
@@ -186,7 +242,9 @@ A focused sequence of what to do when ready:
    guide). Outside the repo, ~15 min.
 4. **Dry-run to TestPyPI** via `workflow_dispatch`; verify install in
    a clean venv.
-5. **Tag `v0.4.1` → published to PyPI**.
+5. **Tag `vX.Y.Z` and push**, then manually dispatch
+   `gh workflow run publish.yml -f target=pypi --ref main` →
+   published to PyPI.
 
 After that, the package is live. Later releases follow the cadence in
 the previous section.
