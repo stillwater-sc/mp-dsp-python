@@ -372,13 +372,18 @@ class TestNoiseShaper:
             assert s.dtype == dt
 
     def test_reference_process_is_near_identity(self):
-        # At `reference` dtype, there's no quantization — error feedback
-        # stays zero and output equals input.
+        # At `reference` dtype the (double -> double) cast is lossless, so
+        # the pure quantization error is zero. Upstream 0.5.0 adds a
+        # denormal-prevention AC term (±1e-8) to the error-feedback path
+        # to keep IEEE doubles out of the flush-to-zero hole, so output
+        # is "near-identity" to within that denormal bound rather than
+        # bit-exact. See sw::dsp::DenormalPrevention in
+        # mixed-precision-dsp's math/denormal.hpp.
         shaper = mpdsp.FirstOrderNoiseShaper(dtype="reference")
         rng = np.random.default_rng(3)
         signal = rng.normal(0.0, 0.3, size=256)
         out = shaper.process_block(signal)
-        np.testing.assert_allclose(out, signal, atol=1e-12)
+        np.testing.assert_allclose(out, signal, atol=1e-7)
 
     def test_process_block_and_process_agree(self):
         signal = np.linspace(-0.4, 0.4, 64)

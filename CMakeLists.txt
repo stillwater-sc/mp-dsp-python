@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.22)
 # the regex provider configured in pyproject.toml — do not hardcode
 # it anywhere else.
 project(mp-dsp-python
-	VERSION 0.4.1
+	VERSION 0.5.0
 	LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ project(mp-dsp-python
 # Override at configure time with `-DMPDSP_DSP_PIN=main` (etc.) to build
 # against an unreleased upstream without editing this file.
 # ---------------------------------------------------------------------------
-set(MPDSP_DSP_PIN       "v0.4.1" CACHE STRING
+set(MPDSP_DSP_PIN       "v0.5.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
