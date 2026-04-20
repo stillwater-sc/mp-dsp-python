@@ -221,6 +221,33 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
     return fig
 
 
+def plot_group_delay(filt, sample_rate: float, num_points: int = 512):
+    """Group delay τ(f) = -d(phase)/d(omega), plotted across [0, fs/2].
+
+    Group delay quantifies per-frequency latency: a passband with flat
+    group delay preserves waveform shape (Bessel's signature property),
+    while sharp-rolloff IIR filters (elliptic, high-order Chebyshev) peak
+    hard at the transition band. Folds the IIR cascade into a single
+    TransferFunction via `to_transfer_function`, then calls upstream's
+    central-difference group_delay — the same path DSPFilters' classic
+    GUI used for its group-delay pane.
+    """
+    tf = mpdsp.to_transfer_function(filt)
+    gd = mpdsp.group_delay(tf, num_points)
+    freqs = np.linspace(0.0, 0.5, num_points, endpoint=False)
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.plot(freqs * sample_rate, gd, linewidth=1.4, color="C2")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Group delay (samples)")
+    ax.set_title(f"Group delay — mean {gd.mean():.2f} samples, "
+                 f"peak {gd.max():.2f} samples")
+    ax.grid(True, alpha=0.4)
+    ax.axhline(0.0, color="0.85", linewidth=0.5)
+    fig.tight_layout()
+    return fig
+
+
 def plot_pole_zero(filt):
     poles = np.asarray(filt.poles())
     theta = np.linspace(0.0, 2 * np.pi, 256)
@@ -644,10 +671,10 @@ def main():
         signal = mpdsp.white_noise(length=sig_length, amplitude=0.5, seed=1)
 
     # --- Tabs ---
-    (tab_freq, tab_pz, tab_time, tab_prec,
+    (tab_freq, tab_pz, tab_gd, tab_time, tab_prec,
      tab_two_type, tab_summary) = st.tabs(
-        ["Frequency response", "Pole / zero", "Time domain",
-         "Mixed-precision comparison",
+        ["Frequency response", "Pole / zero", "Group delay",
+         "Time domain", "Mixed-precision comparison",
          "Compare A vs B", "Summary"])
 
     # Build the shared descriptor used in export filenames so the same
@@ -697,6 +724,23 @@ def main():
                 csv_bytes = "\n".join(rows).encode()
             st.download_button("Download coefficients CSV", csv_bytes,
                                f"{tag}_coefficients.csv", "text/csv")
+
+    with tab_gd:
+        try:
+            fig = plot_group_delay(filt, sample_rate)
+            st.pyplot(fig)
+            st.download_button("Download PNG", figure_to_png_bytes(fig),
+                               f"{tag}_groupdelay.png", "image/png")
+            plt.close(fig)
+            st.caption(
+                "Group delay is the per-frequency latency τ(f) = "
+                "-d(phase)/d(ω). Bessel prototypes target a flat group "
+                "delay across the passband (waveform-preserving); "
+                "elliptic and high-order Chebyshev filters trade group "
+                "delay for sharper rolloff, producing a peak near the "
+                "transition band.")
+        except Exception as e:  # noqa: BLE001 - surface whatever upstream throws
+            st.warning(f"Group-delay computation failed: {e}", icon="⚠️")
 
     with tab_time:
         fig, time_failures = plot_impulse_step(filt, selected_dtypes)
