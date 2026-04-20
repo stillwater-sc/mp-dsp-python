@@ -261,6 +261,27 @@ public:
 		return out;
 	}
 
+	// Extract zeros from the numerator of each biquad stage. `BiquadPoleState`
+	// solves the numerator quadratic upstream (see biquad/biquad.hpp); we were
+	// throwing that data away when building `poles()`, so the dashboard's
+	// pole-zero plot was missing half its content. Mirrors `poles()` exactly,
+	// including the second-slot guard — for first-order sections (b2 = 0)
+	// BiquadPoleState leaves `zeros.second` default-constructed, same pattern
+	// as the pole path.
+	std::vector<std::complex<double>> zeros() const {
+		std::vector<std::complex<double>> out;
+		out.reserve(static_cast<std::size_t>(cascade.num_stages()) * 2);
+		for (int i = 0; i < cascade.num_stages(); ++i) {
+			sw::dsp::BiquadPoleState<double> pz(cascade.stage(i));
+			out.push_back(pz.zeros.first);
+			const auto& second = pz.zeros.second;
+			if (second != std::complex<double>{}) {
+				out.push_back(second);
+			}
+		}
+		return out;
+	}
+
 	np_f64 process(np_f64_ro signal, const std::string& dtype) const {
 		std::size_t n = signal.shape(0);
 		double* out_ptr = nullptr;
@@ -558,6 +579,11 @@ void bind_filters(nb::module_& m) {
 		     "List of (b0, b1, b2, a1, a2) tuples, one per stage.")
 		.def("poles", &PyIIRFilter::poles,
 		     "List of complex pole locations in the z-plane.")
+		.def("zeros", &PyIIRFilter::zeros,
+		     "List of complex zero locations in the z-plane. For all-pole "
+		     "families (Butterworth / Chebyshev I / Bessel / Legendre), all "
+		     "finite zeros map to z = -1, so expect an N-fold cluster there. "
+		     "Chebyshev II and Elliptic distribute zeros on the unit circle.")
 		.def("process", &PyIIRFilter::process,
 		     nb::arg("signal"), nb::arg("dtype") = "reference",
 		     "Filter a signal. dtype selects arithmetic for state and samples "

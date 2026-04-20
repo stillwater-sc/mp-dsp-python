@@ -376,6 +376,7 @@ Returned by every `*_lowpass` / `*_highpass` / `*_bandpass` / `*_bandstop` / `rb
 | `.process` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False], dtype: str = 'reference') -> numpy.ndarray[dtype=float64]` — Filter a signal. dtype selects arithmetic for state and samples (see available_dtypes()). Returns NumPy float64. |
 | `.stability_margin` | `(self) -> float` — 1 - max(\|pole\|). Positive = stable, 0 = marginal, < 0 = unstable. |
 | `.worst_case_sensitivity` | `(self, epsilon: float = 1e-08) -> float` — Worst-case \|d(max_pole_radius)/d(coeff)\| across stages, computed by finite differences. |
+| `.zeros` | `(self) -> list[complex]` — List of complex zero locations in the z-plane. For all-pole families (Butterworth / Chebyshev I / Bessel / Legendre), all finite zeros map t |
 
 ### `FIRFilter`
 
