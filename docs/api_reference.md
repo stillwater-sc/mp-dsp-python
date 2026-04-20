@@ -1,8 +1,8 @@
 # `mpdsp` API reference
 
 Complete enumeration of every public name in the `mpdsp` package, grouped
-by subsystem. Generated from `0.4.1.post2` (upstream `sw::dsp
-0.4.1`) via `inspect` and the nanobind-attached
+by subsystem. Generated from `0.5.0` (upstream `sw::dsp
+0.5.0`) via `inspect` and the nanobind-attached
 `__doc__` strings. Keep this in sync by re-running the generator — see
 the note at the bottom.
 
@@ -79,8 +79,8 @@ ADC streams without re-architecting the downstream filter.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.4.1.post2"`. |
-| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.4.1"`. |
+| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.5.0"`. |
+| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.5.0"`. |
 | `mpdsp.__dsp_version_info__` | `tuple` | `(major, minor, patch)` tuple of ints for `__dsp_version__`. |
 | `mpdsp.HAS_CORE` | `bool` | `True` when the nanobind extension imported cleanly. `False` in unbuilt source checkouts, and (pre-0.4.1.post1) indicated a packaging bug before we hardened the import. |
 | `mpdsp.HAS_PLOT` | `bool` | `True` when matplotlib is importable — gates the `plot_*` helpers. |
