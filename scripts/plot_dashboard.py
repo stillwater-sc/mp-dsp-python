@@ -178,9 +178,50 @@ def build_filter(family: str, topology: str, order: int, sample_rate: float,
 # ---------------------------------------------------------------------------
 
 
+def _reference_cutoff(topology: str, freq_params: dict) -> float | None:
+    """Return the reference frequency (Hz) for normalizing the x-axis.
+
+    - LP / HP / RBJ shelves: the user-specified `cutoff`.
+    - Non-RBJ and RBJ bandpass / bandstop: the user-specified `center` —
+      that's what the sliders exposed and what the user is thinking about,
+      more faithful than reconstructing geometric-mean edges from (center,
+      width). For filter families defined by (f_lo, f_hi) edges the
+      geometric mean would be the canonical choice, but none of our
+      current constructors take that shape.
+    - RBJ allpass: returns None so the caller falls back to the absolute-Hz
+      view. The allpass magnitude is flat at 0 dB for every ω, so a
+      normalized plot would be a featureless horizontal line; the phase
+      twist that *is* interesting reads fine on absolute Hz too.
+
+    The topology check for allpass is explicit because the allpass slider
+    lives in the same "lowpass/highpass/allpass/lowshelf/highshelf" branch
+    that populates `freq_params["cutoff"]`, so keying off the dict alone
+    would silently enable normalization for allpass.
+    """
+    if topology == "allpass":
+        return None
+    if "cutoff" in freq_params:
+        return freq_params["cutoff"]
+    if "center" in freq_params:
+        return freq_params["center"]
+    return None
+
+
 def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
-                         signal: np.ndarray | None, num_freqs: int = 1024):
-    """Magnitude (dB) + unwrapped phase across the full [0, fs/2] band.
+                         signal: np.ndarray | None, num_freqs: int = 1024,
+                         x_units: str = "Hz",
+                         x_scale: str = "linear",
+                         cutoff: float | None = None):
+    """Magnitude (dB) + unwrapped phase.
+
+    `x_units` selects the x-axis framing:
+      - "Hz": absolute frequency (deployment view — current default)
+      - "ratio": normalized to cutoff (f / f_c). Needs `cutoff` to be
+        non-None; falls back to "Hz" otherwise (e.g. RBJ allpass).
+
+    `x_scale` is "linear" or "log". Log skips the DC sample — we pick a
+    small positive lower bound instead (fs/10000 for "Hz", 0.01·f_c for
+    "ratio") so the log sweep gets ~4 decades of context.
 
     If `dtypes` and `signal` are provided, overlays per-dtype magnitude
     responses computed from the filter's quantized coefficients. Today this
@@ -188,16 +229,56 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
     frequency response requires upstream support (#40) for mixed-precision
     spectral analysis.
     """
-    freqs = np.linspace(0.0, 0.5, num_freqs)
+    nyquist = sample_rate / 2.0
+
+    normalize = (x_units == "ratio" and cutoff is not None and cutoff > 0)
+
+    # Build the normalized-frequency sweep (what filt.frequency_response
+    # consumes — values in [0, 0.5]) based on the two toggles. For log
+    # scale we pick a small positive lower bound so log10 is finite and
+    # the plot shows ~4 decades of context before the interesting region.
+    if x_scale == "log":
+        if normalize:
+            # 2 decades below cutoff, 1 decade above (clamped to Nyquist).
+            f_lo_hz = max(cutoff * 0.01, sample_rate / 100000.0)
+            f_hi_hz = min(cutoff * 10.0, nyquist * 0.999)
+        else:
+            f_lo_hz = max(sample_rate / 10000.0, 1e-6)
+            f_hi_hz = nyquist * 0.999
+        freqs = np.logspace(np.log10(f_lo_hz / sample_rate),
+                             np.log10(f_hi_hz / sample_rate), num_freqs)
+    else:
+        if normalize:
+            f_hi_hz = min(cutoff * 3.0, nyquist)
+            freqs = np.linspace(0.0, f_hi_hz / sample_rate, num_freqs)
+        else:
+            freqs = np.linspace(0.0, 0.5, num_freqs)
+
     H = filt.frequency_response(freqs)
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
     phase = np.unwrap(np.angle(H))
 
+    # X values and labels. Normalization expresses f/f_c directly so the
+    # axis number reads "1.0 = cutoff" — matches the Wikipedia convention.
+    if normalize:
+        x = freqs * sample_rate / cutoff
+        xlabel = "f / f_c"
+    else:
+        x = freqs * sample_rate
+        xlabel = "Frequency (Hz)"
+
     fig, (ax_mag, ax_phase) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-    ax_mag.plot(freqs * sample_rate, mag_db, linewidth=1.6, label="reference")
+    ax_mag.plot(x, mag_db, linewidth=1.6, label="reference")
     ax_mag.set_ylabel("Magnitude (dB)")
-    ax_mag.grid(True, alpha=0.4)
+    ax_mag.grid(True, alpha=0.4, which="both")
     ax_mag.set_ylim(bottom=max(-160.0, mag_db.min() - 6.0))
+    if x_scale == "log":
+        ax_mag.set_xscale("log")
+    # A horizontal guide at -3 dB is the canonical cutoff marker on a
+    # normalized Bode plot; show it only when normalization is active to
+    # keep the default Hz view uncluttered.
+    if normalize:
+        ax_mag.axhline(-3.0, color="0.7", linewidth=0.5, linestyle="--")
 
     if dtypes and signal is not None:
         ref_out = filt.process(signal, dtype="reference")
@@ -208,14 +289,14 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
                 out = filt.process(signal, dtype=dt)
                 sqnr = mpdsp.sqnr_db(ref_out, out)
                 ax_mag.plot([], [], " ", label=f"{dt}: SQNR={sqnr:.1f} dB")
-            except Exception as e:  # noqa: BLE001 - surface whatever upstream throws
+            except Exception:  # noqa: BLE001 - surface whatever upstream throws
                 ax_mag.plot([], [], " ", label=f"{dt}: error")
         ax_mag.legend(loc="best", fontsize="small")
 
-    ax_phase.plot(freqs * sample_rate, phase, linewidth=1.4, color="C1")
-    ax_phase.set_xlabel("Frequency (Hz)")
+    ax_phase.plot(x, phase, linewidth=1.4, color="C1")
+    ax_phase.set_xlabel(xlabel)
     ax_phase.set_ylabel("Phase (rad, unwrapped)")
-    ax_phase.grid(True, alpha=0.4)
+    ax_phase.grid(True, alpha=0.4, which="both")
 
     fig.tight_layout()
     return fig
@@ -649,6 +730,26 @@ def main():
     selected_dtypes = st.sidebar.multiselect(
         "Compare dtypes", all_dtypes,
         default=["reference", "gpu_baseline", "posit_full", "tiny_posit"])
+    # Frequency-response pane axis toggles (issue #75). The "Hz + linear"
+    # default is the deployment-view framing (concrete Hz from DC to
+    # Nyquist); "ratio + log" is the Bode / Wikipedia convention that makes
+    # rolloff a straight line with slope 20·N dB/decade and collapses all
+    # same-family-same-order filters onto the same curve regardless of
+    # cutoff. Independent toggles so "Hz + log" (Bode of the deployed
+    # filter) is reachable in one step.
+    st.sidebar.header("Freq-response axis")
+    x_units = st.sidebar.radio(
+        "X-axis units",
+        ["Hz", "ratio"],
+        format_func=lambda s: "Absolute Hz" if s == "Hz" else "f / f_c (normalized)",
+        horizontal=True,
+    )
+    x_scale = st.sidebar.radio(
+        "X-axis scale",
+        ["linear", "log"],
+        horizontal=True,
+    )
+
     # Two-type comparison picker — separate from the multiselect above so
     # the A-vs-B tab has its own controls the user can change without
     # disturbing the broader multi-dtype comparison.
@@ -698,7 +799,10 @@ def main():
     # slider change, steadily leaking memory in long-lived sessions.
 
     with tab_freq:
-        fig = plot_magnitude_phase(filt, sample_rate, selected_dtypes, signal)
+        fig = plot_magnitude_phase(
+            filt, sample_rate, selected_dtypes, signal,
+            x_units=x_units, x_scale=x_scale,
+            cutoff=_reference_cutoff(topology, freq_params))
         st.pyplot(fig)
         st.download_button("Download PNG", figure_to_png_bytes(fig),
                            f"{tag}_freq.png", "image/png")
