@@ -376,6 +376,7 @@ Returned by every `*_lowpass` / `*_highpass` / `*_bandpass` / `*_bandstop` / `rb
 | `.process` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False], dtype: str = 'reference') -> numpy.ndarray[dtype=float64]` — Filter a signal. dtype selects arithmetic for state and samples (see available_dtypes()). Returns NumPy float64. |
 | `.stability_margin` | `(self) -> float` — 1 - max(\|pole\|). Positive = stable, 0 = marginal, < 0 = unstable. |
 | `.worst_case_sensitivity` | `(self, epsilon: float = 1e-08) -> float` — Worst-case \|d(max_pole_radius)/d(coeff)\| across stages, computed by finite differences. |
+| `.zeros` | `(self) -> list[complex]` — List of complex zero locations in the z-plane. For all-pole families (Butterworth / Chebyshev I / Bessel / Legendre), all finite zeros map to z = -1, so expect an N-fold cluster there. Chebyshev II and Elliptic distribute zeros on the unit circle. |
 
 ### `FIRFilter`
 
@@ -440,7 +441,7 @@ Peak envelope follower with configurable attack/release. The `.value` property e
 |--------|-------------------------|
 | `.dtype` | The arithmetic configuration selected at construction. |
 | `.process` | `(self, input: float) -> float` — Process a single sample. Returns the updated envelope value. |
-| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Process a 1D NumPy float64 signal. Returns the envelope trace (same length as the input). The per-sample loop releases the GIL internally so |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Process a 1D NumPy float64 signal. Returns the envelope trace (same length as the input). The per-sample loop releases the GIL internally so other Python threads can run. |
 | `.reset` | `(self) -> None` — Clear the internal envelope state to zero. |
 | `.value` | `(self) -> float` — Current envelope value without consuming a sample. |
 
@@ -518,7 +519,7 @@ Least-mean-squares adaptive filter. Coefficients adapt online via the LMS update
 | `.last_error` | Error residual from the most recent process() call. |
 | `.num_taps` | (self) -> int |
 | `.process` | `(self, input: float, desired: float) -> tuple[float, float]` — Process one sample with adaptation. Returns a (output, error) tuple where output is y[n] = w^T x[n] and error is d[n] - y[n]. |
-| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop  |
+| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop releases the GIL. |
 | `.reset` | `(self) -> None` — Zero the weights and delay line. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
 
@@ -534,7 +535,7 @@ Normalized LMS — divides the step size by the input power for tunability that'
 | `.last_error` | Error residual from the most recent process() call. |
 | `.num_taps` | (self) -> int |
 | `.process` | `(self, input: float, desired: float) -> tuple[float, float]` — Process one sample with adaptation. Returns a (output, error) tuple where output is y[n] = w^T x[n] and error is d[n] - y[n]. |
-| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop  |
+| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop releases the GIL. |
 | `.reset` | `(self) -> None` — Zero the weights and delay line. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
 
@@ -550,7 +551,7 @@ Recursive least-squares adaptive filter. Faster convergence than LMS/NLMS at the
 | `.last_error` | Error residual from the most recent process() call. |
 | `.num_taps` | (self) -> int |
 | `.process` | `(self, input: float, desired: float) -> tuple[float, float]` — Process one sample with adaptation. Returns a (output, error) tuple where output is y[n] = w^T x[n] and error is d[n] - y[n]. |
-| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop  |
+| `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop releases the GIL. |
 | `.reset` | `(self) -> None` — Zero the weights, delay line, and reset P to delta*I. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
 

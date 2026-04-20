@@ -40,6 +40,35 @@ class TestButterworthDesign:
         for p in poles:
             assert abs(p) < 1.0
 
+    def test_zeros_count_matches_order(self):
+        # Butterworth LP is all-pole in the analog prototype; after bilinear
+        # transform every zero maps to z = -1. The binding still reports all
+        # N of them (as an N-fold cluster), matching the number of poles.
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        zeros = filt.zeros()
+        assert len(zeros) == 4
+        # All should be at or near z = -1 for Butterworth LP. Tolerance is
+        # looser than bit-exact: Apple Silicon's Clang generates different
+        # FMA sequences than x86_64 GCC/Clang, so the bilinear-transform
+        # output can differ by ~1e-8 between platforms. 1e-6 is comfortably
+        # above that platform noise while still pinning "clustered at -1".
+        for z in zeros:
+            assert abs(z - (-1 + 0j)) < 1e-6
+
+    def test_zeros_chebyshev2_on_unit_circle(self):
+        # Chebyshev II has finite stopband zeros distributed on the unit
+        # circle — the canonical case where zeros are visually informative
+        # (unlike Butterworth's pile-at-minus-one). Guards against a future
+        # regression that throws the zeros away again.
+        filt = mpdsp.chebyshev2_lowpass(order=6, sample_rate=SAMPLE_RATE,
+                                         cutoff=1000.0, stopband_db=40.0)
+        zeros = filt.zeros()
+        # At least some zeros should be strictly off z = -1 and on the unit
+        # circle (|z| ≈ 1, not clustered at the real axis).
+        off_axis = [z for z in zeros
+                    if abs(abs(z) - 1.0) < 1e-6 and abs(z.imag) > 1e-3]
+        assert len(off_axis) > 0
+
     def test_invalid_order_raises(self):
         with pytest.raises(ValueError):
             mpdsp.butterworth_lowpass(order=0, sample_rate=SAMPLE_RATE, cutoff=1000.0)

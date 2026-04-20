@@ -223,19 +223,27 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
 
 def plot_pole_zero(filt):
     poles = np.asarray(filt.poles())
+    zeros = np.asarray(filt.zeros())
     theta = np.linspace(0.0, 2 * np.pi, 256)
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot(np.cos(theta), np.sin(theta), color="0.6", linewidth=0.8)
     ax.axhline(0.0, color="0.85", linewidth=0.5)
     ax.axvline(0.0, color="0.85", linewidth=0.5)
+    # Conventional markers: 'x' for poles, 'o' for zeros. All-pole families
+    # (Butterworth / Chebyshev I / Bessel / Legendre) place every zero at
+    # z = -1, so they render as a visible N-fold cluster on the negative
+    # real axis rather than disappearing from the plot.
     ax.scatter(poles.real, poles.imag, marker="x", s=90, color="C3",
                linewidths=2, label=f"poles (n={len(poles)})")
+    ax.scatter(zeros.real, zeros.imag, marker="o", s=90,
+               facecolors="none", edgecolors="C0", linewidths=1.5,
+               label=f"zeros (n={len(zeros)})")
     ax.set_aspect("equal")
     ax.set_xlim(-1.2, 1.2)
     ax.set_ylim(-1.2, 1.2)
     ax.set_xlabel("Re(z)")
     ax.set_ylabel("Im(z)")
-    ax.set_title(f"Pole locations — stability margin = "
+    ax.set_title(f"Pole / zero locations — stability margin = "
                  f"{filt.stability_margin():.4f}")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper right")
