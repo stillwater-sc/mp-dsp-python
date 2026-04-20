@@ -188,9 +188,18 @@ def _reference_cutoff(topology: str, freq_params: dict) -> float | None:
       width). For filter families defined by (f_lo, f_hi) edges the
       geometric mean would be the canonical choice, but none of our
       current constructors take that shape.
-    - RBJ allpass: no meaningful reference. Returns None so the caller
-      can fall back to the absolute-Hz view.
+    - RBJ allpass: returns None so the caller falls back to the absolute-Hz
+      view. The allpass magnitude is flat at 0 dB for every ω, so a
+      normalized plot would be a featureless horizontal line; the phase
+      twist that *is* interesting reads fine on absolute Hz too.
+
+    The topology check for allpass is explicit because the allpass slider
+    lives in the same "lowpass/highpass/allpass/lowshelf/highshelf" branch
+    that populates `freq_params["cutoff"]`, so keying off the dict alone
+    would silently enable normalization for allpass.
     """
+    if topology == "allpass":
+        return None
     if "cutoff" in freq_params:
         return freq_params["cutoff"]
     if "center" in freq_params:
