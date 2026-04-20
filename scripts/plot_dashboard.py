@@ -229,7 +229,7 @@ def plot_pole_zero(filt):
     ax.plot(np.cos(theta), np.sin(theta), color="0.6", linewidth=0.8)
     ax.axhline(0.0, color="0.85", linewidth=0.5)
     ax.axvline(0.0, color="0.85", linewidth=0.5)
-    # Conventional markers: × for poles, ○ for zeros. All-pole families
+    # Conventional markers: 'x' for poles, 'o' for zeros. All-pole families
     # (Butterworth / Chebyshev I / Bessel / Legendre) place every zero at
     # z = -1, so they render as a visible N-fold cluster on the negative
     # real axis rather than disappearing from the plot.

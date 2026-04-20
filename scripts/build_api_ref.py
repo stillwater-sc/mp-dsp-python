@@ -76,6 +76,24 @@ def sig_and_blurb(name: str, obj) -> tuple[str, str]:
     return sig, blurb
 
 
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Trim `text` to at most `limit` characters on a word boundary, appending
+    an ellipsis when truncation actually happens. The previous generator did a
+    raw ``[:140]`` slice that chopped mid-word (visible in the `.zeros` row as
+    a dangling "map t" — CodeRabbit flagged it on PR #70). Table cells can
+    absorb long descriptions fine, so the new 280-char limit rarely trims at
+    all; the word-boundary-plus-ellipsis only matters for docstrings that
+    genuinely overflow.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip()
+    sp = cut.rfind(" ")
+    if sp > limit // 2:
+        cut = cut[:sp]
+    return cut.rstrip(" ,.;:") + "…"
+
+
 def class_methods(cls) -> list[tuple[str, str, str]]:
     """List (method_name, signature, blurb) for public methods of a class.
 
@@ -510,12 +528,12 @@ def render_class(name: str) -> str:
                     continue
                 if p.startswith(("1.", "2.")) or p.startswith(f"{mname}("):
                     continue
-                rest = " ".join(p.split())[:140]
+                rest = _truncate_at_word(" ".join(p.split()), 280)
                 break
             cell = f"`{sig_args}`" + (f" — {rest}" if rest else "")
         else:
             cell = first if first else "*(property)*"
-            cell = cell[:160]
+            cell = _truncate_at_word(cell, 280)
         lines.append(f"| `.{mname}` | {cell.replace('|', '\\|')} |")
     return "\n".join(lines)
 
