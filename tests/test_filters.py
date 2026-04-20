@@ -47,9 +47,13 @@ class TestButterworthDesign:
         filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
         zeros = filt.zeros()
         assert len(zeros) == 4
-        # All should be at or near z = -1 for Butterworth LP.
+        # All should be at or near z = -1 for Butterworth LP. Tolerance is
+        # looser than bit-exact: Apple Silicon's Clang generates different
+        # FMA sequences than x86_64 GCC/Clang, so the bilinear-transform
+        # output can differ by ~1e-8 between platforms. 1e-6 is comfortably
+        # above that platform noise while still pinning "clustered at -1".
         for z in zeros:
-            assert abs(z - (-1 + 0j)) < 1e-9
+            assert abs(z - (-1 + 0j)) < 1e-6
 
     def test_zeros_chebyshev2_on_unit_circle(self):
         # Chebyshev II has finite stopband zeros distributed on the unit
