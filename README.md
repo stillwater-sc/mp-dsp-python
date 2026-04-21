@@ -131,17 +131,30 @@ aren't part of a mixed-precision datapath).
 | `reference` | double | double | double | Ground truth |
 | `gpu_baseline` | double | float | float | GPU / embedded CPU |
 | `ml_hw` | double | float | cfloat<16,5> (IEEE half) | ML accelerator |
-| `posit_full` | double | posit<32,2> | posit<16,1> | Posit arithmetic research |
-| `tiny_posit` | double | posit<8,2> | posit<8,2> | Ultra-low-power edge |
+| `posit_full` | double | posit<32,2> | posit<16,1> | Mixed-precision posit pipeline |
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float research |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
 | `sensor_8bit` | double | double | integer<8> | Standard 8-bit sensor ADC |
 | `sensor_6bit` | double | double | integer<6> | Noise-limited sensor |
 | `fpga_fixed` | double | fixpnt<32,24> | fixpnt<16,12> | FPGA fixed-point datapath |
 
-Query the live set at runtime with `mpdsp.available_dtypes()`. Sample-scalar
-bit width per config is available via `mpdsp.bits_of(dtype)` — useful for
-labeling the x-axis of precision-vs-cost plots.
+**Posit taxonomy grid** — `posit<N, es>` single-type configs for N ∈ {8, 16, 32},
+es ∈ {0, 1, 2}. All three scalars (coefficient, state, sample) use the same
+posit type, so these cells cleanly compare ES-vs-precision tradeoff at fixed
+bit width:
+
+| Config | Posit type | Notes |
+|--------|-----------|-------|
+| `posit_8_0` / `posit_8_1` / `posit_8_2` | `posit<8, 0/1/2>` | `posit_8_2` is canonical for 8-bit; `tiny_posit` is a legacy alias |
+| `posit_16_0` / `posit_16_1` / `posit_16_2` | `posit<16, 0/1/2>` | `posit_16_1` is the standard 16-bit posit (also used as posit_full's sample) |
+| `posit_32_0` / `posit_32_1` / `posit_32_2` | `posit<32, 0/1/2>` | `posit_32_2` is the standard 32-bit posit (also used as posit_full's state) |
+
+Query the live set at runtime with `mpdsp.available_dtypes()` (18 entries).
+Sample-scalar bit width per config is available via `mpdsp.bits_of(dtype)` —
+useful for labeling the x-axis of precision-vs-cost plots. For posit grid
+cells the ES dimension doesn't affect bit width, so every `posit_N_*` reports
+N; plotting a full sweep gives 3 points stacked vertically at each width
+showing ES's effect on SQNR.
 
 Coefficients are always designed in `double` — design-time precision is
 non-negotiable for IIR filters (see the

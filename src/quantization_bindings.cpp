@@ -91,10 +91,20 @@ adc_dispatch(const mtl::vec::dense_vector<double>& signal, mpdsp::ArithConfig co
 	case mpdsp::ArithConfig::half_config:   return adc_typed<mpdsp::half_>(signal);
 	case mpdsp::ArithConfig::ml_hw:         return adc_typed<mpdsp::half_>(signal);
 	case mpdsp::ArithConfig::posit_full:    return adc_typed<mpdsp::p16>(signal);
-	case mpdsp::ArithConfig::tiny_posit:    return adc_typed<sw::universal::posit<8,2>>(signal);
 	case mpdsp::ArithConfig::sensor_8bit:   return adc_typed<mpdsp::int8_sample_t>(signal);
 	case mpdsp::ArithConfig::sensor_6bit:   return adc_typed<mpdsp::int6_sample_t>(signal);
 	case mpdsp::ArithConfig::fpga_fixed:    return adc_typed<mpdsp::fx1612_t>(signal);
+	// Posit taxonomy grid (#81) — posit<N,es> as the sample scalar. posit_8_2
+	// also covers the tiny_posit alias (same enum value).
+	case mpdsp::ArithConfig::posit_8_0:     return adc_typed<mpdsp::p8_0>(signal);
+	case mpdsp::ArithConfig::posit_8_1:     return adc_typed<mpdsp::p8_1>(signal);
+	case mpdsp::ArithConfig::posit_8_2:     return adc_typed<mpdsp::p8_2>(signal);
+	case mpdsp::ArithConfig::posit_16_0:    return adc_typed<mpdsp::p16_0>(signal);
+	case mpdsp::ArithConfig::posit_16_1:    return adc_typed<mpdsp::p16_1>(signal);
+	case mpdsp::ArithConfig::posit_16_2:    return adc_typed<mpdsp::p16_2>(signal);
+	case mpdsp::ArithConfig::posit_32_0:    return adc_typed<mpdsp::p32_0>(signal);
+	case mpdsp::ArithConfig::posit_32_1:    return adc_typed<mpdsp::p32_1>(signal);
+	case mpdsp::ArithConfig::posit_32_2:    return adc_typed<mpdsp::p32_2>(signal);
 	}
 	return signal;
 }
@@ -144,10 +154,19 @@ dac_dispatch(const mtl::vec::dense_vector<double>& quantized,
 	case mpdsp::ArithConfig::half_config:   return dac_typed<mpdsp::half_>(quantized);
 	case mpdsp::ArithConfig::ml_hw:         return dac_typed<mpdsp::half_>(quantized);
 	case mpdsp::ArithConfig::posit_full:    return dac_typed<mpdsp::p16>(quantized);
-	case mpdsp::ArithConfig::tiny_posit:    return dac_typed<sw::universal::posit<8,2>>(quantized);
 	case mpdsp::ArithConfig::sensor_8bit:   return dac_typed<mpdsp::int8_sample_t>(quantized);
 	case mpdsp::ArithConfig::sensor_6bit:   return dac_typed<mpdsp::int6_sample_t>(quantized);
 	case mpdsp::ArithConfig::fpga_fixed:    return dac_typed<mpdsp::fx1612_t>(quantized);
+	// Posit taxonomy grid (#81).
+	case mpdsp::ArithConfig::posit_8_0:     return dac_typed<mpdsp::p8_0>(quantized);
+	case mpdsp::ArithConfig::posit_8_1:     return dac_typed<mpdsp::p8_1>(quantized);
+	case mpdsp::ArithConfig::posit_8_2:     return dac_typed<mpdsp::p8_2>(quantized);
+	case mpdsp::ArithConfig::posit_16_0:    return dac_typed<mpdsp::p16_0>(quantized);
+	case mpdsp::ArithConfig::posit_16_1:    return dac_typed<mpdsp::p16_1>(quantized);
+	case mpdsp::ArithConfig::posit_16_2:    return dac_typed<mpdsp::p16_2>(quantized);
+	case mpdsp::ArithConfig::posit_32_0:    return dac_typed<mpdsp::p32_0>(quantized);
+	case mpdsp::ArithConfig::posit_32_1:    return dac_typed<mpdsp::p32_1>(quantized);
+	case mpdsp::ArithConfig::posit_32_2:    return dac_typed<mpdsp::p32_2>(quantized);
 	}
 	// Unreachable: switch is exhaustive over mpdsp::ArithConfig.
 	return quantized;

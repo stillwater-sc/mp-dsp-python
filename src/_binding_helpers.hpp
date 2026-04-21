@@ -276,7 +276,15 @@ inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
 	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	switch (config) {
 	case ArithConfig::reference:    return f.template operator()<double>();
 	case ArithConfig::gpu_baseline: return f.template operator()<float>();
@@ -284,7 +292,6 @@ inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::cf24_config:  return f.template operator()<cf24>();
 	case ArithConfig::half_config:  return f.template operator()<half_>();
 	case ArithConfig::posit_full:   return f.template operator()<p32>();
-	case ArithConfig::tiny_posit:   return f.template operator()<tiny_posit_t>();
 	// Sensor configs dispatch to the STATE scalar (double). The quantization
 	// effect that distinguishes sensor_* from `reference` surfaces through
 	// the sample-path dispatchers (project_dispatch / adc_dispatch), not
@@ -292,6 +299,18 @@ inline auto dispatch_dtype_fn(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::sensor_8bit:  return f.template operator()<double>();
 	case ArithConfig::sensor_6bit:  return f.template operator()<double>();
 	case ArithConfig::fpga_fixed:   return f.template operator()<fx3224_t>();
+	// Posit taxonomy grid (#81) — every cell uses the posit<N,es> scalar
+	// throughout (coefficient = state = sample). posit_8_2 also serves the
+	// tiny_posit alias (same enum value).
+	case ArithConfig::posit_8_0:    return f.template operator()<p8_0>();
+	case ArithConfig::posit_8_1:    return f.template operator()<p8_1>();
+	case ArithConfig::posit_8_2:    return f.template operator()<p8_2>();
+	case ArithConfig::posit_16_0:   return f.template operator()<p16_0>();
+	case ArithConfig::posit_16_1:   return f.template operator()<p16_1>();
+	case ArithConfig::posit_16_2:   return f.template operator()<p16_2>();
+	case ArithConfig::posit_32_0:   return f.template operator()<p32_0>();
+	case ArithConfig::posit_32_1:   return f.template operator()<p32_1>();
+	case ArithConfig::posit_32_2:   return f.template operator()<p32_2>();
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }
@@ -304,7 +323,15 @@ make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) 
 	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	switch (config) {
 	case ArithConfig::reference:
 		return std::make_unique<Impl<double>>(std::forward<Args>(args)...);
@@ -318,8 +345,6 @@ make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) 
 		return std::make_unique<Impl<half_>>(std::forward<Args>(args)...);
 	case ArithConfig::posit_full:
 		return std::make_unique<Impl<p32>>(std::forward<Args>(args)...);
-	case ArithConfig::tiny_posit:
-		return std::make_unique<Impl<tiny_posit_t>>(std::forward<Args>(args)...);
 	case ArithConfig::sensor_8bit:
 	case ArithConfig::sensor_6bit:
 		// Sensor configs keep the state/compute scalar at double — the
@@ -328,6 +353,25 @@ make_impl_for_dtype(mpdsp::ArithConfig config, const char* cls, Args&&... args) 
 		return std::make_unique<Impl<double>>(std::forward<Args>(args)...);
 	case ArithConfig::fpga_fixed:
 		return std::make_unique<Impl<fx3224_t>>(std::forward<Args>(args)...);
+	// Posit taxonomy grid (#81).
+	case ArithConfig::posit_8_0:
+		return std::make_unique<Impl<p8_0>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_8_1:
+		return std::make_unique<Impl<p8_1>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_8_2:
+		return std::make_unique<Impl<p8_2>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_16_0:
+		return std::make_unique<Impl<p16_0>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_16_1:
+		return std::make_unique<Impl<p16_1>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_16_2:
+		return std::make_unique<Impl<p16_2>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_32_0:
+		return std::make_unique<Impl<p32_0>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_32_1:
+		return std::make_unique<Impl<p32_1>>(std::forward<Args>(args)...);
+	case ArithConfig::posit_32_2:
+		return std::make_unique<Impl<p32_2>>(std::forward<Args>(args)...);
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }
