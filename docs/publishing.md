@@ -110,7 +110,11 @@ Before cutting the real release:
    `testpypi`:
    ```bash
    gh workflow run publish.yml -f target=testpypi --ref main
-   gh run watch           # block until the matrix finishes (~20–40 min)
+   # Capture the run ID from the dispatch rather than relying on "most
+   # recent" — another run could race in between these commands.
+   RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+       --json databaseId --jq '.[0].databaseId')
+   gh run watch "$RUN_ID"  # block until the matrix finishes (~20–40 min)
    ```
 4. In a clean virtualenv:
    ```bash
@@ -156,7 +160,9 @@ Dispatch `publish.yml` manually after the release is cut:
 
 ```bash
 gh workflow run publish.yml -f target=pypi --ref main
-gh run watch
+RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+    --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN_ID"
 ```
 
 That runs the sdist + cibuildwheel matrix and uploads to real PyPI via
@@ -182,7 +188,30 @@ git push origin vX.Y.Z.postN
 
 `release.yml` does **not** fire on this tag — its glob only matches
 `vX.Y.Z` and `vX.Y.Z-*` (see issue #73). So no automatic Release page
-and no automatic tests. Create the Release page manually:
+**and no automatic gated test matrix.** That's the same test-gate gap
+the semver path has, relocated — there, `release.yml`'s matrix runs
+*after* the tag and before the Release page appears; here, the tag
+shortcuts straight to the Release page without any matrix in between.
+
+Before creating the Release, manually confirm `ci.yml` on `main` is
+green. `ci.yml` runs the same Linux/Windows/macOS build+test matrix
+`release.yml` would have; it already ran when the release-bump PR
+(the one that flipped `result = "{value}.postN"`) was merged, so in
+practice this is a one-line verification rather than a new workflow
+invocation:
+
+```bash
+gh run list --branch main --workflow=ci.yml --limit 1 \
+    --json status,conclusion,headSha \
+    --jq '.[0] | "\(.status) \(.conclusion)  \(.headSha[:7])"'
+# Expect: "COMPLETED SUCCESS <sha of the merged release bump>"
+```
+
+If that doesn't show `SUCCESS`, re-run CI on `main` via the Actions UI
+or stop and diagnose before tagging. The tag-and-publish sequence
+itself has no test gate.
+
+With CI green, create the Release page:
 
 ```bash
 gh release create vX.Y.Z.postN --title "vX.Y.Z.postN" --notes "..."
@@ -196,18 +225,38 @@ run that races the release-event run, and whichever finishes uploading
 first wins while the other hits PyPI's file-name-reuse policy and fails
 (cosmetically — the files still land).
 
-So for the post-release path, just:
+Capture the run ID and attach to it explicitly rather than relying on
+bare `gh run watch`, which can attach to any "most recent" run
+(including unrelated ones if someone pushes to another workflow
+between your commands):
 
 ```bash
+RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+    --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN_ID"
+```
+
+So for the post-release path, the full sequence is:
+
+```bash
+# 1. Verify CI on main is green (no release.yml gate on postN, see #73):
+gh run list --branch main --workflow=ci.yml --limit 1 \
+    --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"'
+
+# 2. Tag, push, create the Release page (user-auth → chains into publish.yml):
 git tag vX.Y.Z.postN && git push origin vX.Y.Z.postN
 gh release create vX.Y.Z.postN --title "..." --notes "..."
-# publish.yml is already running — watch it:
-gh run watch
+
+# 3. Watch the publish run that the release event just kicked off:
+RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+    --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN_ID"
 ```
 
 When #73 is resolved, the semver and post paths will converge back into
-a single "tag → release.yml creates Release under PAT → publish.yml
-chains automatically" flow.
+a single "tag → release.yml (gated test matrix) creates Release under
+PAT → publish.yml chains automatically" flow, and the manual CI-green
+pre-check collapses into the workflow.
 
 ## Considerations worth flagging
 
@@ -249,7 +298,9 @@ Wraps an upstream `mixed-precision-dsp X.Y.Z` tag in lockstep.
    `publish.yml` — the auto-chain is disabled (see §6 Path A for why):
    ```bash
    gh workflow run publish.yml -f target=pypi --ref main
-   gh run watch
+   RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+       --json databaseId --jq '.[0].databaseId')
+   gh run watch "$RUN_ID"
    ```
 
 ### Path B — Python-only bindings fix (`vX.Y.Z.postN`)
@@ -263,15 +314,22 @@ addition, a pure-Python accessor over data upstream already exposes).
    doesn't accept `.postN`.
 2. Regenerate `docs/api_reference.md` (picks up the new version string)
    and merge to `main`.
-3. Tag, push, manually create the Release page — that's the whole
-   sequence:
+3. Verify `ci.yml` on `main` is green (no release.yml test gate on the
+   postN path — see §6 Path B):
+   ```bash
+   gh run list --branch main --workflow=ci.yml --limit 1 \
+       --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"'
+   ```
+4. Tag, push, manually create the Release page:
    ```bash
    git tag vX.Y.Z.postN && git push origin vX.Y.Z.postN
    gh release create vX.Y.Z.postN --title "..." --notes "..."
    # publish.yml is already running from the release-event chain:
-   gh run watch
+   RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+       --json databaseId --jq '.[0].databaseId')
+   gh run watch "$RUN_ID"
    ```
-4. Do **not** also `gh workflow run publish.yml` — that starts a
+5. Do **not** also `gh workflow run publish.yml` — that starts a
    second parallel run that races the release-event run and whichever
    finishes second fails on file-name-reuse (harmless, but noisy).
 
@@ -289,8 +347,12 @@ gh workflow run publish.yml -f target=testpypi --ref main
 # path, `gh release create` already chained publish.yml automatically.
 gh workflow run publish.yml -f target=pypi --ref main
 
-# Watch the most recent dispatch finish
-gh run watch
+# Watch a specific publish run finish — capture the ID first rather
+# than relying on "most recent", which can race with unrelated runs
+# (e.g. a CI run triggered by a concurrent push to another branch).
+RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
+    --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN_ID"
 
 # List recent publish runs
 gh run list --workflow=publish.yml --limit 5
