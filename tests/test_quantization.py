@@ -106,7 +106,28 @@ class TestAvailableDtypes:
         assert "sensor_8bit" in dtypes
         assert "sensor_6bit" in dtypes
         assert "fpga_fixed" in dtypes
-        assert len(dtypes) == 10
+
+    def test_available_dtypes_includes_full_posit_grid(self):
+        # Issue #81 — the 3×3 posit<N,es> grid for N ∈ {8,16,32},
+        # es ∈ {0,1,2}. Guards against silent regression of the
+        # taxonomic expansion.
+        dtypes = mpdsp.available_dtypes()
+        for n in (8, 16, 32):
+            for es in (0, 1, 2):
+                assert f"posit_{n}_{es}" in dtypes
+
+    def test_tiny_posit_is_accepted_as_alias(self):
+        # Issue #81 — tiny_posit remains accepted as a legacy alias
+        # for posit_8_2 via parse_config, but is no longer listed in
+        # available_dtypes() (the canonical name is posit_8_2).
+        assert "tiny_posit" not in mpdsp.available_dtypes()
+        # But still a valid input to any dtype= parameter, mapping to
+        # the same precision as posit_8_2.
+        assert mpdsp.bits_of("tiny_posit") == mpdsp.bits_of("posit_8_2") == 8
+        sig = mpdsp.sine(128, frequency=100.0, sample_rate=44100.0)
+        via_alias = mpdsp.adc(sig, dtype="tiny_posit")
+        via_taxonomic = mpdsp.adc(sig, dtype="posit_8_2")
+        np.testing.assert_array_equal(via_alias, via_taxonomic)
 
     def test_invalid_dtype_raises(self):
         sig = mpdsp.sine(100, frequency=440.0, sample_rate=44100.0)
@@ -130,10 +151,14 @@ class TestBitsOf:
         ("half",         16),
         ("cf24",         24),
         ("posit_full",   16),
-        ("tiny_posit",    8),
+        ("tiny_posit",    8),   # legacy alias for posit_8_2
         ("sensor_8bit",   8),
         ("sensor_6bit",   6),
         ("fpga_fixed",   16),
+        # Posit taxonomy grid (#81) — ES doesn't affect bit width.
+        ("posit_8_0",     8), ("posit_8_1",   8), ("posit_8_2",   8),
+        ("posit_16_0",   16), ("posit_16_1", 16), ("posit_16_2", 16),
+        ("posit_32_0",   32), ("posit_32_1", 32), ("posit_32_2", 32),
     ])
     def test_bits_of_returns_expected_width(self, dtype, expected):
         assert mpdsp.bits_of(dtype) == expected
@@ -198,6 +223,58 @@ class TestSensorAndFpgaQuantization:
         assert projected.shape == sig.shape
         err = np.max(np.abs(sig - projected))
         assert err > 1e-3  # integer<8> can't represent 0.5 exactly
+
+
+class TestPositGridSQNR:
+    """3×3 SQNR sweep through posit<N,es> for N ∈ {8,16,32}, es ∈ {0,1,2}.
+
+    Issue #81. These aren't chasing specific dB values — they're pinning
+    the structural invariants of the grid:
+
+    1. **Wider is better:** at the same ES, 32-bit posits beat 16-bit,
+       which beat 8-bit. This guards against a dispatch mis-wiring
+       that accidentally routes posit_32_* through posit_8_* types.
+    2. **Grid cells are distinct:** no two cells produce identical
+       adc() output. Catches enum-value collisions (e.g. accidentally
+       making posit_16_1 an alias of posit_16_2 the way posit_8_2
+       intentionally aliases tiny_posit).
+    """
+
+    # A mid-amplitude, multi-tone signal stresses each cell's dynamic
+    # range differently than a pure sine would.
+    def _test_signal(self, n: int = 2048):
+        rng = np.random.default_rng(7)
+        t = np.arange(n) / 44100.0
+        return (0.3 * np.sin(2 * np.pi * 440.0 * t)
+                + 0.2 * np.sin(2 * np.pi * 1760.0 * t)
+                + 0.05 * rng.normal(size=n))
+
+    @pytest.mark.parametrize("es", [0, 1, 2])
+    def test_sqnr_increases_with_bit_width_at_fixed_es(self, es):
+        sig = self._test_signal()
+        sqnr_8  = mpdsp.measure_sqnr_db(sig, f"posit_8_{es}")
+        sqnr_16 = mpdsp.measure_sqnr_db(sig, f"posit_16_{es}")
+        sqnr_32 = mpdsp.measure_sqnr_db(sig, f"posit_32_{es}")
+        assert sqnr_8 < sqnr_16 < sqnr_32, (
+            f"expected SQNR to grow with width at es={es}; got "
+            f"8→{sqnr_8:.1f}, 16→{sqnr_16:.1f}, 32→{sqnr_32:.1f}")
+
+    def test_grid_cells_all_produce_distinct_outputs(self):
+        # 9 cells × adc() → 9 distinct arrays. Any two being identical
+        # would mean the enum or dispatcher collapsed them somewhere.
+        # posit_8_2 == tiny_posit by design, but that's the same enum
+        # value so it's not a 10th distinct cell.
+        sig = self._test_signal(n=512)
+        results = {}
+        for n in (8, 16, 32):
+            for es in (0, 1, 2):
+                key = f"posit_{n}_{es}"
+                results[key] = mpdsp.adc(sig, dtype=key)
+        keys = list(results)
+        for i, a in enumerate(keys):
+            for b in keys[i + 1:]:
+                assert not np.array_equal(results[a], results[b]), (
+                    f"{a} and {b} produced bit-identical adc() output")
 
 
 # ---------------------------------------------------------------------------

@@ -123,7 +123,15 @@ static void process_dispatch(const CascadeD& cascade,
 	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	switch (config) {
 	case ArithConfig::reference:
 		process_typed<double, double>(cascade, in, out, n); break;
@@ -137,8 +145,6 @@ static void process_dispatch(const CascadeD& cascade,
 		process_typed<half_, half_>(cascade, in, out, n); break;
 	case ArithConfig::posit_full:
 		process_typed<p32, p16>(cascade, in, out, n); break;
-	case ArithConfig::tiny_posit:
-		process_typed<tiny_posit_t, tiny_posit_t>(cascade, in, out, n); break;
 	// Sensor configs: coefficient/state in double, sample quantized through
 	// integer<N>. integer<N> is ADL-castable from double via static_cast, so
 	// process_typed<double, int8_sample_t> models "signal arrives on an 8-bit
@@ -149,6 +155,26 @@ static void process_dispatch(const CascadeD& cascade,
 		process_typed<double, int6_sample_t>(cascade, in, out, n); break;
 	case ArithConfig::fpga_fixed:
 		process_typed<fx3224_t, fx1612_t>(cascade, in, out, n); break;
+	// Posit taxonomy grid (#81) — every cell uses a single posit type for
+	// both state and sample. posit_8_2 also covers the tiny_posit alias.
+	case ArithConfig::posit_8_0:
+		process_typed<p8_0, p8_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_8_1:
+		process_typed<p8_1, p8_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_8_2:
+		process_typed<p8_2, p8_2>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_0:
+		process_typed<p16_0, p16_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_1:
+		process_typed<p16_1, p16_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_2:
+		process_typed<p16_2, p16_2>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_0:
+		process_typed<p32_0, p32_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_1:
+		process_typed<p32_1, p32_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_2:
+		process_typed<p32_2, p32_2>(cascade, in, out, n); break;
 	}
 }
 
@@ -412,7 +438,15 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
 	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	switch (config) {
 	case ArithConfig::reference:
 		fir_process_typed<double, double>(taps_d, in, out, n); break;
@@ -426,14 +460,31 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
 		fir_process_typed<half_, half_>(taps_d, in, out, n); break;
 	case ArithConfig::posit_full:
 		fir_process_typed<p32, p16>(taps_d, in, out, n); break;
-	case ArithConfig::tiny_posit:
-		fir_process_typed<tiny_posit_t, tiny_posit_t>(taps_d, in, out, n); break;
 	case ArithConfig::sensor_8bit:
 		fir_process_typed<double, int8_sample_t>(taps_d, in, out, n); break;
 	case ArithConfig::sensor_6bit:
 		fir_process_typed<double, int6_sample_t>(taps_d, in, out, n); break;
 	case ArithConfig::fpga_fixed:
 		fir_process_typed<fx3224_t, fx1612_t>(taps_d, in, out, n); break;
+	// Posit taxonomy grid (#81).
+	case ArithConfig::posit_8_0:
+		fir_process_typed<p8_0, p8_0>(taps_d, in, out, n); break;
+	case ArithConfig::posit_8_1:
+		fir_process_typed<p8_1, p8_1>(taps_d, in, out, n); break;
+	case ArithConfig::posit_8_2:
+		fir_process_typed<p8_2, p8_2>(taps_d, in, out, n); break;
+	case ArithConfig::posit_16_0:
+		fir_process_typed<p16_0, p16_0>(taps_d, in, out, n); break;
+	case ArithConfig::posit_16_1:
+		fir_process_typed<p16_1, p16_1>(taps_d, in, out, n); break;
+	case ArithConfig::posit_16_2:
+		fir_process_typed<p16_2, p16_2>(taps_d, in, out, n); break;
+	case ArithConfig::posit_32_0:
+		fir_process_typed<p32_0, p32_0>(taps_d, in, out, n); break;
+	case ArithConfig::posit_32_1:
+		fir_process_typed<p32_1, p32_1>(taps_d, in, out, n); break;
+	case ArithConfig::posit_32_2:
+		fir_process_typed<p32_2, p32_2>(taps_d, in, out, n); break;
 	}
 }
 
@@ -507,7 +558,15 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	using mpdsp::half_;
 	using mpdsp::p16;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	CascadeD quantized;
 	switch (config) {
 	case ArithConfig::reference:    return 0.0;  // no quantization
@@ -516,7 +575,6 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	case ArithConfig::cf24_config:  quantized = quantize_cascade<cf24>(src); break;
 	case ArithConfig::half_config:  quantized = quantize_cascade<half_>(src); break;
 	case ArithConfig::posit_full:   quantized = quantize_cascade<p32>(src); break;
-	case ArithConfig::tiny_posit:   quantized = quantize_cascade<tiny_posit_t>(src); break;
 	// sensor_* keep coefficients at double (only the sample path quantizes),
 	// so coefficient-level pole displacement is zero for them.
 	case ArithConfig::sensor_8bit:
@@ -524,6 +582,17 @@ static double pole_displacement_dispatch(const CascadeD& src,
 		return 0.0;
 	case ArithConfig::fpga_fixed:
 		quantized = quantize_cascade<fx3224_t>(src); break;
+	// Posit taxonomy grid (#81) — coefficient-level quantization through
+	// the grid's posit type. posit_8_2 also covers the tiny_posit alias.
+	case ArithConfig::posit_8_0:  quantized = quantize_cascade<p8_0>(src); break;
+	case ArithConfig::posit_8_1:  quantized = quantize_cascade<p8_1>(src); break;
+	case ArithConfig::posit_8_2:  quantized = quantize_cascade<p8_2>(src); break;
+	case ArithConfig::posit_16_0: quantized = quantize_cascade<p16_0>(src); break;
+	case ArithConfig::posit_16_1: quantized = quantize_cascade<p16_1>(src); break;
+	case ArithConfig::posit_16_2: quantized = quantize_cascade<p16_2>(src); break;
+	case ArithConfig::posit_32_0: quantized = quantize_cascade<p32_0>(src); break;
+	case ArithConfig::posit_32_1: quantized = quantize_cascade<p32_1>(src); break;
+	case ArithConfig::posit_32_2: quantized = quantize_cascade<p32_2>(src); break;
 	}
 	return sw::dsp::pole_displacement(src, quantized);
 }

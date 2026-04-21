@@ -606,19 +606,36 @@ these string keys. Query the live set at runtime with
 | `reference` | double | double | double | Ground truth |
 | `gpu_baseline` | double | float | float | GPU / embedded CPU |
 | `ml_hw` | double | float | cfloat<16,5> (half) | ML accelerator |
-| `posit_full` | double | posit<32,2> | posit<16,1> | Posit research |
-| `tiny_posit` | double | posit<8,2> | posit<8,2> | Ultra-low-power edge |
+| `posit_full` | double | posit<32,2> | posit<16,1> | Mixed-precision posit pipeline |
 | `cf24` | double | cfloat<24,5> | cfloat<24,5> | Custom 24-bit float |
 | `half` | double | cfloat<16,5> | cfloat<16,5> | IEEE half throughout |
 | `sensor_8bit` | double | double | integer<8> | Standard 8-bit sensor ADC |
 | `sensor_6bit` | double | double | integer<6> | Noise-limited sensor |
 | `fpga_fixed` | double | fixpnt<32,24> | fixpnt<16,12> | FPGA fixed-point datapath |
 
+**Posit taxonomy grid** — single-type `posit<N, es>` configs for every
+combination of N ∈ {8, 16, 32} and es ∈ {0, 1, 2}. Coefficient = state =
+sample, so ES-vs-precision tradeoff is readable directly from a fixed-N
+sweep:
+
+| Key | Posit type |
+|-----|-----------|
+| `posit_8_0`, `posit_8_1`, `posit_8_2` | `posit<8, 0/1/2>` |
+| `posit_16_0`, `posit_16_1`, `posit_16_2` | `posit<16, 0/1/2>` |
+| `posit_32_0`, `posit_32_1`, `posit_32_2` | `posit<32, 0/1/2>` |
+
+`posit_8_2` is the canonical 8-bit posit (accepts the legacy `tiny_posit`
+alias via `parse_config`); `posit_16_1` and `posit_32_2` are the
+single-type standalones for the types `posit_full` mixes together.
+
 Use `mpdsp.bits_of(dtype)` to query the sample-scalar bit width for any
 config (useful for precision-vs-cost plots). The sensor configs keep
 coefficient and state at double; only the ADC sample path quantizes
 through `integer<N>`, which is the common case for ingesting real-world
-ADC streams without re-architecting the downstream filter.
+ADC streams without re-architecting the downstream filter. For posit
+grid cells the ES dimension doesn't affect bit width — every `posit_N_*`
+reports N, so a sweep produces 3 stacked points per width on the
+precision-cost frontier.
 
 ## Module attributes
 

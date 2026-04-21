@@ -258,7 +258,15 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 	using mpdsp::int6_sample_t;
 	using mpdsp::int8_sample_t;
 	using mpdsp::p16;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 
 	switch (config) {
 	case mpdsp::ArithConfig::reference:
@@ -269,8 +277,6 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 		return project_typed<half_>(src);
 	case mpdsp::ArithConfig::posit_full:
 		return project_typed<p16>(src);
-	case mpdsp::ArithConfig::tiny_posit:
-		return project_typed<tiny_posit_t>(src);
 	case mpdsp::ArithConfig::cf24_config:
 		return project_typed<cf24>(src);
 	case mpdsp::ArithConfig::half_config:
@@ -281,6 +287,17 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 		return project_typed<int6_sample_t>(src);
 	case mpdsp::ArithConfig::fpga_fixed:
 		return project_typed<fx1612_t>(src);
+	// Posit taxonomy grid (#81) — project through the posit<N,es> scalar.
+	// posit_8_2 also covers the tiny_posit alias (same enum value).
+	case mpdsp::ArithConfig::posit_8_0:  return project_typed<p8_0>(src);
+	case mpdsp::ArithConfig::posit_8_1:  return project_typed<p8_1>(src);
+	case mpdsp::ArithConfig::posit_8_2:  return project_typed<p8_2>(src);
+	case mpdsp::ArithConfig::posit_16_0: return project_typed<p16_0>(src);
+	case mpdsp::ArithConfig::posit_16_1: return project_typed<p16_1>(src);
+	case mpdsp::ArithConfig::posit_16_2: return project_typed<p16_2>(src);
+	case mpdsp::ArithConfig::posit_32_0: return project_typed<p32_0>(src);
+	case mpdsp::ArithConfig::posit_32_1: return project_typed<p32_1>(src);
+	case mpdsp::ArithConfig::posit_32_2: return project_typed<p32_2>(src);
 	}
 	// Unreachable: the switch above is exhaustive over mpdsp::ArithConfig.
 	return src;

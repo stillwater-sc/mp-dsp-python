@@ -287,7 +287,15 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
 	using mpdsp::fx3224_t;
 	using mpdsp::half_;
 	using mpdsp::p32;
-	using tiny_posit_t = sw::universal::posit<8, 2>;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
 	switch (config) {
 	case ArithConfig::reference:
 		return std::make_unique<AdaptiveFilterImpl<Filter, double>>(
@@ -307,14 +315,42 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
 	case ArithConfig::posit_full:
 		return std::make_unique<AdaptiveFilterImpl<Filter, p32>>(
 			num_taps, static_cast<p32>(args)...);
-	case ArithConfig::tiny_posit:
-		return std::make_unique<AdaptiveFilterImpl<Filter, tiny_posit_t>>(
-			num_taps, static_cast<tiny_posit_t>(args)...);
-	// Reject the Phase-6 sensor/FPGA configs here. Adaptive filters only
-	// accept a single scalar T, so we can't independently honour both a
-	// double state and an integer<N> / fixpnt<16,12> sample path — either
-	// the sensor_* configs would silently collapse to `reference` (with
-	// no quantization visible), or fpga_fixed would claim a 16-bit sample
+	// Posit taxonomy grid (#81) — single-type, so the adaptive update runs
+	// entirely at posit<N,es>. No state-vs-sample split to worry about;
+	// none of the "reject these" reasoning for sensor_*/fpga_fixed applies.
+	// posit_8_2 also covers the tiny_posit alias.
+	case ArithConfig::posit_8_0:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p8_0>>(
+			num_taps, static_cast<p8_0>(args)...);
+	case ArithConfig::posit_8_1:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p8_1>>(
+			num_taps, static_cast<p8_1>(args)...);
+	case ArithConfig::posit_8_2:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p8_2>>(
+			num_taps, static_cast<p8_2>(args)...);
+	case ArithConfig::posit_16_0:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p16_0>>(
+			num_taps, static_cast<p16_0>(args)...);
+	case ArithConfig::posit_16_1:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p16_1>>(
+			num_taps, static_cast<p16_1>(args)...);
+	case ArithConfig::posit_16_2:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p16_2>>(
+			num_taps, static_cast<p16_2>(args)...);
+	case ArithConfig::posit_32_0:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p32_0>>(
+			num_taps, static_cast<p32_0>(args)...);
+	case ArithConfig::posit_32_1:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p32_1>>(
+			num_taps, static_cast<p32_1>(args)...);
+	case ArithConfig::posit_32_2:
+		return std::make_unique<AdaptiveFilterImpl<Filter, p32_2>>(
+			num_taps, static_cast<p32_2>(args)...);
+	// Reject the sensor/FPGA configs here. Adaptive filters only accept a
+	// single scalar T, so we can't independently honour both a double
+	// state and an integer<N> / fixpnt<16,12> sample path — either the
+	// sensor_* configs would silently collapse to `reference` (with no
+	// quantization visible), or fpga_fixed would claim a 16-bit sample
 	// path while actually running the adaptive update at fixpnt<32,24>
 	// and breaking dtype-to-dtype comparisons. Surface the limitation
 	// instead of fabricating a misleading answer; a future wrapper can
@@ -328,7 +364,8 @@ make_adaptive_impl(mpdsp::ArithConfig config, const char* cls,
 			": dtype not supported by adaptive filters — sensor_* and "
 			"fpga_fixed mix state and sample precisions, which the "
 			"single-T adaptive update can't honour. Use reference, "
-			"gpu_baseline, ml_hw, posit_full, tiny_posit, cf24, or half.");
+			"gpu_baseline, ml_hw, posit_full, cf24, half, or any "
+			"posit_N_es grid cell.");
 	}
 	throw std::invalid_argument(std::string(cls) + ": unsupported ArithConfig");
 }
