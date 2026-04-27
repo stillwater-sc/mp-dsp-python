@@ -281,11 +281,17 @@ Minimum versions enforced at configure time on the sibling-clone path
 (stale checkouts abort with a clear error and the `git checkout` command
 needed to fix them):
 
-| Peer | Required | FetchContent pin |
+| Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
-| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.6.0` |
-| `universal` | ≥ 4.6.11 | `v4.6.11` |
-| `mtl5` | ≥ 5.2.1 | `v5.2.1` |
+| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.5.0` |
+| `universal` | ≥ 4.6.11 | `v4.6.9` |
+| `mtl5` | ≥ 5.2.1 | `v5.2.0` |
+
+Floor and pin are intentionally decoupled. The floor advances during a
+development cycle so sibling-path devs cannot silently work against stale
+clones; the DSP pin moves only at release time, in lockstep with
+`project(VERSION)` (see `tests/test_version.py::test_lockstep_prefix`).
+During an in-flight cycle the pin can lag the floor.
 
 Override at configure time with `-DMPDSP_REQUIRED_DSP_VERSION=...` (lower the
 floor for experimentation) or `-DMPDSP_DSP_PIN=main` (build against an

@@ -13,20 +13,21 @@ project(mp-dsp-python
 # ---------------------------------------------------------------------------
 # Peer dependency requirements.
 #
-# Two parallel concepts:
+# Two intentionally-decoupled concepts:
 #
 #   MPDSP_REQUIRED_*_VERSION — floors enforced at configure time on the
 #       sibling-path branch (see _DSP_CANDIDATES / _UNI_CANDIDATES /
 #       _MTL5_CANDIDATES loops below). When a sibling checkout is older
-#       than the floor, configure aborts with a clear error.
+#       than the floor, configure aborts with a clear error. These move
+#       to the latest released peer versions during a development cycle
+#       so dev clones cannot silently be stale.
 #
 #   MPDSP_*_PIN — git refs (tags, branches, or SHAs) that FetchContent uses
 #       on the fallback path. cibuildwheel has no siblings to find, so the
-#       pin is what determines what gets compiled into the binary.
-#
-# Update both together with `project(... VERSION ...)` at release time so
-# the wheel built for mpdsp X.Y.Z always links against known-good snapshots
-# of the peers.
+#       pin is what determines what gets compiled into the wheel. The DSP
+#       pin moves in lockstep with `project(... VERSION ...)` only at
+#       release time (see test_version.py::test_lockstep_prefix). Thus the
+#       pin can lag the floor during a development cycle.
 #
 # Override at configure time:
 #   -DMPDSP_REQUIRED_DSP_VERSION=0.5.0   (lower floor for experimentation)
@@ -39,11 +40,11 @@ set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.2.1"  CACHE STRING
 	"Minimum mtl5 version required at configure time")
 
-set(MPDSP_DSP_PIN       "v${MPDSP_REQUIRED_DSP_VERSION}"       CACHE STRING
+set(MPDSP_DSP_PIN       "v0.5.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
-set(MPDSP_UNIVERSAL_PIN "v${MPDSP_REQUIRED_UNIVERSAL_VERSION}" CACHE STRING
+set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
-set(MPDSP_MTL5_PIN      "v${MPDSP_REQUIRED_MTL5_VERSION}"      CACHE STRING
+set(MPDSP_MTL5_PIN      "v5.2.0" CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
 
 # Shallow-fetch is a big speedup for tags and branches, but git's shallow
