@@ -9,6 +9,8 @@
 #include <sw/dsp/signals/generators.hpp>
 #include <sw/dsp/windows/windows.hpp>
 
+#include "_binding_helpers.hpp"
+
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -17,19 +19,13 @@
 
 namespace nb = nanobind;
 
-// Helper: convert mtl::vec::dense_vector<double> to a new NumPy array
-static nb::ndarray<nb::numpy, double>
-vec_to_numpy(const mtl::vec::dense_vector<double>& v) {
-	std::size_t n = v.size();
-	auto* data = new double[n];
-	for (std::size_t i = 0; i < n; ++i) data[i] = v[i];
-	nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<double*>(p); });
-	std::size_t shape[1] = { n };
-	return nb::ndarray<nb::numpy, double>(data, 1, shape, owner);
-}
+// vec_to_numpy<T> comes from _binding_helpers.hpp; for double inputs it
+// is a no-op cast and behaves identically to the previous local helper.
 
 void bind_signals(nb::module_& m) {
 	using namespace sw::dsp;
+	using mpdsp::bindings::dispatch_dtype_fn;
+	using mpdsp::bindings::vec_to_numpy;
 
 	m.def("sine", [](std::size_t length, double frequency, double sample_rate,
 	                  double amplitude, double phase) {
@@ -101,31 +97,60 @@ void bind_signals(nb::module_& m) {
 	}, nb::arg("length"), nb::arg("amplitude") = 1.0, nb::arg("seed") = 0u,
 	   "Generate pink noise (1/f spectrum, Voss-McCartney algorithm).");
 
-	// Window functions — these are in the sw::dsp namespace via windows.hpp
-	m.def("hamming", [](std::size_t N) {
-		return vec_to_numpy(hamming_window<double>(N));
-	}, nb::arg("N"), "Hamming window of length N.");
+	// Window functions — these are in the sw::dsp namespace via windows.hpp.
+	// Following upstream PRs #122/#125, the window functions are templated
+	// on T; the dtype kwarg controls the precision of the internal
+	// computation. The result is always returned as a NumPy float64 array
+	// — when dtype is e.g. posit32, the array contains the cast-to-double
+	// values that the posit-typed window held internally.
+	m.def("hamming", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "hamming", [&]<typename T>() {
+			return vec_to_numpy(hamming_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Hamming window of length N. dtype controls the internal compute "
+	   "precision; result is always NumPy float64.");
 
-	m.def("hanning", [](std::size_t N) {
-		return vec_to_numpy(hanning_window<double>(N));
-	}, nb::arg("N"), "Hanning (Hann) window of length N.");
+	m.def("hanning", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "hanning", [&]<typename T>() {
+			return vec_to_numpy(hanning_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Hanning (Hann) window of length N.");
 
-	m.def("blackman", [](std::size_t N) {
-		return vec_to_numpy(blackman_window<double>(N));
-	}, nb::arg("N"), "Blackman window of length N.");
+	m.def("blackman", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "blackman", [&]<typename T>() {
+			return vec_to_numpy(blackman_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Blackman window of length N.");
 
-	m.def("kaiser", [](std::size_t N, double beta) {
-		return vec_to_numpy(kaiser_window<double>(N, beta));
-	}, nb::arg("N"), nb::arg("beta") = 5.0,
+	m.def("kaiser", [](std::size_t N, double beta, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "kaiser", [&]<typename T>() {
+			return vec_to_numpy(kaiser_window<T>(N, beta));
+		});
+	}, nb::arg("N"), nb::arg("beta") = 5.0, nb::arg("dtype") = "reference",
 	   "Kaiser window of length N with shape parameter beta.");
 
-	m.def("rectangular", [](std::size_t N) {
-		return vec_to_numpy(rectangular_window<double>(N));
-	}, nb::arg("N"), "Rectangular (boxcar) window of length N.");
+	m.def("rectangular", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "rectangular", [&]<typename T>() {
+			return vec_to_numpy(rectangular_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Rectangular (boxcar) window of length N.");
 
-	m.def("flat_top", [](std::size_t N) {
-		return vec_to_numpy(flat_top_window<double>(N));
-	}, nb::arg("N"), "Flat-top window of length N.");
+	m.def("flat_top", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "flat_top", [&]<typename T>() {
+			return vec_to_numpy(flat_top_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Flat-top window of length N.");
 
 	// ---------------------------------------------------------------
 	// WAV I/O. Binds upstream sw::dsp::io::read_wav / write_wav_channels.

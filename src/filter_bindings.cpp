@@ -34,6 +34,7 @@
 #include <sw/dsp/windows/windows.hpp>
 
 #include "types.hpp"
+#include "_binding_helpers.hpp"
 
 #include <array>
 #include <complex>
@@ -488,16 +489,33 @@ static void fir_process_dispatch(const mtl::vec::dense_vector<double>& taps_d,
 	}
 }
 
-// Build a window of the requested kind (name matches signal_bindings.cpp).
+// Cast a dense_vector<T> to dense_vector<double> for storage in the
+// double-typed PyFIRFilter. Element-wise static_cast.
+template <typename T>
 static mtl::vec::dense_vector<double>
-make_window(const std::string& name, std::size_t N, double kaiser_beta) {
+to_double_vec(const mtl::vec::dense_vector<T>& v) {
+	mtl::vec::dense_vector<double> out(v.size());
+	for (std::size_t i = 0; i < v.size(); ++i)
+		out[i] = static_cast<double>(v[i]);
+	return out;
+}
+
+// Build a window of the requested kind (name matches signal_bindings.cpp).
+// Templated on T so the FIR window-method designers can run their entire
+// taps-design pipeline (window + sinc + spectral inversion) at the chosen
+// coefficient precision. Note: upstream kaiser_window takes its beta as
+// a plain double (the I0 series is computed in double regardless of T),
+// so we pass beta through unchanged.
+template <typename T>
+static mtl::vec::dense_vector<T>
+make_window_T(const std::string& name, std::size_t N, double kaiser_beta) {
 	using namespace sw::dsp;
-	if (name == "hamming")     return hamming_window<double>(N);
-	if (name == "hanning")     return hanning_window<double>(N);
-	if (name == "blackman")    return blackman_window<double>(N);
-	if (name == "rectangular") return rectangular_window<double>(N);
-	if (name == "flat_top")    return flat_top_window<double>(N);
-	if (name == "kaiser")      return kaiser_window<double>(N, kaiser_beta);
+	if (name == "hamming")     return hamming_window<T>(N);
+	if (name == "hanning")     return hanning_window<T>(N);
+	if (name == "blackman")    return blackman_window<T>(N);
+	if (name == "rectangular") return rectangular_window<T>(N);
+	if (name == "flat_top")    return flat_top_window<T>(N);
+	if (name == "kaiser")      return kaiser_window<T>(N, kaiser_beta);
 	throw std::invalid_argument("Unknown window: " + name +
 		" (expected hamming, hanning, blackman, rectangular, flat_top, kaiser)");
 }
@@ -1114,41 +1132,60 @@ void bind_filters(nb::module_& m) {
 		}, nb::arg("coefficients"),
 		"Construct an FIR filter from explicit tap coefficients.");
 
+	using mpdsp::bindings::dispatch_dtype_fn;
+
 	m.def("fir_lowpass",
 		[](int num_taps, double sr, double cutoff,
-		   const std::string& window, double kaiser_beta) {
+		   const std::string& window, double kaiser_beta,
+		   const std::string& coeff_dtype) {
 			const char* n = "fir_lowpass";
 			check_num_taps(num_taps, n);
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
-			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
-			PyFIRFilter f;
-			f.taps = sw::dsp::design_fir_lowpass<double>(
-				static_cast<std::size_t>(num_taps), cutoff / sr, w);
-			return f;
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			double cutoff_norm = cutoff / sr;
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto w = make_window_T<T>(window, N, kaiser_beta);
+				auto taps = sw::dsp::design_fir_lowpass<T>(N, T(cutoff_norm), w);
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
 		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg(A_CUT),
 		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
-		"Design an FIR lowpass filter via the window method.");
+		   nb::arg("coeff_dtype") = "reference",
+		"Design an FIR lowpass filter via the window method. coeff_dtype "
+		"controls the precision of the design-time math; the resulting "
+		"taps are stored as float64 in the returned filter.");
 
 	m.def("fir_highpass",
 		[](int num_taps, double sr, double cutoff,
-		   const std::string& window, double kaiser_beta) {
+		   const std::string& window, double kaiser_beta,
+		   const std::string& coeff_dtype) {
 			const char* n = "fir_highpass";
 			check_num_taps(num_taps, n);
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
-			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
-			PyFIRFilter f;
-			f.taps = sw::dsp::design_fir_highpass<double>(
-				static_cast<std::size_t>(num_taps), cutoff / sr, w);
-			return f;
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			double cutoff_norm = cutoff / sr;
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto w = make_window_T<T>(window, N, kaiser_beta);
+				auto taps = sw::dsp::design_fir_highpass<T>(N, T(cutoff_norm), w);
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
 		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg(A_CUT),
 		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		   nb::arg("coeff_dtype") = "reference",
 		"Design an FIR highpass filter via spectral inversion of a lowpass.");
 
 	m.def("fir_bandpass",
 		[](int num_taps, double sr, double f_low, double f_high,
-		   const std::string& window, double kaiser_beta) {
+		   const std::string& window, double kaiser_beta,
+		   const std::string& coeff_dtype) {
 			const char* n = "fir_bandpass";
 			check_num_taps(num_taps, n);
 			check_sample_rate(sr, n);
@@ -1158,18 +1195,27 @@ void bind_filters(nb::module_& m) {
 				throw std::invalid_argument(
 					"fir_bandpass: f_high must be greater than f_low");
 			}
-			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
-			PyFIRFilter f;
-			f.taps = sw::dsp::design_fir_bandpass<double>(
-				static_cast<std::size_t>(num_taps), f_low / sr, f_high / sr, w);
-			return f;
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			double fl_norm = f_low / sr;
+			double fh_norm = f_high / sr;
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto w = make_window_T<T>(window, N, kaiser_beta);
+				auto taps = sw::dsp::design_fir_bandpass<T>(
+					N, T(fl_norm), T(fh_norm), w);
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
 		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg("f_low"), nb::arg("f_high"),
 		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		   nb::arg("coeff_dtype") = "reference",
 		"Design an FIR bandpass filter.");
 
 	m.def("fir_bandstop",
 		[](int num_taps, double sr, double f_low, double f_high,
-		   const std::string& window, double kaiser_beta) {
+		   const std::string& window, double kaiser_beta,
+		   const std::string& coeff_dtype) {
 			const char* n = "fir_bandstop";
 			check_num_taps(num_taps, n);
 			check_sample_rate(sr, n);
@@ -1179,17 +1225,26 @@ void bind_filters(nb::module_& m) {
 				throw std::invalid_argument(
 					"fir_bandstop: f_high must be greater than f_low");
 			}
-			auto w = make_window(window, static_cast<std::size_t>(num_taps), kaiser_beta);
-			// Bandstop via spectral inversion of a bandpass:
-			// bs[n] = delta[n - M/2] - bp[n]
-			auto bp = sw::dsp::design_fir_bandpass<double>(
-				static_cast<std::size_t>(num_taps), f_low / sr, f_high / sr, w);
-			PyFIRFilter f;
-			f.taps = mtl::vec::dense_vector<double>(bp.size());
-			for (std::size_t i = 0; i < bp.size(); ++i) f.taps[i] = -bp[i];
-			f.taps[(bp.size() - 1) / 2] += 1.0;
-			return f;
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			double fl_norm = f_low / sr;
+			double fh_norm = f_high / sr;
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto w = make_window_T<T>(window, N, kaiser_beta);
+				// Bandstop via spectral inversion of a bandpass:
+				// bs[n] = delta[n - M/2] - bp[n]
+				auto bp = sw::dsp::design_fir_bandpass<T>(
+					N, T(fl_norm), T(fh_norm), w);
+				constexpr T one = T(1);
+				mtl::vec::dense_vector<T> bs(bp.size());
+				for (std::size_t i = 0; i < bp.size(); ++i) bs[i] = -bp[i];
+				bs[(bp.size() - 1) / 2] = bs[(bp.size() - 1) / 2] + one;
+				PyFIRFilter f;
+				f.taps = to_double_vec(bs);
+				return f;
+			});
 		}, nb::arg("num_taps"), nb::arg(A_SR), nb::arg("f_low"), nb::arg("f_high"),
 		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
+		   nb::arg("coeff_dtype") = "reference",
 		"Design an FIR bandstop (notch) filter via spectral inversion.");
 }
