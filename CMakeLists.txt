@@ -112,10 +112,10 @@ find_package(nanobind CONFIG REQUIRED)
 # unparseable header) — STATUS message only, do not fail. This supports
 # tarball checkouts and avoids spurious failures in unusual environments.
 # ---------------------------------------------------------------------------
-function(mpdsp_check_version_from_header NAME DIR HEADER_PATH REQUIRED)
+function(mpdsp_check_version_from_header NAME DIR HEADER_PATH REQUIRED CACHE_VAR)
 	set(_FULL "${DIR}/${HEADER_PATH}")
 	if(NOT EXISTS "${_FULL}")
-		message(STATUS "${NAME}: ${HEADER_PATH} not found at ${DIR}; skipping floor check (required ≥ ${REQUIRED})")
+		message(STATUS "${NAME}: ${HEADER_PATH} not found at ${DIR}; skipping floor check (required >= ${REQUIRED})")
 		return()
 	endif()
 	file(READ "${_FULL}" _CONTENTS)
@@ -132,7 +132,7 @@ function(mpdsp_check_version_from_header NAME DIR HEADER_PATH REQUIRED)
 		set(_PATCH "${CMAKE_MATCH_1}")
 	endif()
 	if(_MAJOR STREQUAL "" OR _MINOR STREQUAL "" OR _PATCH STREQUAL "")
-		message(STATUS "${NAME}: could not parse version from ${HEADER_PATH}; skipping floor check (required ≥ ${REQUIRED})")
+		message(STATUS "${NAME}: could not parse version from ${HEADER_PATH}; skipping floor check (required >= ${REQUIRED})")
 		return()
 	endif()
 	set(_VERSION "${_MAJOR}.${_MINOR}.${_PATCH}")
@@ -141,12 +141,12 @@ function(mpdsp_check_version_from_header NAME DIR HEADER_PATH REQUIRED)
 			"${NAME} at ${DIR} is version ${_VERSION}, but ${PROJECT_NAME} requires >= ${REQUIRED}.\n"
 			"Update the sibling clone:\n"
 			"  cd ${DIR} && git fetch --tags && git checkout v${REQUIRED}\n"
-			"Or lower the floor: -DMPDSP_REQUIRED_DSP_VERSION=${_VERSION} (etc.)")
+			"Or lower the floor: -D${CACHE_VAR}=${_VERSION}")
 	endif()
 	message(STATUS "${NAME} version: ${_VERSION} (required >= ${REQUIRED})")
 endfunction()
 
-function(mpdsp_check_version_from_git NAME DIR REQUIRED)
+function(mpdsp_check_version_from_git NAME DIR REQUIRED CACHE_VAR)
 	if(NOT EXISTS "${DIR}/.git")
 		message(STATUS "${NAME}: no .git at ${DIR}; skipping floor check (required >= ${REQUIRED})")
 		return()
@@ -168,7 +168,7 @@ function(mpdsp_check_version_from_git NAME DIR REQUIRED)
 			"${NAME} at ${DIR} is version ${_VERSION}, but ${PROJECT_NAME} requires >= ${REQUIRED}.\n"
 			"Update the sibling clone:\n"
 			"  cd ${DIR} && git fetch --tags && git checkout v${REQUIRED}\n"
-			"Or lower the floor: -DMPDSP_REQUIRED_UNIVERSAL_VERSION=${_VERSION} (etc.)")
+			"Or lower the floor: -D${CACHE_VAR}=${_VERSION}")
 	endif()
 	message(STATUS "${NAME} version: ${_VERSION} (required >= ${REQUIRED})")
 endfunction()
@@ -186,7 +186,8 @@ foreach(_DIR IN LISTS _DSP_CANDIDATES)
   if(EXISTS "${_DIR}/include/sw/dsp/dsp.hpp")
     message(STATUS "Found mixed-precision-dsp at: ${_DIR}")
     mpdsp_check_version_from_header("mixed-precision-dsp" "${_DIR}"
-      "include/sw/dsp/version.hpp" "${MPDSP_REQUIRED_DSP_VERSION}")
+      "include/sw/dsp/version.hpp" "${MPDSP_REQUIRED_DSP_VERSION}"
+      "MPDSP_REQUIRED_DSP_VERSION")
     target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
     set(_DSP_FOUND TRUE)
     break()
@@ -216,7 +217,8 @@ foreach(_DIR IN LISTS _UNI_CANDIDATES)
   if(EXISTS "${_DIR}/include/sw/universal/number/cfloat/cfloat.hpp")
     message(STATUS "Found Universal at: ${_DIR}")
     mpdsp_check_version_from_git("universal" "${_DIR}"
-      "${MPDSP_REQUIRED_UNIVERSAL_VERSION}")
+      "${MPDSP_REQUIRED_UNIVERSAL_VERSION}"
+      "MPDSP_REQUIRED_UNIVERSAL_VERSION")
     target_include_directories(sw_dsp INTERFACE
       "${_DIR}/include"
       "${_DIR}/include/sw"
@@ -255,7 +257,8 @@ else()
     if(EXISTS "${_DIR}/include/mtl/mtl.hpp")
       message(STATUS "Found MTL5 at: ${_DIR}")
       mpdsp_check_version_from_git("mtl5" "${_DIR}"
-        "${MPDSP_REQUIRED_MTL5_VERSION}")
+        "${MPDSP_REQUIRED_MTL5_VERSION}"
+        "MPDSP_REQUIRED_MTL5_VERSION")
       target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
       set(_MTL5_FOUND TRUE)
       break()
