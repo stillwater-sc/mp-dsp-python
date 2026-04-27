@@ -109,3 +109,43 @@ class TestWindows:
     def test_flat_top(self):
         w = mpdsp.flat_top(256)
         assert w.shape == (256,)
+
+
+class TestWindowsDtype:
+    """Window functions accept a dtype kwarg (re-templating from upstream
+    PRs #122 / #125). The default 'reference' (double) must be bitwise
+    identical to the no-kwarg call; mixed-precision dtypes return a
+    finite, real-valued window of the right shape that is close to but
+    not necessarily equal to the reference.
+    """
+
+    def test_default_dtype_matches_no_kwarg(self):
+        # Sanity: passing dtype="reference" must equal the no-kwarg call.
+        np.testing.assert_array_equal(
+            mpdsp.hamming(128),
+            mpdsp.hamming(128, dtype="reference"),
+        )
+
+    def test_hamming_posit32_returns_float64_array(self):
+        w = mpdsp.hamming(128, dtype="posit_full")
+        assert w.shape == (128,)
+        assert w.dtype == np.float64
+        assert np.all(np.isfinite(w))
+
+    def test_hanning_posit16_close_to_reference(self):
+        ref = mpdsp.hanning(64, dtype="reference")
+        p16 = mpdsp.hanning(64, dtype="posit_16_1")
+        # posit<16,1> has ~12 fraction bits in the dynamic-range sweet
+        # spot; should reproduce a [0, 1]-valued window to a few %.
+        np.testing.assert_allclose(p16, ref, atol=1e-2)
+
+    def test_kaiser_beta_threaded_through(self):
+        w_default = mpdsp.kaiser(128, dtype="reference")
+        w_narrow = mpdsp.kaiser(128, beta=2.0, dtype="reference")
+        # A smaller beta gives a less-tapered window — center and edge
+        # values must differ between the two beta settings.
+        assert not np.allclose(w_default, w_narrow)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.hamming(64, dtype="not_a_real_dtype")

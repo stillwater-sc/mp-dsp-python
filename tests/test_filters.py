@@ -615,6 +615,60 @@ class TestFIRDesign:
                                 f_low=1600.0, f_high=800.0)
 
 
+class TestFIRDesignCoeffDtype:
+    """The four window-method FIR designers accept coeff_dtype= to run
+    the tap-design pipeline at a chosen precision (per upstream PR #117
+    and Phase 2 / #85). The default 'reference' must be bitwise
+    identical to omitting the kwarg; alternative dtypes return finite,
+    real-valued taps that approximate the reference design.
+    """
+
+    def test_default_matches_no_kwarg_lowpass(self):
+        f1 = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                               cutoff=1000.0)
+        f2 = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                               cutoff=1000.0, coeff_dtype="reference")
+        np.testing.assert_array_equal(f1.coefficients(), f2.coefficients())
+
+    def test_lowpass_posit32_close_to_reference(self):
+        ref = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                                cutoff=1000.0, coeff_dtype="reference")
+        p32 = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                                cutoff=1000.0, coeff_dtype="posit_full")
+        ref_taps = ref.coefficients()
+        p32_taps = p32.coefficients()
+        assert p32_taps.shape == ref_taps.shape
+        assert np.all(np.isfinite(p32_taps))
+        # posit32 has ~30 fraction bits in the dynamic-range sweet spot;
+        # a 51-tap sinc-windowed lowpass should reproduce to << 1e-3.
+        np.testing.assert_allclose(p32_taps, ref_taps, atol=1e-4)
+
+    def test_highpass_dtype_propagates(self):
+        f = mpdsp.fir_highpass(num_taps=51, sample_rate=SAMPLE_RATE,
+                               cutoff=1000.0, coeff_dtype="posit_full")
+        assert f.coefficients().shape == (51,)
+        assert np.all(np.isfinite(f.coefficients()))
+
+    def test_bandpass_dtype_propagates(self):
+        f = mpdsp.fir_bandpass(num_taps=101, sample_rate=SAMPLE_RATE,
+                               f_low=800.0, f_high=1600.0,
+                               coeff_dtype="posit_full")
+        assert f.coefficients().shape == (101,)
+        assert np.all(np.isfinite(f.coefficients()))
+
+    def test_bandstop_dtype_propagates(self):
+        f = mpdsp.fir_bandstop(num_taps=101, sample_rate=SAMPLE_RATE,
+                               f_low=800.0, f_high=1600.0,
+                               coeff_dtype="posit_full")
+        assert f.coefficients().shape == (101,)
+        assert np.all(np.isfinite(f.coefficients()))
+
+    def test_unknown_coeff_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.fir_lowpass(num_taps=21, sample_rate=SAMPLE_RATE,
+                              cutoff=1000.0, coeff_dtype="not_a_dtype")
+
+
 class TestFIRProcessing:
     def test_process_signal_shape(self):
         f = mpdsp.fir_lowpass(num_taps=51, sample_rate=SAMPLE_RATE, cutoff=1000.0)

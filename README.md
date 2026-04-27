@@ -284,14 +284,15 @@ needed to fix them):
 | Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
 | `mixed-precision-dsp` | ≥ 0.6.0 | `v0.5.0` |
-| `universal` | ≥ 4.6.11 | `v4.6.9` |
-| `mtl5` | ≥ 5.2.1 | `v5.2.0` |
+| `universal` | ≥ 4.6.11 | `v4.6.11` |
+| `mtl5` | ≥ 5.2.1 | `v5.2.1` |
 
-Floor and pin are intentionally decoupled. The floor advances during a
-development cycle so sibling-path devs cannot silently work against stale
-clones; the DSP pin moves only at release time, in lockstep with
-`project(VERSION)` (see `tests/test_version.py::test_lockstep_prefix`).
-During an in-flight cycle the pin can lag the floor.
+Only the **DSP pin** is constrained to lag the floor during a development
+cycle: it moves in lockstep with `project(VERSION)` (see
+`tests/test_version.py::test_lockstep_prefix`) and only advances at
+release time. The universal and mtl5 pins are free to track the floor —
+keeping them current avoids CI building in a configuration strictly
+weaker than what sibling-path devs require.
 
 Override at configure time with `-DMPDSP_REQUIRED_DSP_VERSION=...` (lower the
 floor for experimentation) or `-DMPDSP_DSP_PIN=main` (build against an
