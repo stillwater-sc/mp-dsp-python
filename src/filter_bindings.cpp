@@ -1235,7 +1235,10 @@ void bind_filters(nb::module_& m) {
 				// bs[n] = delta[n - M/2] - bp[n]
 				auto bp = sw::dsp::design_fir_bandpass<T>(
 					N, T(fl_norm), T(fh_norm), w);
-				constexpr T one = T(1);
+				// const, not constexpr: posit<N,es>(...) only became
+				// constexpr in universal v4.6.10, but the FetchContent
+				// pin still ships v4.6.9 (lockstep with DSP v0.5.0).
+				const T one = T(1);
 				mtl::vec::dense_vector<T> bs(bp.size());
 				for (std::size_t i = 0; i < bp.size(); ++i) bs[i] = -bp[i];
 				bs[(bp.size() - 1) / 2] = bs[(bp.size() - 1) / 2] + one;

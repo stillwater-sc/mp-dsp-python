@@ -42,9 +42,12 @@ set(MPDSP_REQUIRED_MTL5_VERSION      "5.2.1"  CACHE STRING
 
 set(MPDSP_DSP_PIN       "v0.5.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
-set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
+# universal and mtl5 pins move freely (only DSP is in the lockstep test);
+# track the latest released versions of both so CI matches the
+# sibling-path floor.
+set(MPDSP_UNIVERSAL_PIN "v4.6.11" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
-set(MPDSP_MTL5_PIN      "v5.2.0" CACHE STRING
+set(MPDSP_MTL5_PIN      "v5.2.1"  CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
 
 # Shallow-fetch is a big speedup for tags and branches, but git's shallow
