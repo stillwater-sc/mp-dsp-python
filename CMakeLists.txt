@@ -11,20 +11,35 @@ project(mp-dsp-python
 	LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
-# Peer dependency pins.
+# Peer dependency requirements.
 #
-# Update these together with `project(... VERSION ...)` at release time so
-# the wheel built for mpdsp X.Y.Z always links against known-good snapshots
-# of the peers. These pins only affect the FetchContent fallback path —
-# when a sibling checkout of the peer is found next to this repo (see the
-# `_DSP_CANDIDATES` / `_UNI_CANDIDATES` / `_MTL5_CANDIDATES` loops below),
-# that local source is used instead. For wheel builds under cibuildwheel,
-# which has no siblings to find, the pins are what determines what gets
-# compiled into the binary.
+# Two intentionally-decoupled concepts:
 #
-# Override at configure time with `-DMPDSP_DSP_PIN=main` (etc.) to build
-# against an unreleased upstream without editing this file.
+#   MPDSP_REQUIRED_*_VERSION — floors enforced at configure time on the
+#       sibling-path branch (see _DSP_CANDIDATES / _UNI_CANDIDATES /
+#       _MTL5_CANDIDATES loops below). When a sibling checkout is older
+#       than the floor, configure aborts with a clear error. These move
+#       to the latest released peer versions during a development cycle
+#       so dev clones cannot silently be stale.
+#
+#   MPDSP_*_PIN — git refs (tags, branches, or SHAs) that FetchContent uses
+#       on the fallback path. cibuildwheel has no siblings to find, so the
+#       pin is what determines what gets compiled into the wheel. The DSP
+#       pin moves in lockstep with `project(... VERSION ...)` only at
+#       release time (see test_version.py::test_lockstep_prefix). Thus the
+#       pin can lag the floor during a development cycle.
+#
+# Override at configure time:
+#   -DMPDSP_REQUIRED_DSP_VERSION=0.5.0   (lower floor for experimentation)
+#   -DMPDSP_DSP_PIN=main                 (build against unreleased upstream)
 # ---------------------------------------------------------------------------
+set(MPDSP_REQUIRED_DSP_VERSION       "0.6.0"  CACHE STRING
+	"Minimum mixed-precision-dsp version required at configure time")
+set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
+	"Minimum universal version required at configure time")
+set(MPDSP_REQUIRED_MTL5_VERSION      "5.2.1"  CACHE STRING
+	"Minimum mtl5 version required at configure time")
+
 set(MPDSP_DSP_PIN       "v0.5.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 set(MPDSP_UNIVERSAL_PIN "v4.6.9" CACHE STRING
@@ -88,6 +103,76 @@ endif()
 
 find_package(nanobind CONFIG REQUIRED)
 
+# ---------------------------------------------------------------------------
+# Sibling-clone version floor checks.
+#
+# When a peer is resolved by sibling-path (rather than FetchContent), verify
+# its version meets the floor and abort with a clear error if not. The check
+# is permissive when the version cannot be determined (no .git directory,
+# unparseable header) — STATUS message only, do not fail. This supports
+# tarball checkouts and avoids spurious failures in unusual environments.
+# ---------------------------------------------------------------------------
+function(mpdsp_check_version_from_header NAME DIR HEADER_PATH REQUIRED CACHE_VAR)
+	set(_FULL "${DIR}/${HEADER_PATH}")
+	if(NOT EXISTS "${_FULL}")
+		message(STATUS "${NAME}: ${HEADER_PATH} not found at ${DIR}; skipping floor check (required >= ${REQUIRED})")
+		return()
+	endif()
+	file(READ "${_FULL}" _CONTENTS)
+	set(_MAJOR "")
+	set(_MINOR "")
+	set(_PATCH "")
+	if(_CONTENTS MATCHES "version_major[ \t]*=[ \t]*([0-9]+)")
+		set(_MAJOR "${CMAKE_MATCH_1}")
+	endif()
+	if(_CONTENTS MATCHES "version_minor[ \t]*=[ \t]*([0-9]+)")
+		set(_MINOR "${CMAKE_MATCH_1}")
+	endif()
+	if(_CONTENTS MATCHES "version_patch[ \t]*=[ \t]*([0-9]+)")
+		set(_PATCH "${CMAKE_MATCH_1}")
+	endif()
+	if(_MAJOR STREQUAL "" OR _MINOR STREQUAL "" OR _PATCH STREQUAL "")
+		message(STATUS "${NAME}: could not parse version from ${HEADER_PATH}; skipping floor check (required >= ${REQUIRED})")
+		return()
+	endif()
+	set(_VERSION "${_MAJOR}.${_MINOR}.${_PATCH}")
+	if(_VERSION VERSION_LESS "${REQUIRED}")
+		message(FATAL_ERROR
+			"${NAME} at ${DIR} is version ${_VERSION}, but ${PROJECT_NAME} requires >= ${REQUIRED}.\n"
+			"Update the sibling clone:\n"
+			"  cd ${DIR} && git fetch --tags && git checkout v${REQUIRED}\n"
+			"Or lower the floor: -D${CACHE_VAR}=${_VERSION}")
+	endif()
+	message(STATUS "${NAME} version: ${_VERSION} (required >= ${REQUIRED})")
+endfunction()
+
+function(mpdsp_check_version_from_git NAME DIR REQUIRED CACHE_VAR)
+	if(NOT EXISTS "${DIR}/.git")
+		message(STATUS "${NAME}: no .git at ${DIR}; skipping floor check (required >= ${REQUIRED})")
+		return()
+	endif()
+	execute_process(
+		COMMAND git -C "${DIR}" describe --tags --abbrev=0
+		OUTPUT_VARIABLE _TAG
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		ERROR_QUIET
+		RESULT_VARIABLE _RES
+	)
+	if(NOT _RES EQUAL 0 OR NOT _TAG MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+		message(STATUS "${NAME}: could not detect version from git tag at ${DIR}; skipping floor check (required >= ${REQUIRED})")
+		return()
+	endif()
+	set(_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+	if(_VERSION VERSION_LESS "${REQUIRED}")
+		message(FATAL_ERROR
+			"${NAME} at ${DIR} is version ${_VERSION}, but ${PROJECT_NAME} requires >= ${REQUIRED}.\n"
+			"Update the sibling clone:\n"
+			"  cd ${DIR} && git fetch --tags && git checkout v${REQUIRED}\n"
+			"Or lower the floor: -D${CACHE_VAR}=${_VERSION}")
+	endif()
+	message(STATUS "${NAME} version: ${_VERSION} (required >= ${REQUIRED})")
+endfunction()
+
 # Find or fetch mixed-precision-dsp (header-only)
 # Try peer directory (../dsp or ../mixed-precision-dsp), then FetchContent
 add_library(sw_dsp INTERFACE)
@@ -100,6 +185,9 @@ set(_DSP_FOUND FALSE)
 foreach(_DIR IN LISTS _DSP_CANDIDATES)
   if(EXISTS "${_DIR}/include/sw/dsp/dsp.hpp")
     message(STATUS "Found mixed-precision-dsp at: ${_DIR}")
+    mpdsp_check_version_from_header("mixed-precision-dsp" "${_DIR}"
+      "include/sw/dsp/version.hpp" "${MPDSP_REQUIRED_DSP_VERSION}"
+      "MPDSP_REQUIRED_DSP_VERSION")
     target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
     set(_DSP_FOUND TRUE)
     break()
@@ -128,6 +216,9 @@ set(_UNI_FOUND FALSE)
 foreach(_DIR IN LISTS _UNI_CANDIDATES)
   if(EXISTS "${_DIR}/include/sw/universal/number/cfloat/cfloat.hpp")
     message(STATUS "Found Universal at: ${_DIR}")
+    mpdsp_check_version_from_git("universal" "${_DIR}"
+      "${MPDSP_REQUIRED_UNIVERSAL_VERSION}"
+      "MPDSP_REQUIRED_UNIVERSAL_VERSION")
     target_include_directories(sw_dsp INTERFACE
       "${_DIR}/include"
       "${_DIR}/include/sw"
@@ -153,9 +244,9 @@ if(NOT _UNI_FOUND)
 endif()
 
 # Find or fetch MTL5 (header-only)
-find_package(MTL5 CONFIG QUIET)
+find_package(MTL5 ${MPDSP_REQUIRED_MTL5_VERSION} CONFIG QUIET)
 if(MTL5_FOUND)
-  message(STATUS "Found MTL5 via find_package")
+  message(STATUS "Found MTL5 ${MTL5_VERSION} via find_package (required >= ${MPDSP_REQUIRED_MTL5_VERSION})")
   target_link_libraries(sw_dsp INTERFACE MTL5::mtl5)
 else()
   set(_MTL5_CANDIDATES
@@ -165,6 +256,9 @@ else()
   foreach(_DIR IN LISTS _MTL5_CANDIDATES)
     if(EXISTS "${_DIR}/include/mtl/mtl.hpp")
       message(STATUS "Found MTL5 at: ${_DIR}")
+      mpdsp_check_version_from_git("mtl5" "${_DIR}"
+        "${MPDSP_REQUIRED_MTL5_VERSION}"
+        "MPDSP_REQUIRED_MTL5_VERSION")
       target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
       set(_MTL5_FOUND TRUE)
       break()
