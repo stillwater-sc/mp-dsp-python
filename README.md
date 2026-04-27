@@ -266,8 +266,30 @@ cmake --build build
 pip install -e .
 ```
 
-The build system finds `mixed-precision-dsp`, Universal, and MTL5 via
-CMake `find_package` or `FetchContent`.
+The build system resolves `mixed-precision-dsp`, Universal, and MTL5 in this
+order:
+
+1. **Sibling clone** — if a checkout exists at `../mixed-precision-dsp`,
+   `../universal`, or `../mtl5`, it is used directly. This is the recommended
+   workflow when iterating across the C++ stack and the Python bindings
+   together.
+2. **`find_package`** — MTL5 only; checks for an installed package config.
+3. **`FetchContent`** — pulled from GitHub at the pin tags below. Used by
+   `cibuildwheel` and any other environment without local siblings.
+
+Minimum versions enforced at configure time on the sibling-clone path
+(stale checkouts abort with a clear error and the `git checkout` command
+needed to fix them):
+
+| Peer | Required | FetchContent pin |
+|---|---|---|
+| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.6.0` |
+| `universal` | ≥ 4.6.11 | `v4.6.11` |
+| `mtl5` | ≥ 5.2.1 | `v5.2.1` |
+
+Override at configure time with `-DMPDSP_REQUIRED_DSP_VERSION=...` (lower the
+floor for experimentation) or `-DMPDSP_DSP_PIN=main` (build against an
+unreleased upstream).
 
 ### Quick Start: CSV Plotting (No Build Required)
 
