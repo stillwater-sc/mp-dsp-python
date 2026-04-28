@@ -65,16 +65,35 @@ wheel.install-dir = "mpdsp"
 # downstream CMake consumers in lockstep automatically.
 #
 # `result` templates the captured X.Y.Z with an optional PEP 440
-# post-release suffix. CMake's project(VERSION) doesn't accept
-# `.postN`, so post-releases live in the `result` template here rather
-# than in CMakeLists.txt. When upstream mixed-precision-dsp bumps
-# (tracked via `project(VERSION ...)` and MPDSP_DSP_PIN), reset this
-# to `"{value}"` so the wheel version matches the new upstream triple.
+# pre/post-release suffix. CMake's project(VERSION) doesn't accept
+# such suffixes, so they live in the `result` template here rather
+# than in CMakeLists.txt.
+#
+# Three states of the suffix during the release lifecycle:
+#
+#   `"{value}.devN"`  — in-flight development of an upcoming X.Y.Z
+#                       (current state). project(VERSION) is already
+#                       bumped to the target X.Y.Z; the .devN marker
+#                       signals "not yet released" so wheels built
+#                       from main during the cycle don't masquerade
+#                       as the eventual release.
+#
+#   `"{value}"`       — actual X.Y.Z release. Drop .devN; tag and
+#                       publish.
+#
+#   `"{value}.postN"` — python-only patch on a released X.Y.Z (no
+#                       upstream mixed-precision-dsp change).
+#                       Ratchet N forward.
+#
+# When upstream mixed-precision-dsp bumps a minor (tracked via
+# project(VERSION ...) and MPDSP_DSP_PIN), enter the .devN state.
+# Move to plain `"{value}"` at release-cut time, then back to
+# `.postN` for any subsequent python-only patches.
 [tool.scikit-build.metadata.version]
 provider = "scikit_build_core.metadata.regex"
 input = "CMakeLists.txt"
 regex = '(?i)project\s*\(\s*mp-dsp-python[^)]*VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
-result = "{value}.post3"
+result = "{value}.dev0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

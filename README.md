@@ -283,7 +283,7 @@ needed to fix them):
 
 | Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
-| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.5.0` |
+| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.6.0` |
 | `universal` | ≥ 4.6.11 | `v4.6.11` |
 | `mtl5` | ≥ 5.2.1 | `v5.2.1` |
 

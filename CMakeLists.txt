@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.22)
 # the regex provider configured in pyproject.toml — do not hardcode
 # it anywhere else.
 project(mp-dsp-python
-	VERSION 0.5.0
+	VERSION 0.6.0
 	LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.2.1"  CACHE STRING
 	"Minimum mtl5 version required at configure time")
 
-set(MPDSP_DSP_PIN       "v0.5.0" CACHE STRING
+set(MPDSP_DSP_PIN       "v0.6.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the
