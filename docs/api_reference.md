@@ -19,6 +19,7 @@ the note at the bottom.
 - [IIR filter design — classical families](#iir-filter-design--classical-families)
 - [IIR filter design — RBJ biquads](#iir-filter-design--rbj-biquads)
 - [FIR filter design](#fir-filter-design)
+- [Acquisition — high-rate ADC → baseband pipeline](#acquisition--high-rate-adc--baseband-pipeline)
 - [Image — generators](#image--generators)
 - [Image — processing](#image--processing)
 - [Image — morphology](#image--morphology)
@@ -40,6 +41,12 @@ the note at the bottom.
   - [`RMSEnvelope`](#rmsenvelope)
   - [`Compressor`](#compressor)
   - [`AGC`](#agc)
+  - [`NCO`](#nco)
+  - [`CICDecimator`](#cicdecimator)
+  - [`CICInterpolator`](#cicinterpolator)
+  - [`HalfBandFilter`](#halfbandfilter)
+  - [`PolyphaseDecimator`](#polyphasedecimator)
+  - [`PolyphaseInterpolator`](#polyphaseinterpolator)
   - [`KalmanFilter`](#kalmanfilter)
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
@@ -216,6 +223,15 @@ Window-method designs returning an `FIRFilter`. `fir_filter` constructs directly
 | `fir_bandpass` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandpass filter. |
 | `fir_bandstop` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandstop (notch) filter via spectral inversion. |
 | `fir_filter` | `(coefficients: ndarray1d[ro]) -> mpdsp._core.FIRFilter` | Construct an FIR filter from explicit tap coefficients. |
+
+## Acquisition — high-rate ADC → baseband pipeline
+
+Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-band → polyphase FIR → baseband). The class entries live in the [Classes](#classes) section; the two free-function design helpers are listed here.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray[float64]` | Equiripple half-band lowpass design via Remez exchange. `num_taps` must be of the form `4K+3`. The result has the half-band structure (`h[center] = 0.5`, `h[center ± 2k] = 0` for `k ≥ 1`). |
+| `polyphase_decompose` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference') -> list[ndarray[float64]]` | Decompose an FIR prototype into `factor` polyphase sub-filters of length `ceil(N/factor)`. Returns one sub-tap array per phase. |
 
 ## Image — generators
 
@@ -501,6 +517,105 @@ Automatic gain control: drives the signal toward a target level using a configur
 | `.process` | `(self, input: float) -> float` — Process a single sample. Returns the gain-adjusted output. |
 | `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Process a 1D NumPy float64 signal. Returns the gain-adjusted signal (same length as the input). The per-sample loop releases the GIL. |
 | `.reset` | `(self) -> None` — Clear the internal RMS envelope state. |
+
+### `NCO`
+
+Numerically Controlled Oscillator. Generates complex sinusoids (I/Q) for digital mixing in the acquisition pipeline. Phase-accumulator precision determines spurious-free dynamic range (SFDR ≈ 6.02 × W dB for a W-bit accumulator).
+
+> NCO with a normalized-phase accumulator (1.0 = one full cycle).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(frequency: float, sample_rate: float, dtype: str = 'reference')` |
+| `.phase` | `(self) -> float` — Current phase accumulator value in `[0, 1)`. |
+| `.phase_increment` | `(self) -> float` — Phase increment per sample (`frequency / sample_rate`). |
+| `.set_frequency` | `(self, frequency: float, sample_rate: float) -> None` |
+| `.set_phase_offset` | `(self, offset: float) -> None` — Phase offset in normalized units. |
+| `.generate_sample` | `(self) -> tuple[float, float]` — Generate one (real, imag) I/Q sample and advance phase. |
+| `.generate_real` | `(self) -> float` — Generate one real-valued (cos) sample. |
+| `.generate_block` | `(self, length: int) -> tuple[ndarray[float64], ndarray[float64]]` — `(real, imag)` block. |
+| `.generate_block_real` | `(self, length: int) -> ndarray[float64]` — Real-valued block (cos only). |
+| `.mix_down` | `(self, input: ndarray1d[ro]) -> tuple[ndarray[float64], ndarray[float64]]` — Multiply real input by conj(NCO output); returns the resulting complex baseband signal as `(real, imag)`. |
+| `.reset` | `(self) -> None` |
+
+### `CICDecimator`
+
+Cascaded Integrator-Comb decimation filter. Multiplier-free; the canonical first decimation stage after a high-rate ADC. Bit growth is `M · ceil(log2(R · D))`.
+
+> CIC decimation filter (M stages, ratio R, differential delay D).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(decimation_ratio: int, num_stages: int, differential_delay: int = 1, dtype: str = 'reference')` |
+| `.decimation_ratio` | `(self) -> int` |
+| `.num_stages` | `(self) -> int` |
+| `.differential_delay` | `(self) -> int` |
+| `.push` | `(self, input: float) -> tuple[bool, float]` — Feed one input sample. `(emit, output)` — `emit` is True when the decimated output is valid this call. |
+| `.output` | `(self) -> float` — Most recent decimated output (valid after `push()` emits). |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Decimate a block. |
+| `.reset` | `(self) -> None` |
+
+### `CICInterpolator`
+
+Cascaded Integrator-Comb interpolation filter — the dual of `CICDecimator`. Multiplier-free upsampling.
+
+> CIC interpolation filter (M stages, ratio R, differential delay D).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(interpolation_ratio: int, num_stages: int, differential_delay: int = 1, dtype: str = 'reference')` |
+| `.interpolation_ratio` | `(self) -> int` |
+| `.num_stages` | `(self) -> int` |
+| `.differential_delay` | `(self) -> int` |
+| `.push` | `(self, input: float) -> None` — Feed one input sample (advances the interpolator state). |
+| `.output` | `(self) -> float` |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `ratio × N` upsampled outputs. |
+| `.reset` | `(self) -> None` |
+
+### `HalfBandFilter`
+
+Half-band FIR filter. `process_decimate` / `process_block_decimate` exploit the alternating-zero tap structure to skip ~half the multiplies — typically ~4× faster than naive filter-then-decimate at 2:1.
+
+> Half-band FIR with the H(w) + H(π-w) = 1 property enforced.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(taps: ndarray1d[ro], dtype: str = 'reference')` — Taps must satisfy the half-band structure (validated at construction). Use `design_halfband` to obtain valid taps. |
+| `.num_taps` | `(self) -> int` |
+| `.num_nonzero_taps` | `(self) -> int` |
+| `.process` | `(self, input: float) -> float` — Full-rate: one input → one output. |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
+| `.process_decimate` | `(self, input: float) -> tuple[bool, float]` — 2:1 decimation; `emit` alternates True/False. |
+| `.process_block_decimate` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `floor(N/2)` outputs. |
+| `.reset` | `(self) -> None` |
+
+### `PolyphaseDecimator`
+
+M-factor polyphase FIR decimator. Decomposes the prototype into M sub-filters; each advances once per output sample, so the multiplier cost is ~N/output instead of ~N×M for naive filter-then-downsample.
+
+> Polyphase FIR decimator at integer ratio M.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference')` — `factor` must be `> 0`. |
+| `.factor` | `(self) -> int` |
+| `.process` | `(self, input: float) -> tuple[bool, float]` |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
+| `.reset` | `(self) -> None` |
+
+### `PolyphaseInterpolator`
+
+L-factor polyphase FIR interpolator. Each input produces L outputs.
+
+> Polyphase FIR interpolator at integer ratio L.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference')` — `factor` must be `> 0`. |
+| `.factor` | `(self) -> int` |
+| `.process` | `(self, input: float) -> ndarray[float64]` — Returns `factor` upsampled output samples. |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `factor × N` outputs. |
+| `.reset` | `(self) -> None` |
 
 ### `KalmanFilter`
 
