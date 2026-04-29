@@ -461,6 +461,9 @@ class PyPolyphaseDecimator {
 public:
 	PyPolyphaseDecimator(np_f64_ro taps, std::size_t factor,
 	                     const std::string& dtype) {
+		if (factor == 0)
+			throw std::invalid_argument(
+				"PolyphaseDecimator: factor must be > 0");
 		auto config = mpdsp::parse_config(dtype);
 		impl_ = dispatch_dtype_fn(config, "PolyphaseDecimator",
 			[&]<typename T>() -> std::unique_ptr<IPolyphaseDecimatorImpl> {
@@ -482,6 +485,9 @@ class PyPolyphaseInterpolator {
 public:
 	PyPolyphaseInterpolator(np_f64_ro taps, std::size_t factor,
 	                         const std::string& dtype) {
+		if (factor == 0)
+			throw std::invalid_argument(
+				"PolyphaseInterpolator: factor must be > 0");
 		auto config = mpdsp::parse_config(dtype);
 		impl_ = dispatch_dtype_fn(config, "PolyphaseInterpolator",
 			[&]<typename T>() -> std::unique_ptr<IPolyphaseInterpolatorImpl> {

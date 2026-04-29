@@ -144,7 +144,7 @@ class TestCICDecimator:
     def test_decimation_emits_every_R(self):
         cic = mpdsp.CICDecimator(decimation_ratio=4, num_stages=2)
         emit_count = 0
-        for i in range(64):
+        for _ in range(64):
             ok, _ = cic.push(1.0)
             if ok:
                 emit_count += 1
@@ -225,6 +225,10 @@ class TestPolyphaseDecimator:
         # Approximately N/factor outputs (modulo startup phase)
         assert abs(len(out) - 80 // 4) <= 1
 
+    def test_factor_zero_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.PolyphaseDecimator(taps=np.ones(8), factor=0)
+
 
 class TestPolyphaseInterpolator:
     @pytest.mark.parametrize("dtype", _DTYPES)
@@ -238,3 +242,7 @@ class TestPolyphaseInterpolator:
         pi = mpdsp.PolyphaseInterpolator(taps=taps, factor=4)
         out = pi.process_block(np.ones(20))
         assert out.shape == (20 * 4,)
+
+    def test_factor_zero_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.PolyphaseInterpolator(taps=np.ones(8), factor=0)
