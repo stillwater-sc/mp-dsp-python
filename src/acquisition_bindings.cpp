@@ -46,6 +46,7 @@
 namespace nb = nanobind;
 
 using mpdsp::bindings::dispatch_dtype_fn;
+using mpdsp::bindings::make_f64_array;
 using mpdsp::bindings::make_impl_for_dtype;
 using mpdsp::bindings::np_f64;
 using mpdsp::bindings::np_f64_ro;
@@ -55,27 +56,28 @@ using mpdsp::bindings::vec_to_numpy;
 namespace {
 
 // ---------------------------------------------------------------------------
-// Helpers for complex_T -> (real_ndarray, imag_ndarray) tuple. Templated on
-// the complex type itself rather than the underlying scalar, so the same
-// helpers work for both std::complex<T> (when T is float/double) and
-// sw::universal::complex<T> (when T is posit/cfloat/etc.) — the upstream
-// `complex_for_t<T>` metafunction picks between those at instantiation.
+// Single-pass split of a complex_T buffer into a (real, imag) tuple of
+// float64 ndarrays. Templated on the complex type itself rather than the
+// underlying scalar, so the same helper works for both std::complex<T> (when
+// T is float/double) and sw::universal::complex<T> (when T is posit/cfloat/
+// etc.) — the upstream `complex_for_t<T>` metafunction picks between those
+// at instantiation.
+//
+// One pass over the source buffer; both output arrays are filled in lockstep.
 // ---------------------------------------------------------------------------
 
 template <typename CT>
-np_f64 complex_real_to_numpy(const mtl::vec::dense_vector<CT>& v) {
-	mtl::vec::dense_vector<double> out(v.size());
-	for (std::size_t i = 0; i < v.size(); ++i)
-		out[i] = static_cast<double>(v[i].real());
-	return vec_to_numpy(out);
-}
-
-template <typename CT>
-np_f64 complex_imag_to_numpy(const mtl::vec::dense_vector<CT>& v) {
-	mtl::vec::dense_vector<double> out(v.size());
-	for (std::size_t i = 0; i < v.size(); ++i)
-		out[i] = static_cast<double>(v[i].imag());
-	return vec_to_numpy(out);
+nb::tuple complex_split_to_numpy(const mtl::vec::dense_vector<CT>& v) {
+	std::size_t n = v.size();
+	double* re_ptr = nullptr;
+	double* im_ptr = nullptr;
+	auto re_arr = make_f64_array(n, re_ptr);
+	auto im_arr = make_f64_array(n, im_ptr);
+	for (std::size_t i = 0; i < n; ++i) {
+		re_ptr[i] = static_cast<double>(v[i].real());
+		im_ptr[i] = static_cast<double>(v[i].imag());
+	}
+	return nb::make_tuple(re_arr, im_arr);
 }
 
 // ===========================================================================
@@ -125,8 +127,7 @@ public:
 	}
 	nb::tuple generate_block(std::size_t length) override {
 		auto block = nco_.generate_block(length);
-		return nb::make_tuple(complex_real_to_numpy(block),
-		                      complex_imag_to_numpy(block));
+		return complex_split_to_numpy(block);
 	}
 	np_f64 generate_block_real(std::size_t length) override {
 		auto block = nco_.generate_block_real(length);
@@ -135,8 +136,7 @@ public:
 	nb::tuple mix_down(np_f64_ro input) override {
 		auto in = numpy_to_vec_fresh<typename decltype(nco_)::sample_scalar>(input);
 		auto out = nco_.mix_down(in);
-		return nb::make_tuple(complex_real_to_numpy(out),
-		                      complex_imag_to_numpy(out));
+		return complex_split_to_numpy(out);
 	}
 	void reset() override { nco_.reset(); }
 
@@ -214,11 +214,9 @@ public:
 	}
 	np_f64 process_block(np_f64_ro input) override {
 		auto in_v = numpy_to_vec_fresh<T>(input);
-		std::vector<T> in_buf(in_v.size());
-		for (std::size_t i = 0; i < in_v.size(); ++i) in_buf[i] = in_v[i];
 		std::vector<T> out_buf;
-		out_buf.reserve(in_buf.size() * static_cast<std::size_t>(cic_.interpolation_ratio()));
-		cic_.process_block(std::span<const T>(in_buf), out_buf);
+		out_buf.reserve(in_v.size() * static_cast<std::size_t>(cic_.interpolation_ratio()));
+		cic_.process_block(std::span<const T>(in_v.data(), in_v.size()), out_buf);
 		mtl::vec::dense_vector<T> out_v(out_buf.size());
 		for (std::size_t i = 0; i < out_buf.size(); ++i) out_v[i] = out_buf[i];
 		return vec_to_numpy(out_v);
@@ -266,9 +264,8 @@ public:
 	}
 	np_f64 process_block_decimate(np_f64_ro input) override {
 		auto in = numpy_to_vec_fresh<T>(input);
-		std::vector<T> in_buf(in.size());
-		for (std::size_t i = 0; i < in.size(); ++i) in_buf[i] = in[i];
-		auto out = hb_.process_block_decimate(std::span<const T>(in_buf));
+		auto out = hb_.process_block_decimate(
+			std::span<const T>(in.data(), in.size()));
 		return vec_to_numpy(out);
 	}
 	std::size_t num_taps() const override { return hb_.num_taps(); }
@@ -304,9 +301,8 @@ public:
 	}
 	np_f64 process_block(np_f64_ro input) override {
 		auto in_v = numpy_to_vec_fresh<T>(input);
-		std::vector<T> in_buf(in_v.size());
-		for (std::size_t i = 0; i < in_v.size(); ++i) in_buf[i] = in_v[i];
-		auto out = pd_.process_block(std::span<const T>(in_buf));
+		auto out = pd_.process_block(
+			std::span<const T>(in_v.data(), in_v.size()));
 		return vec_to_numpy(out);
 	}
 	std::size_t factor() const override { return pd_.factor(); }
@@ -341,9 +337,8 @@ public:
 	}
 	np_f64 process_block(np_f64_ro input) override {
 		auto in_v = numpy_to_vec_fresh<T>(input);
-		std::vector<T> in_buf(in_v.size());
-		for (std::size_t i = 0; i < in_v.size(); ++i) in_buf[i] = in_v[i];
-		auto out = pi_.process_block(std::span<const T>(in_buf));
+		auto out = pi_.process_block(
+			std::span<const T>(in_v.data(), in_v.size()));
 		return vec_to_numpy(out);
 	}
 	std::size_t factor() const override { return pi_.factor(); }
