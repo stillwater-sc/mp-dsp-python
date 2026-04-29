@@ -108,6 +108,10 @@ try:
         ztransform, freqz, group_delay, laplace_freqs,
         # Analysis — free-function primitives (method-form lives on IIRFilter)
         coefficient_sensitivity, biquad_condition_number,
+        # Acquisition — high-rate ADC -> baseband pipeline primitives (Phase 3 / #86)
+        NCO, CICDecimator, CICInterpolator,
+        HalfBandFilter, PolyphaseDecimator, PolyphaseInterpolator,
+        design_halfband, polyphase_decompose,
         # Introspection
         available_dtypes, bits_of,
     )
