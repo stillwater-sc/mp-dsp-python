@@ -76,6 +76,81 @@ class TestSignalGenerators:
         assert n.min() >= -1.0
         assert n.max() <= 1.0
 
+    # ---- Generators added by gap-analysis Phase 1 (#99) ----
+
+    def test_ramp_default_slope(self):
+        r = mpdsp.ramp(10)
+        np.testing.assert_allclose(r, np.arange(10, dtype=np.float64))
+
+    def test_ramp_custom_slope(self):
+        r = mpdsp.ramp(5, slope=0.25)
+        np.testing.assert_allclose(r, [0.0, 0.25, 0.5, 0.75, 1.0])
+
+    def test_ramp_zero_length(self):
+        assert mpdsp.ramp(0).shape == (0,)
+
+    def test_multitone_shape_and_dtype(self):
+        freqs = np.array([100.0, 200.0], dtype=np.float64)
+        sig = mpdsp.multitone(1024, freqs, sample_rate=1024.0)
+        assert sig.shape == (1024,)
+        assert sig.dtype == np.float64
+
+    def test_multitone_peaks_at_each_tone(self):
+        # Place three tones far apart; PSD should peak at each.
+        freqs = np.array([100.0, 250.0, 400.0], dtype=np.float64)
+        sig = mpdsp.multitone(4096, freqs, sample_rate=1024.0, amplitude=1.0)
+        pf, power = mpdsp.psd(sig, sample_rate=1024.0)
+        for want in freqs:
+            # Bin resolution ~ 1024/4096 = 0.25 Hz, but psd goes to sample_rate/2
+            bin_hz = pf[1] - pf[0]
+            bin_idx = int(round(want / bin_hz))
+            local_peak = power[max(0, bin_idx - 3):bin_idx + 4].max()
+            # Local peak near each tone must dominate the noise floor.
+            assert local_peak > 10.0 * np.median(power)
+
+    def test_multitone_empty_frequencies_is_zero(self):
+        sig = mpdsp.multitone(64, np.array([], dtype=np.float64),
+                              sample_rate=1024.0)
+        assert sig.shape == (64,)
+        np.testing.assert_array_equal(sig, np.zeros(64))
+
+    def test_multitone_rejects_bad_sample_rate(self):
+        with pytest.raises(ValueError):
+            mpdsp.multitone(64, np.array([100.0]), sample_rate=0.0)
+
+    def test_upsample_zero_insert(self):
+        x = np.array([1.0, 2.0, 3.0])
+        y = mpdsp.upsample(x, factor=3)
+        # Every 3rd sample carries the original, the other two are zero.
+        np.testing.assert_allclose(y, [1, 0, 0, 2, 0, 0, 3, 0, 0])
+
+    def test_upsample_factor_one_is_identity(self):
+        x = np.array([1.0, 2.0, 3.0, 4.0])
+        np.testing.assert_allclose(mpdsp.upsample(x, factor=1), x)
+
+    def test_upsample_rejects_zero_factor(self):
+        with pytest.raises(ValueError):
+            mpdsp.upsample(np.array([1.0, 2.0]), factor=0)
+
+    def test_downsample_keeps_every_nth(self):
+        x = np.arange(12, dtype=np.float64)
+        y = mpdsp.downsample(x, factor=3)
+        np.testing.assert_allclose(y, [0.0, 3.0, 6.0, 9.0])
+
+    def test_downsample_factor_one_is_identity(self):
+        x = np.array([1.0, 2.0, 3.0])
+        np.testing.assert_allclose(mpdsp.downsample(x, factor=1), x)
+
+    def test_downsample_rejects_zero_factor(self):
+        with pytest.raises(ValueError):
+            mpdsp.downsample(np.array([1.0, 2.0]), factor=0)
+
+    def test_upsample_then_downsample_roundtrip(self):
+        # With no filter in between, up-N then down-N recovers the original.
+        x = np.arange(1.0, 6.0)
+        roundtrip = mpdsp.downsample(mpdsp.upsample(x, factor=4), factor=4)
+        np.testing.assert_allclose(roundtrip, x)
+
 
 class TestWindows:
     def test_hamming_shape(self):

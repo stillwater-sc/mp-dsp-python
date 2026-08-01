@@ -41,7 +41,8 @@ try:
     from mpdsp._core import (
         # Signal generators
         sine, cosine, chirp, square, triangle, sawtooth,
-        impulse, step, white_noise, gaussian_noise, pink_noise,
+        impulse, step, ramp, white_noise, gaussian_noise, pink_noise,
+        multitone, upsample, downsample,
         # Window functions
         hamming, hanning, blackman, kaiser, rectangular, flat_top,
         tukey, gaussian, dolph_chebyshev, bartlett_hann,

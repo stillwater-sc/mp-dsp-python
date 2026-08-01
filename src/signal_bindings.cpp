@@ -7,6 +7,7 @@
 
 #include <sw/dsp/io/wav.hpp>
 #include <sw/dsp/signals/generators.hpp>
+#include <sw/dsp/signals/sampling.hpp>
 #include <sw/dsp/windows/windows.hpp>
 
 #include "_binding_helpers.hpp"
@@ -79,6 +80,12 @@ void bind_signals(nb::module_& m) {
 	}, nb::arg("length"), nb::arg("position") = static_cast<std::size_t>(0),
 	   "Generate a unit step (0 before position, 1 from position onward).");
 
+	m.def("ramp", [](std::size_t length, double slope) {
+		return vec_to_numpy(ramp<double>(length, slope));
+	}, nb::arg("length"), nb::arg("slope") = 1.0,
+	   "Linear ramp: x[n] = slope * n, starting at 0. Add an offset in NumPy "
+	   "if you need to shift the starting value.");
+
 	m.def("white_noise", [](std::size_t length, double amplitude, unsigned seed) {
 		return vec_to_numpy(white_noise<double>(length, amplitude, seed));
 	}, nb::arg("length"), nb::arg("amplitude") = 1.0, nb::arg("seed") = 0u,
@@ -96,6 +103,66 @@ void bind_signals(nb::module_& m) {
 		return vec_to_numpy(pink_noise<double>(length, amplitude, seed));
 	}, nb::arg("length"), nb::arg("amplitude") = 1.0, nb::arg("seed") = 0u,
 	   "Generate pink noise (1/f spectrum, Voss-McCartney algorithm).");
+
+	// -----------------------------------------------------------------------
+	// Multitone: sum of sinusoids at specified frequencies.
+	// Upstream shares a single `amplitude` across tones (per-tone = amp/N)
+	// and doesn't take per-tone phases; we surface that same shape rather
+	// than add a Python-only extension (see gap analysis Phase 1 #99).
+	// -----------------------------------------------------------------------
+	m.def("multitone",
+		[](std::size_t length, mpdsp::bindings::np_f64_ro frequencies,
+		   double sample_rate, double amplitude) {
+			if (!(sample_rate > 0.0)) {
+				throw std::invalid_argument(
+					"multitone: sample_rate must be positive");
+			}
+			std::span<const double> freq_span(
+				frequencies.data(), frequencies.shape(0));
+			return vec_to_numpy(multitone<double>(
+				length, freq_span, sample_rate, amplitude));
+		},
+		nb::arg("length"), nb::arg("frequencies"), nb::arg("sample_rate"),
+		nb::arg("amplitude") = 1.0,
+		"Generate a sum of sinusoids at the given frequencies (Hz). "
+		"All tones share the same amplitude, scaled so the summed peak "
+		"amplitude matches the `amplitude` argument (per-tone contribution "
+		"is amplitude / len(frequencies)). Useful for filter passband/"
+		"stopband demos and two-tone IMD tests.");
+
+	// -----------------------------------------------------------------------
+	// Integer-factor upsample (zero-insert) and downsample (decimate).
+	// No anti-aliasing filter; users compose with FIR / halfband / polyphase
+	// for quality resampling. Matches upstream sw::dsp::{upsample,downsample}.
+	// -----------------------------------------------------------------------
+	m.def("upsample",
+		[](mpdsp::bindings::np_f64_ro input, std::size_t factor) {
+			if (factor == 0) {
+				throw std::invalid_argument("upsample: factor must be > 0");
+			}
+			mtl::vec::dense_vector<double> v(input.shape(0));
+			for (std::size_t i = 0; i < input.shape(0); ++i) v[i] = input.data()[i];
+			return vec_to_numpy(upsample<double>(v, factor));
+		},
+		nb::arg("input"), nb::arg("factor"),
+		"Upsample by an integer factor via zero insertion. Output length is "
+		"input.size() * factor. This is zero-insertion only — apply a lowpass "
+		"interpolator (e.g. FIR, halfband, polyphase) afterwards to remove "
+		"the imaging spectral replicas.");
+
+	m.def("downsample",
+		[](mpdsp::bindings::np_f64_ro input, std::size_t factor) {
+			if (factor == 0) {
+				throw std::invalid_argument("downsample: factor must be > 0");
+			}
+			mtl::vec::dense_vector<double> v(input.shape(0));
+			for (std::size_t i = 0; i < input.shape(0); ++i) v[i] = input.data()[i];
+			return vec_to_numpy(downsample<double>(v, factor));
+		},
+		nb::arg("input"), nb::arg("factor"),
+		"Downsample by an integer factor by keeping every factor-th sample. "
+		"Output length is input.size() // factor. This is a naive decimator — "
+		"apply a lowpass anti-aliasing filter beforehand to avoid aliasing.");
 
 	// Window functions — these are in the sw::dsp namespace via windows.hpp.
 	// Following upstream PRs #122/#125, the window functions are templated
