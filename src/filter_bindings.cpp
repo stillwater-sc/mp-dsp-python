@@ -22,6 +22,7 @@
 #include <sw/dsp/filter/biquad/biquad.hpp>
 #include <sw/dsp/filter/biquad/cascade.hpp>
 #include <sw/dsp/filter/biquad/state.hpp>
+#include <sw/dsp/filter/filtfilt.hpp>
 #include <sw/dsp/filter/fir/fir_design.hpp>
 #include <sw/dsp/filter/fir/fir_filter.hpp>
 #include <sw/dsp/filter/iir/bessel.hpp>
@@ -176,6 +177,93 @@ static void process_dispatch(const CascadeD& cascade,
 		process_typed<p32_1, p32_1>(cascade, in, out, n); break;
 	case ArithConfig::posit_32_2:
 		process_typed<p32_2, p32_2>(cascade, in, out, n); break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Type-dispatched zero-phase forward-backward processing (filtfilt).
+//
+// Marshals the double input into std::vector<SampleScalar>, invokes the
+// upstream sw::dsp::filtfilt (which handles edge reflection + forward pass
+// + backward pass internally), then quantizes results back to double.
+// StateForm is fixed to DirectFormII<StateScalar> — the default the C++
+// convenience overload picks, and the numerically robust choice for
+// floating-point coefficients.
+// ---------------------------------------------------------------------------
+
+template <typename StateScalar, typename SampleScalar>
+static void filtfilt_typed(const CascadeD& cascade,
+                           const double* in, double* out, std::size_t n) {
+	std::vector<SampleScalar> input(n);
+	for (std::size_t i = 0; i < n; ++i) {
+		input[i] = quantize_sample_in<SampleScalar>(in[i]);
+	}
+	auto result = sw::dsp::filtfilt<sw::dsp::DirectFormII<StateScalar>,
+	                                double, kMaxStages,
+	                                SampleScalar>(cascade, input);
+	for (std::size_t i = 0; i < n; ++i) {
+		out[i] = quantize_sample_out<SampleScalar>(result[i]);
+	}
+}
+
+static void filtfilt_dispatch(const CascadeD& cascade,
+                              const double* in, double* out, std::size_t n,
+                              mpdsp::ArithConfig config) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
+	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
+	switch (config) {
+	case ArithConfig::reference:
+		filtfilt_typed<double, double>(cascade, in, out, n); break;
+	case ArithConfig::gpu_baseline:
+		filtfilt_typed<float, float>(cascade, in, out, n); break;
+	case ArithConfig::ml_hw:
+		filtfilt_typed<float, half_>(cascade, in, out, n); break;
+	case ArithConfig::cf24_config:
+		filtfilt_typed<cf24, cf24>(cascade, in, out, n); break;
+	case ArithConfig::half_config:
+		filtfilt_typed<half_, half_>(cascade, in, out, n); break;
+	case ArithConfig::posit_full:
+		filtfilt_typed<p32, p16>(cascade, in, out, n); break;
+	case ArithConfig::sensor_8bit:
+		filtfilt_typed<double, int8_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::sensor_6bit:
+		filtfilt_typed<double, int6_sample_t>(cascade, in, out, n); break;
+	case ArithConfig::fpga_fixed:
+		filtfilt_typed<fx3224_t, fx1612_t>(cascade, in, out, n); break;
+	case ArithConfig::posit_8_0:
+		filtfilt_typed<p8_0, p8_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_8_1:
+		filtfilt_typed<p8_1, p8_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_8_2:
+		filtfilt_typed<p8_2, p8_2>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_0:
+		filtfilt_typed<p16_0, p16_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_1:
+		filtfilt_typed<p16_1, p16_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_16_2:
+		filtfilt_typed<p16_2, p16_2>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_0:
+		filtfilt_typed<p32_0, p32_0>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_1:
+		filtfilt_typed<p32_1, p32_1>(cascade, in, out, n); break;
+	case ArithConfig::posit_32_2:
+		filtfilt_typed<p32_2, p32_2>(cascade, in, out, n); break;
 	}
 }
 
@@ -1250,4 +1338,25 @@ void bind_filters(nb::module_& m) {
 		   nb::arg("window") = "hamming", nb::arg("kaiser_beta") = 8.6,
 		   nb::arg("coeff_dtype") = "reference",
 		"Design an FIR bandstop (notch) filter via spectral inversion.");
+
+	// -----------------------------------------------------------------------
+	// filtfilt — zero-phase forward-backward IIR filtering (scipy analogue).
+	// -----------------------------------------------------------------------
+	m.def("filtfilt",
+		[](const PyIIRFilter& filt, np_f64_ro signal, const std::string& dtype) {
+			std::size_t n = signal.shape(0);
+			double* out_ptr = nullptr;
+			auto arr = make_f64_array(n, out_ptr);
+			auto config = mpdsp::parse_config(dtype);
+			filtfilt_dispatch(filt.cascade, signal.data(), out_ptr, n, config);
+			return arr;
+		}, nb::arg("iir_filter"), nb::arg("signal"),
+		   nb::arg("dtype") = "reference",
+		"Zero-phase IIR filtering via forward-backward biquad cascade processing.\n\n"
+		"Applies the cascade forward, then backward on the reversed signal.\n"
+		"The result has zero phase distortion; the magnitude response is squared\n"
+		"relative to a single forward pass. Signal edges are reflected (length =\n"
+		"3*(2*num_stages + 1) - 1, clamped to N-1) to suppress transient artifacts.\n"
+		"Analogous to scipy.signal.filtfilt. Coefficient precision stays double;\n"
+		"state and sample scalars follow the dtype key.");
 }

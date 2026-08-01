@@ -70,6 +70,8 @@ try:
         FIRFilter, fir_filter,
         fir_lowpass, fir_highpass,
         fir_bandpass, fir_bandstop,
+        # Zero-phase forward-backward IIR (scipy.signal.filtfilt analogue)
+        filtfilt,
         # Conditioning
         PeakEnvelope, RMSEnvelope, Compressor, AGC,
         # Estimation

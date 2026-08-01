@@ -755,3 +755,81 @@ class TestFilterHelpers:
         assert len(fig.axes) == 2
         import matplotlib.pyplot as plt
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# filtfilt — zero-phase forward-backward IIR filtering (scipy analogue).
+# ---------------------------------------------------------------------------
+
+
+class TestFiltfilt:
+    def test_output_shape_matches_input(self):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)
+        y = mpdsp.filtfilt(filt, sig)
+        assert y.shape == sig.shape
+        assert y.dtype == np.float64
+
+    def test_zero_phase_property(self):
+        # A forward-then-backward pass cancels phase; a passband sinusoid
+        # comes out time-aligned with the input. Compare to a single
+        # forward pass which introduces the filter's group delay.
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1500.0)
+        sig = _sine(300.0)  # well inside passband
+        forward = filt.process(sig)
+        zero_phase = mpdsp.filtfilt(filt, sig)
+        # Skip transients on both ends
+        skip = 200
+        # filtfilt output is in phase with input (correlation ~1 with input)
+        s = sig[skip:-skip]
+        zp = zero_phase[skip:-skip]
+        fw = forward[skip:-skip]
+        corr_zp = np.corrcoef(s, zp)[0, 1]
+        corr_fw = np.corrcoef(s, fw)[0, 1]
+        # Zero-phase should match input in time; forward pass is delayed.
+        assert corr_zp > 0.99, f"filtfilt not in phase: corr={corr_zp}"
+        assert corr_zp > corr_fw, (
+            f"filtfilt should be more in-phase than forward: "
+            f"zp={corr_zp} fw={corr_fw}")
+
+    def test_lowpass_still_rejects_high_freq(self):
+        filt = mpdsp.butterworth_lowpass(order=6, sample_rate=SAMPLE_RATE, cutoff=500.0)
+        low = _sine(100.0)
+        high = _sine(3000.0)
+        y_low = mpdsp.filtfilt(filt, low)
+        y_high = mpdsp.filtfilt(filt, high)
+        # Skip transients on both ends
+        skip = 200
+        assert np.max(np.abs(y_low[skip:-skip])) > 0.8
+        # Magnitude is squared vs. single pass, so rejection is even stronger.
+        assert np.max(np.abs(y_high[skip:-skip])) < 0.05
+
+    def test_empty_input_returns_empty(self):
+        filt = mpdsp.butterworth_lowpass(order=2, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        y = mpdsp.filtfilt(filt, np.array([], dtype=np.float64))
+        assert y.shape == (0,)
+
+    def test_short_signal_falls_back_gracefully(self):
+        # Signal shorter than the reflection length (3*(2*ns+1)-1) hits the
+        # nrefl-clamp branch in the C++ implementation. Should still run.
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0, n=8)
+        y = mpdsp.filtfilt(filt, sig)
+        assert y.shape == sig.shape
+        assert np.all(np.isfinite(y))
+
+    @pytest.mark.parametrize("dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_dispatch_across_dtypes(self, dtype):
+        filt = mpdsp.butterworth_lowpass(order=4, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0)
+        ref = mpdsp.filtfilt(filt, sig, dtype="reference")
+        out = mpdsp.filtfilt(filt, sig, dtype=dtype)
+        assert out.shape == ref.shape
+        err = np.max(np.abs(ref - out)) / (np.max(np.abs(ref)) + 1e-12)
+        assert err < 0.5
+
+    def test_unknown_dtype_raises(self):
+        filt = mpdsp.butterworth_lowpass(order=2, sample_rate=SAMPLE_RATE, cutoff=1000.0)
+        sig = _sine(300.0, n=64)
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.filtfilt(filt, sig, dtype="not_a_dtype")
