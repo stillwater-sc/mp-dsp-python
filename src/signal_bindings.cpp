@@ -152,6 +152,46 @@ void bind_signals(nb::module_& m) {
 	}, nb::arg("N"), nb::arg("dtype") = "reference",
 	   "Flat-top window of length N.");
 
+	m.def("tukey", [](std::size_t N, double alpha, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "tukey", [&]<typename T>() {
+			return vec_to_numpy(tukey_window<T>(N, alpha));
+		});
+	}, nb::arg("N"), nb::arg("alpha") = 0.5, nb::arg("dtype") = "reference",
+	   "Tukey (cosine-tapered) window of length N. alpha in [0, 1] controls "
+	   "the fraction of the window that is cosine-tapered (0 = rectangular, "
+	   "1 = Hann).");
+
+	m.def("gaussian", [](std::size_t N, double sigma, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "gaussian", [&]<typename T>() {
+			return vec_to_numpy(gaussian_window<T>(N, sigma));
+		});
+	}, nb::arg("N"), nb::arg("sigma") = 0.4, nb::arg("dtype") = "reference",
+	   "Gaussian window of length N. sigma is expressed relative to N/2 "
+	   "(scipy convention): smaller sigma gives a narrower, more peaked window.");
+
+	m.def("dolph_chebyshev",
+		[](std::size_t N, double attenuation_db, const std::string& dtype) {
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "dolph_chebyshev", [&]<typename T>() {
+				return vec_to_numpy(dolph_chebyshev_window<T>(N, attenuation_db));
+			});
+		}, nb::arg("N"), nb::arg("attenuation_db") = 100.0,
+		   nb::arg("dtype") = "reference",
+	   "Dolph-Chebyshev window of length N with equiripple sidelobes at the "
+	   "given attenuation (dB, positive value). Common in radar/sonar; "
+	   "attenuation_db must be > 0.");
+
+	m.def("bartlett_hann", [](std::size_t N, const std::string& dtype) {
+		auto config = mpdsp::parse_config(dtype);
+		return dispatch_dtype_fn(config, "bartlett_hann", [&]<typename T>() {
+			return vec_to_numpy(bartlett_hann_window<T>(N));
+		});
+	}, nb::arg("N"), nb::arg("dtype") = "reference",
+	   "Bartlett-Hann window of length N — hybrid of Bartlett (triangular) "
+	   "and Hann (raised-cosine).");
+
 	// ---------------------------------------------------------------
 	// WAV I/O. Binds upstream sw::dsp::io::read_wav / write_wav_channels.
 	//

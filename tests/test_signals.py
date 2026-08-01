@@ -110,6 +110,84 @@ class TestWindows:
         w = mpdsp.flat_top(256)
         assert w.shape == (256,)
 
+    # ---- Windows added by gap-analysis Phase 1 (#98) ----
+
+    def test_tukey_default_matches_hann_shape(self):
+        # alpha=1.0 makes Tukey equivalent to Hann (raised cosine).
+        tukey = mpdsp.tukey(256, alpha=1.0)
+        hann = mpdsp.hanning(256)
+        np.testing.assert_allclose(tukey, hann, atol=1e-10)
+
+    def test_tukey_rectangular_at_alpha_zero(self):
+        # alpha=0.0 collapses Tukey to a rectangular window.
+        w = mpdsp.tukey(128, alpha=0.0)
+        np.testing.assert_allclose(w, np.ones(128), atol=1e-10)
+
+    def test_tukey_alpha_threaded_through(self):
+        w_low = mpdsp.tukey(128, alpha=0.1)
+        w_high = mpdsp.tukey(128, alpha=0.9)
+        # Different alpha values give measurably different tapers.
+        assert not np.allclose(w_low, w_high)
+
+    def test_gaussian_shape_and_symmetry(self):
+        w = mpdsp.gaussian(256, sigma=0.4)
+        assert w.shape == (256,)
+        np.testing.assert_allclose(w, w[::-1], atol=1e-10)
+
+    def test_gaussian_sigma_threaded_through(self):
+        narrow = mpdsp.gaussian(256, sigma=0.1)
+        wide = mpdsp.gaussian(256, sigma=0.5)
+        # Smaller sigma → more concentrated: narrow window has lower edges.
+        assert narrow[0] < wide[0]
+
+    def test_dolph_chebyshev_shape(self):
+        w = mpdsp.dolph_chebyshev(256, attenuation_db=80.0)
+        assert w.shape == (256,)
+        assert np.all(np.isfinite(w))
+        # Symmetric (the upstream implementation enforces symmetry explicitly).
+        np.testing.assert_allclose(w, w[::-1], atol=1e-10)
+        # Peak normalized to 1.0.
+        assert abs(w.max() - 1.0) < 1e-10
+
+    # NOTE on upstream limitation: the current
+    # mixed-precision-dsp dolph_chebyshev_window implementation appears to
+    # produce a near-constant output regardless of attenuation_db — all taps
+    # sit within ~1e-14 of the peak for representative (N, atten_db) pairs.
+    # We bind the function unchanged and cover the shape/symmetry/peak
+    # invariants that DO hold; a "different attenuation → different taps"
+    # test would be the natural addition but must wait on an upstream fix.
+
+    def test_dolph_chebyshev_rejects_nonpositive_attenuation(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.dolph_chebyshev(256, attenuation_db=0.0)
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.dolph_chebyshev(256, attenuation_db=-10.0)
+
+    def test_bartlett_hann_shape_and_endpoints(self):
+        w = mpdsp.bartlett_hann(256)
+        assert w.shape == (256,)
+        # Bartlett-Hann ends approach zero (Bartlett component is triangular).
+        assert abs(w[0]) < 0.01
+        assert abs(w[-1]) < 0.01
+        # Symmetric
+        np.testing.assert_allclose(w, w[::-1], atol=1e-10)
+
+    @pytest.mark.parametrize("name,args", [
+        ("tukey", {"alpha": 0.3}),
+        ("gaussian", {"sigma": 0.3}),
+        ("dolph_chebyshev", {"attenuation_db": 60.0}),
+        ("bartlett_hann", {}),
+    ])
+    def test_new_windows_accept_dtype(self, name, args):
+        fn = getattr(mpdsp, name)
+        ref = fn(128, **args, dtype="reference")
+        posit = fn(128, **args, dtype="posit_full")
+        assert posit.shape == (128,)
+        assert posit.dtype == np.float64
+        assert np.all(np.isfinite(posit))
+        # posit_full has enough precision to closely reproduce the window.
+        np.testing.assert_allclose(posit, ref, atol=1e-3)
+
 
 class TestWindowsDtype:
     """Window functions accept a dtype kwarg (re-templating from upstream

@@ -44,6 +44,7 @@ try:
         impulse, step, white_noise, gaussian_noise, pink_noise,
         # Window functions
         hamming, hanning, blackman, kaiser, rectangular, flat_top,
+        tukey, gaussian, dolph_chebyshev, bartlett_hann,
         # Quantization
         adc, dac, sqnr_db, measure_sqnr_db,
         max_absolute_error, max_relative_error,
