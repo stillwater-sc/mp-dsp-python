@@ -257,6 +257,65 @@ void bind_spectral(nb::module_& m) {
 		"`dtype` selects the internal arithmetic (see "
 		"`mpdsp.available_dtypes()`).");
 
+	// Welch's method — segmented, windowed, averaged periodogram. Lower
+	// variance than the single-shot `psd()` binding above at the cost of
+	// coarser frequency resolution (segment_size instead of len(signal)).
+	// Overlap defaults to segment_size/2 (scipy convention) when the
+	// caller passes a negative value.
+	m.def("welch",
+		[](np_array_ro signal, double sample_rate,
+		   std::size_t segment_size, int overlap,
+		   const std::string& window_name, const std::string& dtype) {
+			using mpdsp::bindings::dispatch_dtype_fn;
+			using mpdsp::bindings::make_window_T;
+			if (!(sample_rate > 0.0)) {
+				throw std::invalid_argument("welch: sample_rate must be > 0");
+			}
+			if (segment_size == 0) {
+				throw std::invalid_argument("welch: segment_size must be > 0");
+			}
+			// Sentinel: negative overlap means "use scipy default (half segment)".
+			std::size_t ov = (overlap < 0)
+				? segment_size / 2
+				: static_cast<std::size_t>(overlap);
+			if (ov >= segment_size) {
+				throw std::invalid_argument(
+					"welch: overlap must be < segment_size");
+			}
+			auto v = numpy_to_vec(signal);
+			if (v.size() < segment_size) {
+				throw std::invalid_argument(
+					"welch: signal length must be >= segment_size");
+			}
+			auto config = mpdsp::parse_config(dtype);
+			auto power = dispatch_dtype_fn(config, "welch",
+				[&]<typename T>() {
+					auto typed_signal = cast_double_to_T<T>(v);
+					auto typed_window = make_window_T<T>(window_name, segment_size);
+					return sw::dsp::spectral::welch<T>(
+						typed_signal, segment_size, ov, typed_window);
+				});
+			// Build the one-sided frequency axis: bins 0..segment_size/2.
+			std::size_t n_freqs = power.size();
+			double* freq_data = nullptr;
+			auto freqs = mpdsp::bindings::make_f64_array(n_freqs, freq_data);
+			double bin_hz = sample_rate / static_cast<double>(segment_size);
+			for (std::size_t i = 0; i < n_freqs; ++i) {
+				freq_data[i] = static_cast<double>(i) * bin_hz;
+			}
+			return nb::make_tuple(freqs, vec_to_numpy(power));
+		},
+		nb::arg("signal"), nb::arg("sample_rate"), nb::arg("segment_size"),
+		nb::arg("overlap") = -1,
+		nb::arg("window") = "hamming",
+		nb::arg("dtype") = "reference",
+		"Welch's method: segmented, windowed, averaged periodogram PSD estimate.\n\n"
+		"Returns (freqs_hz, power) with segment_size/2 + 1 one-sided bins.\n"
+		"Lower variance than mpdsp.psd() at the cost of coarser resolution.\n"
+		"overlap = -1 (default) selects segment_size/2 (scipy convention).\n"
+		"window is one of: hamming (default), hanning, blackman, rectangular,\n"
+		"flat_top, kaiser. dtype selects the internal arithmetic.");
+
 	m.def("spectrogram",
 		[](np_array_ro signal, double sample_rate,
 		   std::size_t window_size, std::size_t hop_size,

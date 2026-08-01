@@ -242,3 +242,100 @@ class TestSpectralParameterValidation:
         with pytest.raises(ValueError):
             mpdsp.spectrogram(sig, sample_rate=256.0,
                               window_size=64, hop_size=0)
+
+
+# ---------------------------------------------------------------------------
+# Welch's method PSD (scipy.signal.welch analogue).
+# ---------------------------------------------------------------------------
+
+
+class TestWelch:
+    def test_returns_freqs_and_power(self):
+        sig = mpdsp.sine(4096, frequency=100.0, sample_rate=1024.0)
+        freqs, power = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256)
+        # Segment size 256 → 129 one-sided bins
+        assert freqs.shape == (129,)
+        assert power.shape == (129,)
+        assert freqs[0] == 0.0
+        # Frequency axis spans DC → Nyquist
+        assert abs(freqs[-1] - 512.0) < 1e-9
+
+    def test_default_overlap_is_half_segment(self):
+        # overlap=-1 sentinel should behave identically to overlap = seg//2.
+        sig = mpdsp.sine(4096, frequency=100.0, sample_rate=1024.0)
+        default = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256)[1]
+        explicit = mpdsp.welch(sig, sample_rate=1024.0,
+                               segment_size=256, overlap=128)[1]
+        np.testing.assert_allclose(default, explicit, rtol=1e-12)
+
+    def test_peak_at_signal_frequency(self):
+        sig = mpdsp.sine(8192, frequency=440.0, sample_rate=44100.0)
+        freqs, power = mpdsp.welch(sig, sample_rate=44100.0, segment_size=1024)
+        peak_freq = freqs[np.argmax(power)]
+        # Bin resolution = 44100/1024 ≈ 43 Hz
+        assert abs(peak_freq - 440.0) < 50.0
+
+    def test_variance_lower_than_periodogram_on_noise(self):
+        # Welch's whole reason for existing: averaging reduces variance
+        # relative to a single-shot periodogram on the same noise realization.
+        rng = np.random.default_rng(0xC0FFEE)
+        n = 8192
+        noise = rng.standard_normal(n)
+        _, welch_power = mpdsp.welch(noise, sample_rate=1024.0, segment_size=512)
+        # Match Welch's bin count so the variance comparison is like-for-like.
+        per_power = mpdsp.periodogram(noise[:1024])
+        # Log-scale variance is the fair measure — noise PSD is broadband.
+        welch_var = np.var(np.log(welch_power[1:-1] + 1e-30))
+        per_var = np.var(np.log(per_power[1:-1] + 1e-30))
+        assert welch_var < per_var, (
+            f"Welch should have lower log-variance than periodogram: "
+            f"welch={welch_var:.3f} periodogram={per_var:.3f}")
+
+    def test_window_choice_affects_output(self):
+        sig = mpdsp.sine(4096, frequency=100.0, sample_rate=1024.0)
+        _, hamming = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256,
+                                 window="hamming")
+        _, rect = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256,
+                              window="rectangular")
+        # Different windows give measurably different PSDs.
+        assert not np.allclose(hamming, rect, rtol=1e-3)
+
+    def test_rejects_zero_sample_rate(self):
+        sig = mpdsp.sine(1024, frequency=100.0, sample_rate=1024.0)
+        with pytest.raises(ValueError):
+            mpdsp.welch(sig, sample_rate=0.0, segment_size=256)
+
+    def test_rejects_zero_segment_size(self):
+        sig = mpdsp.sine(1024, frequency=100.0, sample_rate=1024.0)
+        with pytest.raises(ValueError):
+            mpdsp.welch(sig, sample_rate=1024.0, segment_size=0)
+
+    def test_rejects_overlap_equal_or_greater_than_segment(self):
+        sig = mpdsp.sine(1024, frequency=100.0, sample_rate=1024.0)
+        with pytest.raises(ValueError):
+            mpdsp.welch(sig, sample_rate=1024.0, segment_size=256, overlap=256)
+
+    def test_rejects_signal_shorter_than_segment(self):
+        sig = mpdsp.sine(128, frequency=10.0, sample_rate=1024.0)
+        with pytest.raises(ValueError):
+            mpdsp.welch(sig, sample_rate=1024.0, segment_size=256)
+
+    def test_rejects_unknown_window(self):
+        sig = mpdsp.sine(1024, frequency=100.0, sample_rate=1024.0)
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.welch(sig, sample_rate=1024.0, segment_size=256,
+                        window="not_a_window")
+
+    @pytest.mark.parametrize("dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_dispatch_across_dtypes(self, dtype):
+        sig = mpdsp.sine(2048, frequency=100.0, sample_rate=1024.0)
+        _, ref = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256,
+                             dtype="reference")
+        _, out = mpdsp.welch(sig, sample_rate=1024.0, segment_size=256,
+                             dtype=dtype)
+        assert out.shape == ref.shape
+        # Reduced-precision PSD should differ but stay in the same ballpark.
+        # Use a relative peak-power comparison — the signal peak is 100+ dB
+        # above the noise floor at the reference precision, so peak location
+        # is the meaningful invariant.
+        assert np.argmax(out) == np.argmax(ref)

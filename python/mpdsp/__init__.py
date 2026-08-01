@@ -49,7 +49,7 @@ try:
         max_absolute_error, max_relative_error,
         RPDFDither, TPDFDither, FirstOrderNoiseShaper,
         # Spectral
-        fft, fft_magnitude_db, ifft, periodogram, psd, spectrogram,
+        fft, fft_magnitude_db, ifft, periodogram, psd, welch, spectrogram,
         # Filters
         IIRFilter,
         butterworth_lowpass, butterworth_highpass,

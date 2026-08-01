@@ -588,25 +588,9 @@ to_double_vec(const mtl::vec::dense_vector<T>& v) {
 	return out;
 }
 
-// Build a window of the requested kind (name matches signal_bindings.cpp).
-// Templated on T so the FIR window-method designers can run their entire
-// taps-design pipeline (window + sinc + spectral inversion) at the chosen
-// coefficient precision. Note: upstream kaiser_window takes its beta as
-// a plain double (the I0 series is computed in double regardless of T),
-// so we pass beta through unchanged.
-template <typename T>
-static mtl::vec::dense_vector<T>
-make_window_T(const std::string& name, std::size_t N, double kaiser_beta) {
-	using namespace sw::dsp;
-	if (name == "hamming")     return hamming_window<T>(N);
-	if (name == "hanning")     return hanning_window<T>(N);
-	if (name == "blackman")    return blackman_window<T>(N);
-	if (name == "rectangular") return rectangular_window<T>(N);
-	if (name == "flat_top")    return flat_top_window<T>(N);
-	if (name == "kaiser")      return kaiser_window<T>(N, kaiser_beta);
-	throw std::invalid_argument("Unknown window: " + name +
-		" (expected hamming, hanning, blackman, rectangular, flat_top, kaiser)");
-}
+// make_window_T() lives in _binding_helpers.hpp — shared with spectral_bindings
+// so Welch's PSD can build windows the same way FIR design does.
+using mpdsp::bindings::make_window_T;
 
 // Common FIR parameter validation shared by the design functions below.
 static void check_num_taps(int n, const char* name) {

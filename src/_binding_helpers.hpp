@@ -33,6 +33,8 @@
 #include <mtl/mat/dense2D.hpp>
 #include <mtl/vec/dense_vector.hpp>
 
+#include <sw/dsp/windows/windows.hpp>
+
 #include "types.hpp"
 
 #include <cstddef>
@@ -245,6 +247,27 @@ inline mtl::vec::dense_vector<T> numpy_to_vec_fresh(np_f64_ro src) {
 		dst[i] = static_cast<T>(data[i]);
 	}
 	return dst;
+}
+
+// ---------------------------------------------------------------------------
+// Window-name -> dense_vector<T> dispatcher. Shared by FIR design (needs the
+// window at coefficient precision) and Welch's PSD (needs the window at the
+// same precision as the signal segment). Kaiser's beta is a plain double
+// because the I0 series is computed in double regardless of T.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+inline mtl::vec::dense_vector<T>
+make_window_T(const std::string& name, std::size_t N, double kaiser_beta = 8.6) {
+	using namespace sw::dsp;
+	if (name == "hamming")     return hamming_window<T>(N);
+	if (name == "hanning")     return hanning_window<T>(N);
+	if (name == "blackman")    return blackman_window<T>(N);
+	if (name == "rectangular") return rectangular_window<T>(N);
+	if (name == "flat_top")    return flat_top_window<T>(N);
+	if (name == "kaiser")      return kaiser_window<T>(N, kaiser_beta);
+	throw std::invalid_argument("Unknown window: " + name +
+		" (expected hamming, hanning, blackman, rectangular, flat_top, kaiser)");
 }
 
 // ---------------------------------------------------------------------------
