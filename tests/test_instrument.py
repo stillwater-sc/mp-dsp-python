@@ -180,3 +180,182 @@ class TestDtypeDispatch:
         sig = _sine(200.0, n=64)
         with pytest.raises((ValueError, RuntimeError)):
             mpdsp.peak_to_peak(sig, dtype="not_a_dtype")
+
+
+# ---------------------------------------------------------------------------
+# PeakDetectDecimator — scope-style min/max preserving decimator (#102).
+# ---------------------------------------------------------------------------
+
+
+class TestPeakDetectDecimatorStreaming:
+    def test_process_returns_none_until_window_closes(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        assert d.process(1.0) is None
+        assert d.process(2.0) is None
+        assert d.process(3.0) is None
+        result = d.process(4.0)
+        assert result == (1.0, 4.0)
+
+    def test_process_cycles(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=3)
+        # First window: 1, 2, 3 -> (1, 3)
+        assert d.process(1.0) is None
+        assert d.process(2.0) is None
+        assert d.process(3.0) == (1.0, 3.0)
+        # Second window: -1, 0, 5 -> (-1, 5)
+        assert d.process(-1.0) is None
+        assert d.process(0.0) is None
+        assert d.process(5.0) == (-1.0, 5.0)
+
+    def test_glitch_within_window_is_preserved(self):
+        # This is the defining scope-vs-generic-decimator invariant:
+        # a spike shorter than the decimation interval still shows up.
+        d = mpdsp.PeakDetectDecimator(decimation_factor=8)
+        for i in range(7):
+            d.process(0.0)
+        # A single-sample glitch inside the 8-sample window
+        result = d.process(5.0)
+        assert result == (0.0, 5.0)
+
+    def test_ratio_one_is_passthrough(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=1)
+        for x in [1.5, -2.0, 0.25]:
+            assert d.process(x) == (x, x)
+
+    def test_reset_drops_partial_window(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        d.process(1.0)
+        d.process(2.0)
+        assert d.samples_in_window == 2
+        d.reset()
+        assert d.samples_in_window == 0
+        # New window seeds fresh from the next push
+        assert d.process(10.0) is None
+        assert d.process(20.0) is None
+        assert d.process(30.0) is None
+        assert d.process(40.0) == (10.0, 40.0)
+
+    def test_samples_in_window_property(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=5)
+        assert d.samples_in_window == 0
+        d.process(1.0)
+        assert d.samples_in_window == 1
+        d.process(2.0)
+        d.process(3.0)
+        d.process(4.0)
+        assert d.samples_in_window == 4
+        d.process(5.0)  # closes the window
+        assert d.samples_in_window == 0
+
+
+class TestPeakDetectDecimatorBlock:
+    def test_process_block_lengths(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        sig = np.arange(20, dtype=np.float64)
+        mins, maxs = d.process_block(sig)
+        # 20 / 4 = 5 complete windows
+        assert mins.shape == (5,)
+        assert maxs.shape == (5,)
+
+    def test_process_block_values_on_ramp(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        sig = np.arange(20, dtype=np.float64)  # 0..19
+        mins, maxs = d.process_block(sig)
+        # Window k holds samples [4k, 4k+3]
+        np.testing.assert_allclose(mins, [0.0, 4.0, 8.0, 12.0, 16.0])
+        np.testing.assert_allclose(maxs, [3.0, 7.0, 11.0, 15.0, 19.0])
+
+    def test_process_block_min_max_convenience(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=2)
+        sig = np.array([1.0, 3.0, -2.0, 5.0])
+        mins_only = d.process_block_min(sig)
+        # process_block_min consumed the buffer; use a fresh decimator
+        # for process_block_max so we're not confused by carry-over state.
+        d2 = mpdsp.PeakDetectDecimator(decimation_factor=2)
+        maxs_only = d2.process_block_max(sig)
+        np.testing.assert_allclose(mins_only, [1.0, -2.0])
+        np.testing.assert_allclose(maxs_only, [3.0, 5.0])
+
+    def test_process_block_partial_leaves_carryover(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        # 10 samples with R=4 -> 2 complete windows, 2 carry over
+        sig = np.arange(10, dtype=np.float64)
+        mins, maxs = d.process_block(sig)
+        assert mins.shape == (2,)
+        assert d.samples_in_window == 2
+
+    def test_streaming_and_block_agree(self):
+        rng = np.random.default_rng(0xC0FFEE)
+        sig = rng.standard_normal(120)
+        R = 8
+
+        # Streaming
+        d1 = mpdsp.PeakDetectDecimator(decimation_factor=R)
+        stream_mins, stream_maxs = [], []
+        for x in sig:
+            r = d1.process(float(x))
+            if r is not None:
+                stream_mins.append(r[0])
+                stream_maxs.append(r[1])
+
+        # Block
+        d2 = mpdsp.PeakDetectDecimator(decimation_factor=R)
+        block_mins, block_maxs = d2.process_block(sig)
+
+        np.testing.assert_allclose(stream_mins, block_mins)
+        np.testing.assert_allclose(stream_maxs, block_maxs)
+
+    def test_block_respects_prior_streaming_state(self):
+        # Push some samples via streaming, then finish with a block. Total
+        # closed-window count must include the prior samples_in_window.
+        R = 5
+        d = mpdsp.PeakDetectDecimator(decimation_factor=R)
+        # Push 3 via streaming (count_ = 3)
+        for x in [1.0, 2.0, 3.0]:
+            assert d.process(x) is None
+        assert d.samples_in_window == 3
+        # Now feed a block of 7 samples: (3 + 7) / 5 = 2 windows close
+        sig = np.array([4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        mins, maxs = d.process_block(sig)
+        assert mins.shape == (2,)
+        # First window is [1,2,3,4,5] -> (1, 5); second is [6,7,8,9,10] -> (6, 10)
+        np.testing.assert_allclose(mins, [1.0, 6.0])
+        np.testing.assert_allclose(maxs, [5.0, 10.0])
+
+    def test_process_block_empty_input(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4)
+        mins, maxs = d.process_block(np.array([], dtype=np.float64))
+        assert mins.shape == (0,)
+        assert maxs.shape == (0,)
+
+
+class TestPeakDetectDecimatorConstruction:
+    def test_rejects_zero_decimation_factor(self):
+        with pytest.raises(ValueError):
+            mpdsp.PeakDetectDecimator(decimation_factor=0)
+
+    def test_decimation_factor_property(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=17)
+        assert d.decimation_factor == 17
+
+    def test_dtype_property(self):
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4, dtype="posit_full")
+        assert d.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.PeakDetectDecimator(decimation_factor=4, dtype="not_a_dtype")
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_dispatch_across_dtypes(self, dtype):
+        # min/max are precision-insensitive at this signal amplitude —
+        # verify only that the class constructs and produces correct-shape
+        # output under each dtype.
+        d = mpdsp.PeakDetectDecimator(decimation_factor=4, dtype=dtype)
+        sig = np.linspace(-1.0, 1.0, 32)
+        mins, maxs = d.process_block(sig)
+        assert mins.shape == (8,)
+        assert maxs.shape == (8,)
+        assert np.all(np.isfinite(mins))
+        assert np.all(np.isfinite(maxs))

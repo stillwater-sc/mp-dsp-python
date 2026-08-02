@@ -19,17 +19,24 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 
 #include <sw/dsp/instrument/measurements.hpp>
+#include <sw/dsp/instrument/peak_detect.hpp>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
 
 #include <cstddef>
+#include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace nb = nanobind;
 
@@ -55,7 +62,134 @@ static void require_nonempty(mpdsp::bindings::np_f64_ro signal, const char* fn) 
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PeakDetectDecimator impl. Type-erased interface with per-dtype concrete
+// impls, held behind std::unique_ptr in PyPeakDetectDecimator. Same shape as
+// the conditioning / acquisition classes.
+//
+// SampleScalar is constrained on DspOrderedField upstream (< / > required),
+// which every dtype instantiated by make_impl_for_dtype satisfies. Sensor
+// configs dispatch to double per the project convention.
+// ---------------------------------------------------------------------------
+
+struct IPeakDetectDecimatorImpl {
+	virtual ~IPeakDetectDecimatorImpl() = default;
+	virtual std::optional<std::pair<double, double>> process(double x) = 0;
+	virtual std::pair<mtl::vec::dense_vector<double>,
+	                  mtl::vec::dense_vector<double>>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual mtl::vec::dense_vector<double>
+	process_block_min(const double* in, std::size_t n) = 0;
+	virtual mtl::vec::dense_vector<double>
+	process_block_max(const double* in, std::size_t n) = 0;
+	virtual void reset() = 0;
+	virtual std::size_t decimation_factor() const = 0;
+	virtual std::size_t samples_in_window() const = 0;
+};
+
+template <typename T>
+struct PeakDetectDecimatorImpl : IPeakDetectDecimatorImpl {
+	sw::dsp::instrument::PeakDetectDecimator<T> inner;
+	explicit PeakDetectDecimatorImpl(std::size_t R) : inner(R) {}
+
+	std::optional<std::pair<double, double>> process(double x) override {
+		auto r = inner.process(static_cast<T>(x));
+		if (!r.has_value()) return std::nullopt;
+		return std::make_pair(static_cast<double>(r->first),
+		                      static_cast<double>(r->second));
+	}
+
+	std::pair<mtl::vec::dense_vector<double>, mtl::vec::dense_vector<double>>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto env = inner.process_block(
+			std::span<const T>(typed_in.data(), typed_in.size()));
+		mtl::vec::dense_vector<double> mins(env.mins.size());
+		mtl::vec::dense_vector<double> maxs(env.maxs.size());
+		for (std::size_t i = 0; i < env.mins.size(); ++i) {
+			mins[i] = static_cast<double>(env.mins[i]);
+			maxs[i] = static_cast<double>(env.maxs[i]);
+		}
+		return {std::move(mins), std::move(maxs)};
+	}
+
+	mtl::vec::dense_vector<double>
+	process_block_min(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto out = inner.process_block_min(
+			std::span<const T>(typed_in.data(), typed_in.size()));
+		mtl::vec::dense_vector<double> result(out.size());
+		for (std::size_t i = 0; i < out.size(); ++i)
+			result[i] = static_cast<double>(out[i]);
+		return result;
+	}
+
+	mtl::vec::dense_vector<double>
+	process_block_max(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto out = inner.process_block_max(
+			std::span<const T>(typed_in.data(), typed_in.size()));
+		mtl::vec::dense_vector<double> result(out.size());
+		for (std::size_t i = 0; i < out.size(); ++i)
+			result[i] = static_cast<double>(out[i]);
+		return result;
+	}
+
+	void reset() override                        { inner.reset(); }
+	std::size_t decimation_factor() const override { return inner.decimation_factor(); }
+	std::size_t samples_in_window() const override { return inner.samples_in_window(); }
+};
+
 } // namespace
+
+// PyPeakDetectDecimator: Python-facing class holding the type-erased impl.
+class PyPeakDetectDecimator {
+public:
+	PyPeakDetectDecimator(std::size_t decimation_factor, const std::string& dtype)
+	    : dtype_(dtype) {
+		if (decimation_factor == 0) {
+			throw std::invalid_argument(
+				"PeakDetectDecimator: decimation_factor must be >= 1");
+		}
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			PeakDetectDecimatorImpl, IPeakDetectDecimatorImpl>(
+			mpdsp::parse_config(dtype), "PeakDetectDecimator",
+			decimation_factor);
+	}
+
+	std::optional<std::pair<double, double>> process(double x) {
+		return impl_->process(x);
+	}
+
+	nb::tuple process_block(mpdsp::bindings::np_f64_ro signal) {
+		std::size_t n = signal.shape(0);
+		auto [mins, maxs] = impl_->process_block(signal.data(), n);
+		return nb::make_tuple(mpdsp::bindings::vec_to_numpy(mins),
+		                     mpdsp::bindings::vec_to_numpy(maxs));
+	}
+
+	mpdsp::bindings::np_f64 process_block_min(mpdsp::bindings::np_f64_ro signal) {
+		auto out = impl_->process_block_min(signal.data(), signal.shape(0));
+		return mpdsp::bindings::vec_to_numpy(out);
+	}
+
+	mpdsp::bindings::np_f64 process_block_max(mpdsp::bindings::np_f64_ro signal) {
+		auto out = impl_->process_block_max(signal.data(), signal.shape(0));
+		return mpdsp::bindings::vec_to_numpy(out);
+	}
+
+	void reset()                            { impl_->reset(); }
+	std::size_t decimation_factor() const   { return impl_->decimation_factor(); }
+	std::size_t samples_in_window() const   { return impl_->samples_in_window(); }
+	const std::string& dtype() const        { return dtype_; }
+
+private:
+	std::unique_ptr<IPeakDetectDecimatorImpl> impl_;
+	std::string dtype_;
+};
 
 void bind_instrument(nb::module_& m) {
 	using mpdsp::bindings::dispatch_dtype_fn;
@@ -177,4 +311,48 @@ void bind_instrument(nb::module_& m) {
 		nb::arg("dtype") = "reference",
 		"Fundamental frequency in Hz: sample_rate / period_samples. Returns "
 		"NaN if the period cannot be measured (see `period`).");
+
+	nb::class_<PyPeakDetectDecimator>(m, "PeakDetectDecimator",
+			"Scope-style decimator that emits one (min, max) pair per R input "
+			"samples. Unlike a generic averaging decimator, a glitch shorter "
+			"than the decimation interval still shows up in the output because "
+			"both extremes are preserved.")
+		.def(nb::init<std::size_t, const std::string&>(),
+		     nb::arg("decimation_factor"), nb::arg("dtype") = "reference",
+		     "Construct a decimator with the given decimation factor R (>= 1). "
+		     "dtype selects the internal sample scalar; the Python I/O is "
+		     "always float64.")
+		.def("process", &PyPeakDetectDecimator::process, nb::arg("sample"),
+		     "Push one sample. Returns None while accumulating within a "
+		     "decimation window; returns (min, max) as a tuple of floats on "
+		     "the sample that completes the current window.")
+		.def("process_block", &PyPeakDetectDecimator::process_block,
+		     nb::arg("signal"),
+		     "Push a block of samples. Returns (mins, maxs) as a pair of "
+		     "NumPy arrays. Length of each output = (samples_in_window + "
+		     "len(signal)) // decimation_factor. Partial trailing windows "
+		     "carry over as internal state; call process() or another "
+		     "process_block() to keep going.")
+		.def("process_block_min", &PyPeakDetectDecimator::process_block_min,
+		     nb::arg("signal"),
+		     "Same as process_block() but returns only the lower envelope "
+		     "(the mins array). Convenience for callers building single-"
+		     "envelope views.")
+		.def("process_block_max", &PyPeakDetectDecimator::process_block_max,
+		     nb::arg("signal"),
+		     "Same as process_block() but returns only the upper envelope "
+		     "(the maxs array).")
+		.def("reset", &PyPeakDetectDecimator::reset,
+		     "Drop any partial window in progress and re-arm the decimator.")
+		.def_prop_ro("decimation_factor",
+		     &PyPeakDetectDecimator::decimation_factor,
+		     "Decimation factor R (samples per output pair). Read-only.")
+		.def_prop_ro("samples_in_window",
+		     &PyPeakDetectDecimator::samples_in_window,
+		     "Number of samples pushed into the current incomplete window. "
+		     "Reaches decimation_factor - 1 just before the next output pair "
+		     "is emitted, then wraps back to 0.")
+		.def_prop_ro("dtype",
+		     [](const PyPeakDetectDecimator& self) { return self.dtype(); },
+		     "Sample-scalar dtype fixed at construction. Read-only.");
 }
