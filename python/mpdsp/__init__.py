@@ -121,6 +121,10 @@ try:
         rise_time, fall_time, period, frequency,
         # Instrument — scope-style capture primitives (gap-analysis Phase 2 / #102, #103)
         PeakDetectDecimator, TriggerRingBuffer,
+        # Spectrum analyzer — streaming FFT + detector reducers (gap-analysis Phase 3 / #104)
+        RealtimeSpectrum,
+        detect_peak, detect_negative_peak, detect_sample,
+        detect_average, detect_rms, detect,
         # Introspection
         available_dtypes, bits_of,
     )
