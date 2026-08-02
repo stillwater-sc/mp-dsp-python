@@ -833,3 +833,279 @@ class TestFiltfilt:
         sig = _sine(300.0, n=64)
         with pytest.raises((ValueError, RuntimeError)):
             mpdsp.filtfilt(filt, sig, dtype="not_a_dtype")
+
+
+# ---------------------------------------------------------------------------
+# Remez (Parks-McClellan) equiripple FIR design (Phase 5 / #111).
+# ---------------------------------------------------------------------------
+
+
+class TestRemezLowpass:
+    def test_returns_firfilter(self):
+        f = mpdsp.remez_lowpass(num_taps=61, sample_rate=SAMPLE_RATE,
+                                passband_edge_hz=1000.0, stopband_edge_hz=1500.0)
+        assert isinstance(f, mpdsp.FIRFilter)
+        assert f.num_taps() == 61
+
+    def test_lowpass_rejects_high_freq(self):
+        f = mpdsp.remez_lowpass(num_taps=61, sample_rate=SAMPLE_RATE,
+                                passband_edge_hz=500.0, stopband_edge_hz=1000.0)
+        low = _sine(200.0, n=4096)
+        high = _sine(3000.0, n=4096)
+        skip = 200
+        y_low = f.process(low)[skip:]
+        y_high = f.process(high)[skip:]
+        assert np.max(np.abs(y_low)) > 0.8
+        assert np.max(np.abs(y_high)) < 0.1
+
+    def test_rejects_bad_num_taps(self):
+        with pytest.raises(ValueError):
+            mpdsp.remez_lowpass(num_taps=0, sample_rate=SAMPLE_RATE,
+                                passband_edge_hz=500.0, stopband_edge_hz=1000.0)
+
+    def test_rejects_stopband_below_passband(self):
+        with pytest.raises(ValueError):
+            mpdsp.remez_lowpass(num_taps=61, sample_rate=SAMPLE_RATE,
+                                passband_edge_hz=1500.0, stopband_edge_hz=500.0)
+
+    def test_rejects_bad_weights(self):
+        with pytest.raises(ValueError):
+            mpdsp.remez_lowpass(num_taps=61, sample_rate=SAMPLE_RATE,
+                                passband_edge_hz=500.0, stopband_edge_hz=1000.0,
+                                stopband_weight=0.0)
+
+
+class TestRemezBandpass:
+    def test_returns_firfilter(self):
+        f = mpdsp.remez_bandpass(
+            num_taps=101, sample_rate=SAMPLE_RATE,
+            stop1_hz=500.0, pass1_hz=1000.0,
+            pass2_hz=2000.0, stop2_hz=2500.0)
+        assert isinstance(f, mpdsp.FIRFilter)
+        assert f.num_taps() == 101
+
+    def test_passes_in_band_rejects_out(self):
+        f = mpdsp.remez_bandpass(
+            num_taps=101, sample_rate=SAMPLE_RATE,
+            stop1_hz=500.0, pass1_hz=1000.0,
+            pass2_hz=2000.0, stop2_hz=2500.0)
+        skip = 300
+        y_pass = f.process(_sine(1500.0, n=4096))[skip:]
+        y_low  = f.process(_sine(200.0,  n=4096))[skip:]
+        y_high = f.process(_sine(3500.0, n=4096))[skip:]
+        assert np.max(np.abs(y_pass)) > 0.8
+        assert np.max(np.abs(y_low))  < 0.15
+        assert np.max(np.abs(y_high)) < 0.15
+
+    def test_rejects_out_of_order_edges(self):
+        # Not stop1 < pass1 < pass2 < stop2 -> error.
+        with pytest.raises(ValueError):
+            mpdsp.remez_bandpass(
+                num_taps=101, sample_rate=SAMPLE_RATE,
+                stop1_hz=1000.0, pass1_hz=500.0,   # inverted
+                pass2_hz=2000.0, stop2_hz=2500.0)
+
+
+class TestRemezGeneral:
+    def test_matches_convenience_lowpass(self):
+        # General remez with lowpass bands should give a filter numerically
+        # close to remez_lowpass with matching parameters.
+        # Convenience: pb_norm = 500/8000 = 0.0625, sb_norm = 1000/8000 = 0.125
+        f_conv = mpdsp.remez_lowpass(
+            num_taps=61, sample_rate=SAMPLE_RATE,
+            passband_edge_hz=500.0, stopband_edge_hz=1000.0)
+        f_gen = mpdsp.remez(
+            num_taps=61,
+            bands=np.array([0.0, 0.0625, 0.125, 0.5]),
+            desired=np.array([1.0, 1.0, 0.0, 0.0]),
+            weights=np.array([1.0, 1.0]))
+        # Coefficients should match within a tight tolerance.
+        conv_taps = np.array([c for c in f_conv.coefficients()])
+        gen_taps  = np.array([c for c in f_gen.coefficients()])
+        np.testing.assert_allclose(conv_taps, gen_taps, atol=1e-10)
+
+    def test_unknown_type_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.remez(num_taps=61,
+                        bands=np.array([0.0, 0.1, 0.2, 0.5]),
+                        desired=np.array([1.0, 1.0, 0.0, 0.0]),
+                        weights=np.array([1.0, 1.0]),
+                        type="not_a_type")
+
+    def test_rejects_odd_band_count(self):
+        with pytest.raises(ValueError):
+            mpdsp.remez(num_taps=61,
+                        bands=np.array([0.0, 0.1, 0.2]),   # 3, must be even
+                        desired=np.array([1.0, 1.0, 0.0]),
+                        weights=np.array([1.0]))
+
+
+# ---------------------------------------------------------------------------
+# OverlapAdd / OverlapSave block-FFT convolvers (Phase 5 / #111).
+# ---------------------------------------------------------------------------
+
+
+def _direct_convolve(taps, signal):
+    """np.convolve reference for OA/OS agreement tests."""
+    return np.convolve(signal, taps, mode="full")
+
+
+class TestOverlapAddConvolver:
+    def test_construction_and_properties(self):
+        taps = np.ones(9) / 9.0   # 9-tap moving average
+        oa = mpdsp.OverlapAddConvolver(taps, block_size=32)
+        assert oa.block_size == 32
+        assert oa.filter_length == 9
+        # FFT size is next_pow2(32 + 9 - 1) = next_pow2(40) = 64
+        assert oa.fft_size == 64
+        assert oa.dtype == "reference"
+
+    def test_rejects_empty_taps(self):
+        with pytest.raises(ValueError):
+            mpdsp.OverlapAddConvolver(np.array([]), block_size=32)
+
+    def test_rejects_zero_block_size(self):
+        with pytest.raises(ValueError):
+            mpdsp.OverlapAddConvolver(np.ones(5), block_size=0)
+
+    def test_process_block_wrong_size_raises(self):
+        oa = mpdsp.OverlapAddConvolver(np.ones(5), block_size=32)
+        with pytest.raises(ValueError):
+            oa.process_block(np.zeros(16))
+
+    def test_matches_direct_convolution(self):
+        rng = np.random.default_rng(0xA110CA7E)
+        taps = rng.standard_normal(21)
+        n_blocks = 8
+        block_size = 64
+        sig = rng.standard_normal(n_blocks * block_size)
+
+        oa = mpdsp.OverlapAddConvolver(taps, block_size=block_size)
+        out_blocks = []
+        for k in range(n_blocks):
+            out_blocks.append(oa.process_block(
+                sig[k * block_size:(k + 1) * block_size]))
+        tail = oa.flush()
+        oa_out = np.concatenate(out_blocks + [tail])
+
+        ref = _direct_convolve(taps, sig)
+        np.testing.assert_allclose(oa_out, ref, atol=1e-9)
+
+    def test_reset_clears_tail(self):
+        oa = mpdsp.OverlapAddConvolver(np.ones(5), block_size=16)
+        oa.process_block(np.ones(16))
+        oa.reset()
+        # After reset, feeding a fresh block should have no leftover tail
+        # from before — matches fresh-construction behaviour.
+        oa2 = mpdsp.OverlapAddConvolver(np.ones(5), block_size=16)
+        y1 = oa.process_block(np.zeros(16))
+        y2 = oa2.process_block(np.zeros(16))
+        np.testing.assert_allclose(y1, y2)
+
+
+class TestOverlapSaveConvolver:
+    def test_construction_and_properties(self):
+        taps = np.ones(9) / 9.0
+        os = mpdsp.OverlapSaveConvolver(taps, block_size=32)
+        assert os.block_size == 32
+        assert os.filter_length == 9
+        assert os.fft_size == 64
+        assert os.dtype == "reference"
+
+    def test_rejects_empty_taps(self):
+        with pytest.raises(ValueError):
+            mpdsp.OverlapSaveConvolver(np.array([]), block_size=32)
+
+    def test_rejects_zero_block_size(self):
+        with pytest.raises(ValueError):
+            mpdsp.OverlapSaveConvolver(np.ones(5), block_size=0)
+
+    def test_process_block_wrong_size_raises(self):
+        os = mpdsp.OverlapSaveConvolver(np.ones(5), block_size=32)
+        with pytest.raises(ValueError):
+            os.process_block(np.zeros(16))
+
+    def test_matches_direct_convolution_after_startup(self):
+        # Overlap-save output for the first M-1 samples is the startup
+        # transient (aliased). After that, output matches direct convolution
+        # sample-for-sample. Compare only the post-startup region.
+        rng = np.random.default_rng(0x1234)
+        taps = rng.standard_normal(17)
+        block_size = 128
+        n_blocks = 4
+        sig = rng.standard_normal(n_blocks * block_size)
+
+        os = mpdsp.OverlapSaveConvolver(taps, block_size=block_size)
+        out_blocks = [
+            os.process_block(sig[k * block_size:(k + 1) * block_size])
+            for k in range(n_blocks)]
+        os_out = np.concatenate(out_blocks)
+
+        # Reference: linear convolution, take the first n_blocks*block_size
+        # samples aligned to the output timeline (OS drops the last M-1
+        # samples of the linear conv).
+        ref = _direct_convolve(taps, sig)[:n_blocks * block_size]
+
+        # Post-startup comparison (skip the first M-1 samples).
+        M_minus_1 = len(taps) - 1
+        np.testing.assert_allclose(os_out[M_minus_1:], ref[M_minus_1:],
+                                    atol=1e-9)
+
+    def test_different_block_sizes_agree(self):
+        # Overlap-save is a spectral (not sample-domain) trick — different
+        # block sizes must produce the same linear convolution result
+        # (modulo the startup transient).
+        rng = np.random.default_rng(999)
+        taps = rng.standard_normal(11)
+        sig = rng.standard_normal(512)
+
+        def run(block_size):
+            os = mpdsp.OverlapSaveConvolver(taps, block_size=block_size)
+            n_blocks = len(sig) // block_size
+            blocks = [os.process_block(sig[k * block_size:(k + 1) * block_size])
+                      for k in range(n_blocks)]
+            return np.concatenate(blocks)
+
+        out_64  = run(64)
+        out_128 = run(128)
+        skip = len(taps) - 1
+        # Trim to common tail length after startup.
+        common = min(len(out_64), len(out_128))
+        np.testing.assert_allclose(out_64[skip:common], out_128[skip:common],
+                                    atol=1e-9)
+
+    def test_reset_clears_history(self):
+        os = mpdsp.OverlapSaveConvolver(np.ones(5), block_size=16)
+        os.process_block(np.ones(16))
+        os.reset()
+        os2 = mpdsp.OverlapSaveConvolver(np.ones(5), block_size=16)
+        y1 = os.process_block(np.zeros(16))
+        y2 = os2.process_block(np.zeros(16))
+        np.testing.assert_allclose(y1, y2)
+
+
+class TestOverlapDtypeDispatch:
+    # Same known upstream fir_design NaN issue as RationalResampler (see
+    # mixed-precision-dsp#201): design at narrow cfloat precision can
+    # produce NaN taps. OA/OS take user-provided taps at Python-side double,
+    # then cast to CoeffScalar internally, so the design-time NaN doesn't
+    # apply. Still, filter-processing arithmetic under narrow types can
+    # accumulate error, so verify only shape / finiteness.
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_overlap_add_across_dtypes(self, dtype):
+        taps = np.ones(5) / 5.0
+        oa = mpdsp.OverlapAddConvolver(taps, block_size=32, dtype=dtype)
+        y = oa.process_block(np.ones(32))
+        assert y.shape == (32,)
+        assert np.all(np.isfinite(y))
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_overlap_save_across_dtypes(self, dtype):
+        taps = np.ones(5) / 5.0
+        os = mpdsp.OverlapSaveConvolver(taps, block_size=32, dtype=dtype)
+        y = os.process_block(np.ones(32))
+        assert y.shape == (32,)
+        assert np.all(np.isfinite(y))

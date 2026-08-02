@@ -25,6 +25,8 @@
 #include <sw/dsp/filter/filtfilt.hpp>
 #include <sw/dsp/filter/fir/fir_design.hpp>
 #include <sw/dsp/filter/fir/fir_filter.hpp>
+#include <sw/dsp/filter/fir/overlap.hpp>
+#include <sw/dsp/filter/fir/remez.hpp>
 #include <sw/dsp/filter/iir/bessel.hpp>
 #include <sw/dsp/filter/iir/butterworth.hpp>
 #include <sw/dsp/filter/iir/chebyshev1.hpp>
@@ -715,7 +717,217 @@ static PyIIRFilter make_from_rbj(SetupArgs... args) {
 	return filt;
 }
 
+// ---------------------------------------------------------------------------
+// Remez helpers. The band-type enum is a namespace-scope (not templated)
+// enum, so we can just pass it directly across the dispatch boundary.
+// ---------------------------------------------------------------------------
+
+static sw::dsp::RemezBandType parse_remez_type(const std::string& s) {
+	using T = sw::dsp::RemezBandType;
+	if (s == "bandpass")       return T::bandpass;
+	if (s == "differentiator") return T::differentiator;
+	if (s == "hilbert")        return T::hilbert;
+	throw std::invalid_argument(
+		"remez: unknown type '" + s + "' (expected 'bandpass', "
+		"'differentiator', or 'hilbert')");
+}
+
+// ---------------------------------------------------------------------------
+// OverlapAdd / OverlapSave impls. Both take a design-time tap vector and a
+// block_size; both stream block_size samples in -> block_size samples out
+// via FFT convolution. OverlapAdd additionally exposes flush() to retrieve
+// the trailing M-1 convolution tail after the final process_block().
+// ---------------------------------------------------------------------------
+
+struct IOverlapAddImpl {
+	virtual ~IOverlapAddImpl() = default;
+	virtual mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual mtl::vec::dense_vector<double> flush() = 0;
+	virtual void reset() = 0;
+	virtual std::size_t block_size()    const = 0;
+	virtual std::size_t fft_size()      const = 0;
+	virtual std::size_t filter_length() const = 0;
+};
+
+template <typename T>
+struct OverlapAddImpl : IOverlapAddImpl {
+	sw::dsp::OverlapAddConvolver<T, T, T> inner;
+
+	OverlapAddImpl(const std::vector<double>& taps, std::size_t block_size)
+	    : inner(cast_taps(taps), block_size) {}
+
+	mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto typed_out = inner.process_block(
+			std::span<const T>(typed_in.data(), typed_in.size()));
+		return to_double_dv(typed_out);
+	}
+
+	mtl::vec::dense_vector<double> flush() override {
+		return to_double_dv(inner.flush());
+	}
+
+	void reset()                       override { inner.reset(); }
+	std::size_t block_size()    const override { return inner.block_size(); }
+	std::size_t fft_size()      const override { return inner.fft_size(); }
+	std::size_t filter_length() const override { return inner.filter_length(); }
+
+private:
+	static mtl::vec::dense_vector<T>
+	cast_taps(const std::vector<double>& src) {
+		mtl::vec::dense_vector<T> out(src.size());
+		for (std::size_t i = 0; i < src.size(); ++i) out[i] = static_cast<T>(src[i]);
+		return out;
+	}
+	static mtl::vec::dense_vector<double>
+	to_double_dv(const mtl::vec::dense_vector<T>& src) {
+		mtl::vec::dense_vector<double> out(src.size());
+		for (std::size_t i = 0; i < src.size(); ++i)
+			out[i] = static_cast<double>(src[i]);
+		return out;
+	}
+};
+
+struct IOverlapSaveImpl {
+	virtual ~IOverlapSaveImpl() = default;
+	virtual mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual void reset() = 0;
+	virtual std::size_t block_size()    const = 0;
+	virtual std::size_t fft_size()      const = 0;
+	virtual std::size_t filter_length() const = 0;
+};
+
+template <typename T>
+struct OverlapSaveImpl : IOverlapSaveImpl {
+	sw::dsp::OverlapSaveConvolver<T, T, T> inner;
+
+	OverlapSaveImpl(const std::vector<double>& taps, std::size_t block_size)
+	    : inner(cast_taps(taps), block_size) {}
+
+	mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto typed_out = inner.process_block(
+			std::span<const T>(typed_in.data(), typed_in.size()));
+		return to_double_dv(typed_out);
+	}
+
+	void reset()                       override { inner.reset(); }
+	std::size_t block_size()    const override { return inner.block_size(); }
+	std::size_t fft_size()      const override { return inner.fft_size(); }
+	std::size_t filter_length() const override { return inner.filter_length(); }
+
+private:
+	static mtl::vec::dense_vector<T>
+	cast_taps(const std::vector<double>& src) {
+		mtl::vec::dense_vector<T> out(src.size());
+		for (std::size_t i = 0; i < src.size(); ++i) out[i] = static_cast<T>(src[i]);
+		return out;
+	}
+	static mtl::vec::dense_vector<double>
+	to_double_dv(const mtl::vec::dense_vector<T>& src) {
+		mtl::vec::dense_vector<double> out(src.size());
+		for (std::size_t i = 0; i < src.size(); ++i)
+			out[i] = static_cast<double>(src[i]);
+		return out;
+	}
+};
+
 } // namespace
+
+// PyOverlapAddConvolver / PyOverlapSaveConvolver: block-FFT convolution.
+class PyOverlapAddConvolver {
+public:
+	PyOverlapAddConvolver(np_f64_ro taps, std::size_t block_size,
+	                      const std::string& dtype)
+	    : dtype_(dtype) {
+		if (taps.shape(0) == 0) {
+			throw std::invalid_argument(
+				"OverlapAddConvolver: taps must not be empty");
+		}
+		if (block_size == 0) {
+			throw std::invalid_argument(
+				"OverlapAddConvolver: block_size must be > 0");
+		}
+		std::vector<double> tap_vec(taps.shape(0));
+		for (std::size_t i = 0; i < tap_vec.size(); ++i) tap_vec[i] = taps.data()[i];
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			OverlapAddImpl, IOverlapAddImpl>(
+			mpdsp::parse_config(dtype), "OverlapAddConvolver",
+			tap_vec, block_size);
+	}
+
+	np_f64 process_block(np_f64_ro signal) {
+		if (signal.shape(0) != impl_->block_size()) {
+			throw std::invalid_argument(
+				"OverlapAddConvolver.process_block: signal length must equal "
+				"block_size (" + std::to_string(impl_->block_size()) + ")");
+		}
+		return mpdsp::bindings::vec_to_numpy(
+			impl_->process_block(signal.data(), signal.shape(0)));
+	}
+
+	np_f64 flush() {
+		return mpdsp::bindings::vec_to_numpy(impl_->flush());
+	}
+
+	void reset()                       { impl_->reset(); }
+	std::size_t block_size()    const  { return impl_->block_size(); }
+	std::size_t fft_size()      const  { return impl_->fft_size(); }
+	std::size_t filter_length() const  { return impl_->filter_length(); }
+	const std::string& dtype()  const  { return dtype_; }
+
+private:
+	std::unique_ptr<IOverlapAddImpl> impl_;
+	std::string dtype_;
+};
+
+class PyOverlapSaveConvolver {
+public:
+	PyOverlapSaveConvolver(np_f64_ro taps, std::size_t block_size,
+	                       const std::string& dtype)
+	    : dtype_(dtype) {
+		if (taps.shape(0) == 0) {
+			throw std::invalid_argument(
+				"OverlapSaveConvolver: taps must not be empty");
+		}
+		if (block_size == 0) {
+			throw std::invalid_argument(
+				"OverlapSaveConvolver: block_size must be > 0");
+		}
+		std::vector<double> tap_vec(taps.shape(0));
+		for (std::size_t i = 0; i < tap_vec.size(); ++i) tap_vec[i] = taps.data()[i];
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			OverlapSaveImpl, IOverlapSaveImpl>(
+			mpdsp::parse_config(dtype), "OverlapSaveConvolver",
+			tap_vec, block_size);
+	}
+
+	np_f64 process_block(np_f64_ro signal) {
+		if (signal.shape(0) != impl_->block_size()) {
+			throw std::invalid_argument(
+				"OverlapSaveConvolver.process_block: signal length must equal "
+				"block_size (" + std::to_string(impl_->block_size()) + ")");
+		}
+		return mpdsp::bindings::vec_to_numpy(
+			impl_->process_block(signal.data(), signal.shape(0)));
+	}
+
+	void reset()                       { impl_->reset(); }
+	std::size_t block_size()    const  { return impl_->block_size(); }
+	std::size_t fft_size()      const  { return impl_->fft_size(); }
+	std::size_t filter_length() const  { return impl_->filter_length(); }
+	const std::string& dtype()  const  { return dtype_; }
+
+private:
+	std::unique_ptr<IOverlapSaveImpl> impl_;
+	std::string dtype_;
+};
 
 double PyIIRFilter::pole_displacement(const std::string& dtype) const {
 	auto config = mpdsp::parse_config(dtype);
@@ -1343,4 +1555,188 @@ void bind_filters(nb::module_& m) {
 		"3*(2*num_stages + 1) - 1, clamped to N-1) to suppress transient artifacts.\n"
 		"Analogous to scipy.signal.filtfilt. Coefficient precision stays double;\n"
 		"state and sample scalars follow the dtype key.");
+
+	// -----------------------------------------------------------------------
+	// Remez (Parks-McClellan) equiripple FIR design (Phase 5 / #111).
+	// Returns FIRFilter objects (matches the mpdsp fir_lowpass et al.
+	// convention); users can extract raw taps via .coefficients().
+	// -----------------------------------------------------------------------
+	m.def("remez_lowpass",
+		[](int num_taps, double sr, double passband_edge_hz,
+		   double stopband_edge_hz, double passband_weight,
+		   double stopband_weight, const std::string& coeff_dtype) {
+			const char* n = "remez_lowpass";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(passband_edge_hz, sr, n, "passband_edge_hz");
+			check_frequency(stopband_edge_hz, sr, n, "stopband_edge_hz");
+			if (!(stopband_edge_hz > passband_edge_hz)) {
+				throw std::invalid_argument(
+					"remez_lowpass: stopband_edge_hz must be > passband_edge_hz");
+			}
+			check_positive(passband_weight, n, "passband_weight");
+			check_positive(stopband_weight, n, "stopband_weight");
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			double pb_norm = passband_edge_hz / sr;
+			double sb_norm = stopband_edge_hz / sr;
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto taps = sw::dsp::design_fir_equiripple_lowpass<T>(
+					N, T(pb_norm), T(sb_norm),
+					T(passband_weight), T(stopband_weight));
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
+		}, nb::arg("num_taps"), nb::arg(A_SR),
+		   nb::arg("passband_edge_hz"), nb::arg("stopband_edge_hz"),
+		   nb::arg("passband_weight") = 1.0,
+		   nb::arg("stopband_weight") = 1.0,
+		   nb::arg("coeff_dtype") = "reference",
+		"Equiripple lowpass FIR via Parks-McClellan (Remez exchange). "
+		"passband_edge_hz and stopband_edge_hz define the transition band; "
+		"weights control the passband-vs-stopband trade-off (larger stopband "
+		"weight -> deeper stopband).");
+
+	m.def("remez_bandpass",
+		[](int num_taps, double sr, double stop1_hz, double pass1_hz,
+		   double pass2_hz, double stop2_hz,
+		   double stopband_weight, double passband_weight,
+		   const std::string& coeff_dtype) {
+			const char* n = "remez_bandpass";
+			check_num_taps(num_taps, n);
+			check_sample_rate(sr, n);
+			check_frequency(stop1_hz, sr, n, "stop1_hz");
+			check_frequency(pass1_hz, sr, n, "pass1_hz");
+			check_frequency(pass2_hz, sr, n, "pass2_hz");
+			check_frequency(stop2_hz, sr, n, "stop2_hz");
+			if (!(stop1_hz < pass1_hz && pass1_hz < pass2_hz && pass2_hz < stop2_hz)) {
+				throw std::invalid_argument(
+					"remez_bandpass: require stop1 < pass1 < pass2 < stop2");
+			}
+			check_positive(stopband_weight, n, "stopband_weight");
+			check_positive(passband_weight, n, "passband_weight");
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				auto taps = sw::dsp::design_fir_equiripple_bandpass<T>(
+					N, T(stop1_hz / sr), T(pass1_hz / sr),
+					T(pass2_hz / sr), T(stop2_hz / sr),
+					T(stopband_weight), T(passband_weight));
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
+		}, nb::arg("num_taps"), nb::arg(A_SR),
+		   nb::arg("stop1_hz"), nb::arg("pass1_hz"),
+		   nb::arg("pass2_hz"), nb::arg("stop2_hz"),
+		   nb::arg("stopband_weight") = 1.0,
+		   nb::arg("passband_weight") = 1.0,
+		   nb::arg("coeff_dtype") = "reference",
+		"Equiripple bandpass FIR via Parks-McClellan. Requires "
+		"stop1 < pass1 < pass2 < stop2, all in Hz. Symmetric stopband "
+		"weights on both sides.");
+
+	m.def("remez",
+		[](int num_taps, np_f64_ro bands, np_f64_ro desired,
+		   np_f64_ro weights, const std::string& type_str,
+		   int max_iterations, int grid_density,
+		   const std::string& coeff_dtype) {
+			const char* n = "remez";
+			check_num_taps(num_taps, n);
+			if (bands.shape(0) < 2 || (bands.shape(0) & 1) != 0) {
+				throw std::invalid_argument(
+					"remez: bands must have even number of elements (>= 2)");
+			}
+			if (desired.shape(0) != bands.shape(0)) {
+				throw std::invalid_argument(
+					"remez: desired must have same length as bands");
+			}
+			if (weights.shape(0) * 2 != bands.shape(0)) {
+				throw std::invalid_argument(
+					"remez: weights must have exactly bands/2 entries");
+			}
+			auto band_type = parse_remez_type(type_str);
+			std::size_t N = static_cast<std::size_t>(num_taps);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() -> PyFIRFilter {
+				std::vector<T> b(bands.shape(0));
+				std::vector<T> d(desired.shape(0));
+				std::vector<T> w(weights.shape(0));
+				for (std::size_t i = 0; i < b.size(); ++i) b[i] = T(bands.data()[i]);
+				for (std::size_t i = 0; i < d.size(); ++i) d[i] = T(desired.data()[i]);
+				for (std::size_t i = 0; i < w.size(); ++i) w[i] = T(weights.data()[i]);
+				auto taps = sw::dsp::remez<T>(N, b, d, w, band_type,
+				                              max_iterations, grid_density);
+				PyFIRFilter f;
+				f.taps = to_double_vec(taps);
+				return f;
+			});
+		}, nb::arg("num_taps"), nb::arg("bands"), nb::arg("desired"),
+		   nb::arg("weights"),
+		   nb::arg("type") = "bandpass",
+		   nb::arg("max_iterations") = 40,
+		   nb::arg("grid_density") = 16,
+		   nb::arg("coeff_dtype") = "reference",
+		"General Parks-McClellan equiripple FIR design. bands is a flat "
+		"list of band edges in normalized frequency [0, 0.5], length 2N "
+		"for N bands; desired has one value per band edge; weights has one "
+		"per band. type is 'bandpass' (default; symmetric taps), "
+		"'differentiator', or 'hilbert' (both antisymmetric).");
+
+	// -----------------------------------------------------------------------
+	// OverlapAdd / OverlapSave block-FFT convolvers (Phase 5 / #111).
+	// -----------------------------------------------------------------------
+	nb::class_<PyOverlapAddConvolver>(m, "OverlapAddConvolver",
+			"Block-based fast FIR convolution via the overlap-add method. "
+			"Feed exactly block_size samples per process_block() call; each "
+			"call returns block_size output samples. Call flush() once after "
+			"the final process_block() to retrieve the trailing M-1 "
+			"convolution tail (needed to recover the complete linear "
+			"convolution).\n\n"
+			"Complexity vs. a direct FIR: OA is O((L+M) log(L+M)) per L-sample "
+			"block, so it's faster than direct O(L*M) FIR when M is large.")
+		.def(nb::init<np_f64_ro, std::size_t, const std::string&>(),
+		     nb::arg("taps"), nb::arg("block_size"),
+		     nb::arg("dtype") = "reference",
+		     "Construct with a 1D tap array and block size (both > 0). "
+		     "Internal FFT size = next_pow2(block_size + len(taps) - 1).")
+		.def("process_block", &PyOverlapAddConvolver::process_block,
+		     nb::arg("signal"),
+		     "Process exactly block_size samples; return block_size samples.")
+		.def("flush", &PyOverlapAddConvolver::flush,
+		     "Emit the trailing M-1 convolution tail. Call once after the "
+		     "final process_block(); returns an empty array if no tail "
+		     "remains.")
+		.def("reset", &PyOverlapAddConvolver::reset,
+		     "Clear the internal tail state. Coefficients and sizes are "
+		     "preserved.")
+		.def_prop_ro("block_size",    &PyOverlapAddConvolver::block_size)
+		.def_prop_ro("fft_size",      &PyOverlapAddConvolver::fft_size)
+		.def_prop_ro("filter_length", &PyOverlapAddConvolver::filter_length)
+		.def_prop_ro("dtype",
+		     [](const PyOverlapAddConvolver& self) { return self.dtype(); });
+
+	nb::class_<PyOverlapSaveConvolver>(m, "OverlapSaveConvolver",
+			"Block-based fast FIR convolution via the overlap-save method. "
+			"Feed exactly block_size samples per process_block() call; each "
+			"call returns block_size output samples. No flush() needed — "
+			"overlap-save keeps its history in a running buffer and never "
+			"emits a tail past the last block.\n\n"
+			"The first M-1 output samples of the very first call are the "
+			"start-up transient (correctly handled via zero-initial history).")
+		.def(nb::init<np_f64_ro, std::size_t, const std::string&>(),
+		     nb::arg("taps"), nb::arg("block_size"),
+		     nb::arg("dtype") = "reference",
+		     "Same argument shape as OverlapAddConvolver.")
+		.def("process_block", &PyOverlapSaveConvolver::process_block,
+		     nb::arg("signal"),
+		     "Process exactly block_size samples; return block_size samples.")
+		.def("reset", &PyOverlapSaveConvolver::reset,
+		     "Clear the internal history. Coefficients and sizes are preserved.")
+		.def_prop_ro("block_size",    &PyOverlapSaveConvolver::block_size)
+		.def_prop_ro("fft_size",      &PyOverlapSaveConvolver::fft_size)
+		.def_prop_ro("filter_length", &PyOverlapSaveConvolver::filter_length)
+		.def_prop_ro("dtype",
+		     [](const PyOverlapSaveConvolver& self) { return self.dtype(); });
 }

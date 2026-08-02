@@ -72,6 +72,10 @@ try:
         FIRFilter, fir_filter,
         fir_lowpass, fir_highpass,
         fir_bandpass, fir_bandstop,
+        # Remez (Parks-McClellan) equiripple FIR design (Phase 5 / #111)
+        remez, remez_lowpass, remez_bandpass,
+        # Block-FFT convolvers (Phase 5 / #111)
+        OverlapAddConvolver, OverlapSaveConvolver,
         # Zero-phase forward-backward IIR (scipy.signal.filtfilt analogue)
         filtfilt,
         # Conditioning
