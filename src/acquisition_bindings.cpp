@@ -29,6 +29,7 @@
 #include <sw/dsp/acquisition/cic.hpp>
 #include <sw/dsp/acquisition/halfband.hpp>
 #include <sw/dsp/acquisition/polyphase_decimator.hpp>
+#include <sw/dsp/analysis/acquisition_precision.hpp>
 #include <sw/dsp/filter/fir/polyphase.hpp>
 
 #include "_binding_helpers.hpp"
@@ -95,6 +96,8 @@ struct INCOImpl {
 	virtual nb::tuple generate_block(std::size_t length) = 0;
 	virtual np_f64 generate_block_real(std::size_t length) = 0;
 	virtual nb::tuple mix_down(np_f64_ro input) = 0;
+	virtual double measure_sfdr_db(std::size_t fft_size,
+	                                std::size_t guard_bins) = 0;
 	virtual void reset() = 0;
 };
 
@@ -138,6 +141,11 @@ public:
 		auto out = nco_.mix_down(in);
 		return complex_split_to_numpy(out);
 	}
+	double measure_sfdr_db(std::size_t fft_size,
+	                       std::size_t guard_bins) override {
+		return sw::dsp::analysis::measure_nco_sfdr_db(
+			nco_, fft_size, guard_bins);
+	}
 	void reset() override { nco_.reset(); }
 
 private:
@@ -156,6 +164,8 @@ struct ICICDecimatorImpl {
 	virtual int decimation_ratio() const = 0;
 	virtual int num_stages() const = 0;
 	virtual int differential_delay() const = 0;
+	virtual sw::dsp::analysis::CICBitGrowthReport
+	check_bit_growth(np_f64_ro input) = 0;
 	virtual void reset() = 0;
 };
 
@@ -181,6 +191,17 @@ public:
 	int decimation_ratio() const override { return cic_.decimation_ratio(); }
 	int num_stages() const override { return cic_.num_stages(); }
 	int differential_delay() const override { return cic_.differential_delay(); }
+	sw::dsp::analysis::CICBitGrowthReport
+	check_bit_growth(np_f64_ro input) override {
+		// Cast the input to the CIC's sample scalar type, then hand it to
+		// the analysis helper as a span. The upstream free function
+		// mutates the CIC (pushes samples through it) and records the
+		// output peak — same side-effect the caller sees from a normal
+		// process_block() run, but with per-sample .output() sampling.
+		auto typed_in = numpy_to_vec_fresh<T>(input);
+		return sw::dsp::analysis::check_cic_bit_growth(
+			cic_, std::span<const T>(typed_in.data(), typed_in.size()));
+	}
 	void reset() override { cic_.reset(); }
 
 private:
@@ -373,6 +394,9 @@ public:
 	nb::tuple generate_block(std::size_t n)  { return impl_->generate_block(n); }
 	np_f64 generate_block_real(std::size_t n){ return impl_->generate_block_real(n); }
 	nb::tuple mix_down(np_f64_ro input)      { return impl_->mix_down(input); }
+	double measure_sfdr_db(std::size_t fft_size, std::size_t guard_bins) {
+		return impl_->measure_sfdr_db(fft_size, guard_bins);
+	}
 	void reset()                             { impl_->reset(); }
 
 private:
@@ -395,6 +419,8 @@ public:
 	int decimation_ratio() const            { return impl_->decimation_ratio(); }
 	int num_stages() const                  { return impl_->num_stages(); }
 	int differential_delay() const          { return impl_->differential_delay(); }
+	sw::dsp::analysis::CICBitGrowthReport
+	check_bit_growth(np_f64_ro input)       { return impl_->check_bit_growth(input); }
 	void reset()                            { impl_->reset(); }
 
 private:
@@ -562,6 +588,14 @@ void bind_acquisition(nb::module_& m) {
 		.def("mix_down", &PyNCO::mix_down, nb::arg("input"),
 		     "Multiply real input by conj(NCO output). Returns (real, imag) tuple "
 		     "of the resulting complex baseband signal.")
+		.def("measure_sfdr_db", &PyNCO::measure_sfdr_db,
+		     nb::arg("fft_size"), nb::arg("guard_bins") = static_cast<std::size_t>(2),
+		     "Measure spurious-free dynamic range: generate fft_size samples, "
+		     "FFT them (zero-padded to next power of 2), find the largest "
+		     "spur outside `guard_bins` around the tuned peak, and return "
+		     "20*log10(peak / spur) in dB. **Mutates the NCO's phase** — "
+		     "call reset() before/after for a reproducible measurement. "
+		     "Returns +300 dB for a spur-free signal (bit-exact NCO).")
 		.def("reset", &PyNCO::reset);
 
 	// ---- CICDecimator --------------------------------------------------
@@ -582,6 +616,13 @@ void bind_acquisition(nb::module_& m) {
 		.def_prop_ro("decimation_ratio", &PyCICDecimator::decimation_ratio)
 		.def_prop_ro("num_stages", &PyCICDecimator::num_stages)
 		.def_prop_ro("differential_delay", &PyCICDecimator::differential_delay)
+		.def("check_bit_growth", &PyCICDecimator::check_bit_growth,
+		     nb::arg("input"),
+		     "Run `input` through the CIC and record the peak absolute "
+		     "output. Returns a CICBitGrowthReport comparing observed vs. "
+		     "theoretical (Hogenauer M*ceil(log2(R*D))) bit growth. "
+		     "**Mutates the CIC state** (same as calling process_block); "
+		     "reset() before/after if you need a clean run.")
 		.def("reset", &PyCICDecimator::reset);
 
 	// ---- CICInterpolator -----------------------------------------------

@@ -274,3 +274,223 @@ class TestCascadeConditionNumber:
         default = mpdsp.cascade_condition_number(filt)
         explicit_512 = mpdsp.cascade_condition_number(filt, num_freqs=512)
         assert default == pytest.approx(explicit_512, rel=0.0, abs=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Acquisition-pipeline precision primitives (Phase 5 / #112).
+# ---------------------------------------------------------------------------
+
+
+class TestEnobFromSnrDb:
+    def test_known_values(self):
+        # ENOB = (SNR - 1.76) / 6.02
+        assert mpdsp.enob_from_snr_db(98.09) == pytest.approx(16.0, abs=0.01)
+        assert mpdsp.enob_from_snr_db(73.99) == pytest.approx(12.0, abs=0.01)
+        # Full-scale sine: 6.02*B + 1.76 SNR -> B ENOB.
+        for bits in [8, 12, 16, 24]:
+            snr = 6.02 * bits + 1.76
+            assert mpdsp.enob_from_snr_db(snr) == pytest.approx(bits, abs=0.01)
+
+
+class TestSnrDb:
+    def test_bit_identical_returns_infinite(self):
+        sig = np.sin(2 * np.pi * np.arange(1024) / 128.0)
+        # Same signal against itself — no noise, +300 dB.
+        assert mpdsp.snr_db(sig, sig) == pytest.approx(300.0)
+
+    def test_scaled_noise_reduces_snr(self):
+        rng = np.random.default_rng(42)
+        sig = np.sin(2 * np.pi * np.arange(4096) / 128.0)
+        noise = rng.standard_normal(4096)
+        # Test SNR scaling: -20 dB scale factor on noise -> +20 dB SNR gain
+        snr_a = mpdsp.snr_db(sig, sig + 0.1 * noise)
+        snr_b = mpdsp.snr_db(sig, sig + 0.01 * noise)
+        assert snr_b - snr_a == pytest.approx(20.0, abs=1.0)
+
+    def test_rejects_length_mismatch(self):
+        with pytest.raises(ValueError):
+            mpdsp.snr_db(np.zeros(100), np.zeros(50))
+
+    def test_empty_arrays_return_zero(self):
+        # Upstream returns 0 for empty inputs.
+        assert mpdsp.snr_db(np.array([]), np.array([])) == 0.0
+
+
+class TestCICBitGrowthReport:
+    def test_default_construction(self):
+        r = mpdsp.CICBitGrowthReport()
+        assert r.theoretical_bits == 0
+        assert r.observed_bits == 0
+        assert r.max_abs_output == 0.0
+        # `within_theory` defaults to false (bool value-initialization); it
+        # only becomes meaningful after check_bit_growth() populates the
+        # report from real data.
+        assert r.within_theory is False
+
+    def test_field_round_trip(self):
+        r = mpdsp.CICBitGrowthReport()
+        r.theoretical_bits = 12
+        r.observed_bits = 10
+        r.max_abs_output = 1024.0
+        r.headroom_bits = 2.0
+        r.within_theory = True
+        assert r.theoretical_bits == 12
+        assert r.observed_bits == 10
+        assert r.max_abs_output == 1024.0
+        assert r.headroom_bits == 2.0
+        assert r.within_theory is True
+
+
+class TestCICDecimatorCheckBitGrowth:
+    def test_returns_report_within_theory_for_scaled_input(self):
+        # 3-stage R=8 D=1 CIC. Theoretical growth = 3 * ceil(log2(8)) = 9 bits.
+        # Feed a modest-amplitude signal; observed should be well within.
+        cic = mpdsp.CICDecimator(decimation_ratio=8, num_stages=3,
+                                  differential_delay=1)
+        rng = np.random.default_rng(0)
+        input_signal = rng.standard_normal(2048) * 0.1
+        report = cic.check_bit_growth(input_signal)
+        assert isinstance(report, mpdsp.CICBitGrowthReport)
+        assert report.theoretical_bits == 9  # 3 * ceil(log2(8)) = 3 * 3
+        assert report.within_theory is True
+        assert report.max_abs_output > 0.0
+
+    def test_headroom_positive_for_small_signal(self):
+        cic = mpdsp.CICDecimator(decimation_ratio=8, num_stages=3,
+                                  differential_delay=1)
+        # Very small input: plenty of headroom.
+        input_signal = np.ones(1024) * 0.001
+        report = cic.check_bit_growth(input_signal)
+        assert report.headroom_bits > 0
+
+    def test_check_bit_growth_mutates_cic_state(self):
+        # Documented behaviour: check_bit_growth pushes samples through
+        # the CIC and mutates its state. After it runs, the internal
+        # accumulator is not at its initial value.
+        cic = mpdsp.CICDecimator(decimation_ratio=4, num_stages=2)
+        input_signal = np.ones(64)
+        cic.check_bit_growth(input_signal)
+        # The output after mutation should reflect the pushed input;
+        # exact value depends on the transient, so we just check it's
+        # nonzero (integrator has accumulated).
+        assert cic.output != 0.0
+
+
+class TestNCOMeasureSfdrDb:
+    # For a meaningful SFDR measurement, the tuned frequency must land
+    # on an FFT bin — otherwise spectral leakage from off-bin energy
+    # dominates whatever spurs the phase accumulator produces. Use
+    # frequency = sample_rate * k / fft_size for integer k.
+    ON_BIN_FS   = 4096.0
+    ON_BIN_N    = 4096
+    ON_BIN_FREQ = 100.0    # bin 100 exactly at fs = fft_size
+
+    def test_pure_double_nco_has_high_sfdr(self):
+        # On-bin tuning: no leakage, so SFDR reflects the phase-accumulator
+        # quality alone. Double-precision NCO should be very clean.
+        nco = mpdsp.NCO(frequency=self.ON_BIN_FREQ,
+                        sample_rate=self.ON_BIN_FS, dtype="reference")
+        sfdr = nco.measure_sfdr_db(fft_size=self.ON_BIN_N)
+        assert sfdr > 100.0
+
+    def test_narrow_nco_has_lower_sfdr_than_double(self):
+        # Same on-bin tuning — narrow dtype's phase-accumulator spurs
+        # should degrade SFDR relative to double.
+        nco_ref = mpdsp.NCO(self.ON_BIN_FREQ, self.ON_BIN_FS,
+                            dtype="reference")
+        nco_narrow = mpdsp.NCO(self.ON_BIN_FREQ, self.ON_BIN_FS,
+                               dtype="posit_8_2")
+        sfdr_ref    = nco_ref.measure_sfdr_db(fft_size=self.ON_BIN_N)
+        sfdr_narrow = nco_narrow.measure_sfdr_db(fft_size=self.ON_BIN_N)
+        assert sfdr_ref > sfdr_narrow
+
+    def test_measure_sfdr_mutates_nco_phase(self):
+        nco = mpdsp.NCO(self.ON_BIN_FREQ, self.ON_BIN_FS)
+        phase_before = nco.phase
+        # Odd fft_size so 1025 * (100/4096) = 25.024… wraps to a nonzero
+        # phase — avoids the exact-integer-cycles wraparound that would
+        # land back at 0 (e.g. 1024 * 100/4096 = 25.0 exactly).
+        nco.measure_sfdr_db(fft_size=1025)
+        assert nco.phase != phase_before
+
+    def test_rejects_zero_fft_size(self):
+        nco = mpdsp.NCO(self.ON_BIN_FREQ, self.ON_BIN_FS)
+        with pytest.raises((ValueError, RuntimeError)):
+            nco.measure_sfdr_db(fft_size=0)
+
+
+class TestAcquisitionPrecisionRow:
+    def test_default_construction_matches_schema(self):
+        row = mpdsp.AcquisitionPrecisionRow()
+        assert row.pipeline == ""
+        assert row.total_bits == 0
+        assert row.output_snr_db == 0.0
+        assert row.nco_sfdr_db == -1.0   # N/A sentinel
+        assert row.cic_overflow_margin_bits == -1.0
+
+    def test_field_round_trip(self):
+        row = mpdsp.AcquisitionPrecisionRow()
+        row.pipeline = "ddc"
+        row.config_name = "posit_full"
+        row.coeff_type = "posit<32,2>"
+        row.state_type = "posit<32,2>"
+        row.sample_type = "posit<16,1>"
+        row.total_bits = 80
+        row.output_snr_db = 92.5
+        row.output_enob = 15.06
+        row.nco_sfdr_db = 88.3
+        row.cic_overflow_margin_bits = 2.4
+        assert row.pipeline == "ddc"
+        assert row.total_bits == 80
+        assert row.output_enob == pytest.approx(15.06)
+
+
+class TestWriteAcquisitionCsv:
+    def test_writes_header_and_rows(self, tmp_path):
+        rows = []
+        r1 = mpdsp.AcquisitionPrecisionRow()
+        r1.pipeline = "nco"
+        r1.config_name = "double"
+        r1.coeff_type = "double"
+        r1.state_type = "double"
+        r1.sample_type = "double"
+        r1.total_bits = 192
+        r1.output_snr_db = 300.0
+        r1.output_enob = 49.55
+        r1.nco_sfdr_db = 250.0
+        rows.append(r1)
+
+        r2 = mpdsp.AcquisitionPrecisionRow()
+        r2.pipeline = "nco"
+        r2.config_name = "posit_full"
+        r2.coeff_type = "posit<32,2>"
+        r2.state_type = "posit<32,2>"
+        r2.sample_type = "posit<32,2>"
+        r2.total_bits = 96
+        r2.output_snr_db = 145.2
+        r2.output_enob = 23.83
+        r2.nco_sfdr_db = 130.0
+        rows.append(r2)
+
+        out_path = str(tmp_path / "sweep.csv")
+        mpdsp.write_acquisition_csv(out_path, rows)
+
+        with open(out_path) as fh:
+            content = fh.read()
+        # Header line
+        assert content.split("\n")[0] == (
+            "pipeline,config_name,coeff_type,state_type,sample_type,"
+            "total_bits,output_snr_db,output_enob,nco_sfdr_db,"
+            "cic_overflow_margin_bits")
+        # Both rows appear
+        assert "nco,double,double,double,double,192" in content
+        assert "\"posit<32,2>\"" in content   # csv_quote around embedded commas
+
+    def test_empty_row_list_writes_header_only(self, tmp_path):
+        out_path = str(tmp_path / "empty.csv")
+        mpdsp.write_acquisition_csv(out_path, [])
+        with open(out_path) as fh:
+            content = fh.read()
+        # Just the header + trailing newline; no data rows.
+        assert content.count("\n") == 1
+        assert content.startswith("pipeline,")
