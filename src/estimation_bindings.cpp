@@ -14,6 +14,9 @@
 #include <sw/dsp/estimation/kalman.hpp>
 #include <sw/dsp/estimation/lms.hpp>
 #include <sw/dsp/estimation/rls.hpp>
+#include <sw/dsp/estimation/ukf.hpp>
+
+#include <nanobind/stl/optional.h>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -438,6 +441,193 @@ private:
 };
 
 // ===========================================================================
+// UnscentedKalmanFilter (UKF)
+//
+// Nonlinear Kalman via sigma-point propagation — no Jacobians. Python
+// users supply TWO callbacks (f, h). Reuses the callback_result_to_vec<T>
+// helper from the EKF block above.
+//
+// Sigma-point matrix square root uses mtl::ldlt_factor, which requires
+// MTL5 v5.3.0+ — the CMake floor was bumped to v5.7.0 as a Phase 4
+// precondition (commit f450cf5).
+//
+// alpha/beta/kappa come across the Python boundary as `double` (and
+// std::optional<double> for kappa's None-means-Julier-default); each
+// Impl<T>::ctor casts them to T before handing to sw::dsp::UKF. Same
+// technique used for SweptLO's is_log across type-erasure.
+// ===========================================================================
+
+namespace {
+
+struct IUKFImpl {
+	virtual ~IUKFImpl() = default;
+
+	virtual std::size_t state_dim() const = 0;
+	virtual std::size_t meas_dim()  const = 0;
+
+	virtual np_f64_2d get_Q() const = 0;
+	virtual np_f64_2d get_R() const = 0;
+	virtual np_f64_2d get_P() const = 0;
+	virtual np_f64    get_state() const = 0;
+
+	virtual void set_Q(np_f64_2d_ro a) = 0;
+	virtual void set_R(np_f64_2d_ro a) = 0;
+	virtual void set_P(np_f64_2d_ro a) = 0;
+	virtual void set_state(np_f64_ro v) = 0;
+
+	virtual void set_state_function(nb::callable f) = 0;
+	virtual void set_observation_function(nb::callable h) = 0;
+	virtual bool state_func_set() const = 0;
+	virtual bool obs_func_set()   const = 0;
+
+	virtual void predict() = 0;
+	virtual void update(np_f64_ro z) = 0;
+};
+
+template <typename T>
+struct UKFImpl : IUKFImpl {
+	sw::dsp::UnscentedKalmanFilter<T> inner;
+	bool state_func_set_ = false;
+	bool obs_func_set_   = false;
+
+	UKFImpl(std::size_t s, std::size_t m,
+	        double alpha, double beta, std::optional<double> kappa)
+	    : inner(s, m, static_cast<T>(alpha), static_cast<T>(beta),
+	            kappa.has_value()
+	                ? std::optional<T>{static_cast<T>(*kappa)}
+	                : std::optional<T>{std::nullopt}) {}
+
+	std::size_t state_dim() const override { return inner.state_dim(); }
+	std::size_t meas_dim()  const override { return inner.meas_dim();  }
+
+	np_f64_2d get_Q() const override { return mat_to_numpy(inner.Q()); }
+	np_f64_2d get_R() const override { return mat_to_numpy(inner.R()); }
+	np_f64_2d get_P() const override { return mat_to_numpy(inner.P()); }
+	np_f64    get_state() const override { return vec_to_numpy(inner.state()); }
+
+	void set_Q(np_f64_2d_ro a) override { numpy_to_mat(a, inner.Q(), "Q"); }
+	void set_R(np_f64_2d_ro a) override { numpy_to_mat(a, inner.R(), "R"); }
+	void set_P(np_f64_2d_ro a) override { numpy_to_mat(a, inner.P(), "P"); }
+	void set_state(np_f64_ro v) override { numpy_to_vec(v, inner.state(), "state"); }
+
+	void set_state_function(nb::callable f) override {
+		const std::size_t sd = inner.state_dim();
+		inner.set_state_function(
+			[f, sd](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::vec::dense_vector<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = f(x_arr);
+				return callback_result_to_vec<T>(result, sd,
+				    "UnscentedKalmanFilter state function f(x)");
+			});
+		state_func_set_ = true;
+	}
+
+	void set_observation_function(nb::callable h) override {
+		const std::size_t md = inner.meas_dim();
+		inner.set_observation_function(
+			[h, md](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::vec::dense_vector<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = h(x_arr);
+				return callback_result_to_vec<T>(result, md,
+				    "UnscentedKalmanFilter observation function h(x)");
+			});
+		obs_func_set_ = true;
+	}
+
+	bool state_func_set() const override { return state_func_set_; }
+	bool obs_func_set()   const override { return obs_func_set_;   }
+
+	void predict() override { inner.predict(); }
+
+	void update(np_f64_ro z) override {
+		mtl::vec::dense_vector<T> zv(inner.meas_dim());
+		numpy_to_vec(z, zv, "z");
+		inner.update(zv);
+	}
+};
+
+static std::unique_ptr<IUKFImpl>
+make_ukf_impl(mpdsp::ArithConfig config,
+              std::size_t state_dim, std::size_t meas_dim,
+              double alpha, double beta, std::optional<double> kappa) {
+	return make_impl_for_dtype<UKFImpl, IUKFImpl>(
+		config, "UnscentedKalmanFilter",
+		state_dim, meas_dim, alpha, beta, kappa);
+}
+
+} // namespace
+
+class PyUnscentedKalmanFilter {
+public:
+	PyUnscentedKalmanFilter(std::size_t state_dim, std::size_t meas_dim,
+	                        double alpha, double beta,
+	                        std::optional<double> kappa,
+	                        const std::string& dtype) {
+		if (state_dim == 0)
+			throw std::invalid_argument(
+				"UnscentedKalmanFilter: state_dim must be > 0");
+		if (meas_dim == 0)
+			throw std::invalid_argument(
+				"UnscentedKalmanFilter: meas_dim must be > 0");
+		if (!(alpha > 0.0 && alpha <= 1.0))
+			throw std::invalid_argument(
+				"UnscentedKalmanFilter: alpha must be in (0, 1] (got "
+				+ std::to_string(alpha) + ")");
+		impl_ = make_ukf_impl(mpdsp::parse_config(dtype),
+		                       state_dim, meas_dim, alpha, beta, kappa);
+		dtype_ = dtype;
+	}
+
+	std::size_t state_dim() const { return impl_->state_dim(); }
+	std::size_t meas_dim()  const { return impl_->meas_dim(); }
+
+	np_f64_2d get_Q() const { return impl_->get_Q(); }
+	np_f64_2d get_R() const { return impl_->get_R(); }
+	np_f64_2d get_P() const { return impl_->get_P(); }
+	np_f64    get_state() const { return impl_->get_state(); }
+
+	void set_Q(np_f64_2d_ro a) { impl_->set_Q(a); }
+	void set_R(np_f64_2d_ro a) { impl_->set_R(a); }
+	void set_P(np_f64_2d_ro a) { impl_->set_P(a); }
+	void set_state(np_f64_ro v) { impl_->set_state(v); }
+
+	void set_state_function(nb::callable f) { impl_->set_state_function(f); }
+	void set_observation_function(nb::callable h) {
+		impl_->set_observation_function(h);
+	}
+
+	void predict() {
+		if (!impl_->state_func_set()) {
+			throw std::runtime_error(
+				"UnscentedKalmanFilter.predict: state function not set "
+				"— call set_state_function(f) first");
+		}
+		impl_->predict();
+	}
+
+	void update(np_f64_ro z) {
+		if (!impl_->obs_func_set()) {
+			throw std::runtime_error(
+				"UnscentedKalmanFilter.update: observation function not set "
+				"— call set_observation_function(h) first");
+		}
+		if (z.shape(0) != meas_dim()) {
+			throw std::invalid_argument(
+				"UnscentedKalmanFilter.update(z): z must have length meas_dim");
+		}
+		impl_->update(z);
+	}
+
+	const std::string& dtype() const { return dtype_; }
+
+private:
+	std::unique_ptr<IUKFImpl> impl_;
+	std::string dtype_;
+};
+
+// ===========================================================================
 // Adaptive filters (LMS / NLMS / RLS)
 //
 // All three share the same Python-visible shape:
@@ -831,6 +1021,72 @@ void bind_estimation(nb::module_& m) {
 		     "Apply a measurement of length meas_dim. Raises if the "
 		     "observation function pair hasn't been set.")
 		.def_prop_ro("dtype", &PyExtendedKalmanFilter::dtype,
+		             "Arithmetic configuration selected at construction.");
+
+	// -----------------------------------------------------------------------
+	// UnscentedKalmanFilter — nonlinear Kalman via sigma-point sampling.
+	// -----------------------------------------------------------------------
+	nb::class_<PyUnscentedKalmanFilter>(m, "UnscentedKalmanFilter",
+			"Nonlinear Kalman filter that propagates a set of 2n+1 sigma "
+			"points through the state-transition f(x) and observation h(x) "
+			"functions, then reconstructs the predicted mean and covariance "
+			"from the propagated points. Unlike the EKF, no Jacobians are "
+			"required — users supply only two callbacks.\n\n"
+			"Sigma-point scaling follows the Julier/Merwe parameterization "
+			"(alpha, beta, kappa). Defaults (alpha=0.5, beta=2, kappa=None) "
+			"match the Wan & van der Merwe 2001 recommendations for "
+			"moderate nonlinearity; kappa=None uses the Julier default "
+			"3 - state_dim.\n\n"
+			"Matrix square root for sigma-point generation uses LDL^T "
+			"decomposition rather than Cholesky (LL^T), giving better "
+			"numerical stability under mixed-precision arithmetic where "
+			"the covariance can lose positive-definiteness after "
+			"informative observations.")
+		.def(nb::init<std::size_t, std::size_t,
+		              double, double, std::optional<double>,
+		              const std::string&>(),
+		     nb::arg("state_dim"), nb::arg("meas_dim"),
+		     nb::arg("alpha") = 0.5,
+		     nb::arg("beta")  = 2.0,
+		     nb::arg("kappa") = nb::none(),
+		     nb::arg("dtype") = "reference",
+		     "Construct a UKF. Both dimensions must be > 0; alpha must be "
+		     "in (0, 1]. Pass kappa=None (default) for the Julier "
+		     "convention (3 - state_dim); pass 0.0 explicitly for the "
+		     "original non-scaled unscented transform.")
+		.def("set_state_function",
+		     &PyUnscentedKalmanFilter::set_state_function, nb::arg("f"),
+		     "Register the nonlinear state transition f(x) -> "
+		     "vector[state_dim]. Must be a Python callable returning a "
+		     "float64 ndarray. No Jacobian needed.")
+		.def("set_observation_function",
+		     &PyUnscentedKalmanFilter::set_observation_function, nb::arg("h"),
+		     "Register the nonlinear observation h(x) -> vector[meas_dim].")
+		.def_prop_ro("state_dim", &PyUnscentedKalmanFilter::state_dim)
+		.def_prop_ro("meas_dim",  &PyUnscentedKalmanFilter::meas_dim)
+		.def_prop_rw("Q", &PyUnscentedKalmanFilter::get_Q,
+		                  &PyUnscentedKalmanFilter::set_Q,
+		             nb::rv_policy::take_ownership,
+		             "Process-noise covariance (state_dim x state_dim).")
+		.def_prop_rw("R", &PyUnscentedKalmanFilter::get_R,
+		                  &PyUnscentedKalmanFilter::set_R,
+		             nb::rv_policy::take_ownership,
+		             "Measurement-noise covariance (meas_dim x meas_dim).")
+		.def_prop_rw("P", &PyUnscentedKalmanFilter::get_P,
+		                  &PyUnscentedKalmanFilter::set_P,
+		             nb::rv_policy::take_ownership,
+		             "State-estimation covariance (state_dim x state_dim).")
+		.def_prop_rw("state", &PyUnscentedKalmanFilter::get_state,
+		                      &PyUnscentedKalmanFilter::set_state,
+		             nb::rv_policy::take_ownership,
+		             "Current state estimate (length state_dim).")
+		.def("predict", &PyUnscentedKalmanFilter::predict,
+		     "Sigma-point predict step. Raises if the state function "
+		     "hasn't been set.")
+		.def("update", &PyUnscentedKalmanFilter::update, nb::arg("z"),
+		     "Sigma-point update step with measurement of length meas_dim. "
+		     "Raises if the observation function hasn't been set.")
+		.def_prop_ro("dtype", &PyUnscentedKalmanFilter::dtype,
 		             "Arithmetic configuration selected at construction.");
 
 	// Shared docstring fragment for the three adaptive filters.

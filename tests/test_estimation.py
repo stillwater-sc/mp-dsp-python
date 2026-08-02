@@ -830,3 +830,193 @@ class TestExtendedKalmanFilterDtypeDispatch:
         s = ekf.state
         assert s.shape == (2,)
         assert np.all(np.isfinite(s))
+
+
+# ---------------------------------------------------------------------------
+# UnscentedKalmanFilter (Phase 4 / #109) — nonlinear Kalman via sigma points.
+# ---------------------------------------------------------------------------
+
+
+class TestUnscentedKalmanFilterConstruction:
+    def test_getters_reflect_construction(self):
+        ukf = mpdsp.UnscentedKalmanFilter(state_dim=3, meas_dim=2)
+        assert ukf.state_dim == 3
+        assert ukf.meas_dim == 2
+        assert ukf.dtype == "reference"
+
+    def test_default_matrices_are_identity(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 2)
+        np.testing.assert_allclose(ukf.Q, np.eye(2))
+        np.testing.assert_allclose(ukf.R, np.eye(2))
+        np.testing.assert_allclose(ukf.P, np.eye(2))
+        np.testing.assert_allclose(ukf.state, np.zeros(2))
+
+    def test_matrix_round_trip(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1)
+        q = np.array([[0.1, 0.0], [0.0, 0.2]])
+        ukf.Q = q
+        np.testing.assert_allclose(ukf.Q, q)
+        s = np.array([1.5, 2.5])
+        ukf.state = s
+        np.testing.assert_allclose(ukf.state, s)
+
+    def test_kappa_default_is_julier(self):
+        # Nothing observable directly, but constructing with kappa=None
+        # must succeed and give a working filter.
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1, kappa=None)
+        # Sanity: can construct and access
+        assert ukf.state_dim == 2
+
+    def test_kappa_explicit_zero(self):
+        # The original non-scaled unscented transform: kappa=0 explicitly.
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1, kappa=0.0)
+        assert ukf.state_dim == 2
+
+    def test_rejects_zero_state_dim(self):
+        with pytest.raises(ValueError):
+            mpdsp.UnscentedKalmanFilter(0, 1)
+
+    def test_rejects_zero_meas_dim(self):
+        with pytest.raises(ValueError):
+            mpdsp.UnscentedKalmanFilter(1, 0)
+
+    def test_rejects_alpha_out_of_range(self):
+        with pytest.raises(ValueError):
+            mpdsp.UnscentedKalmanFilter(2, 1, alpha=0.0)
+        with pytest.raises(ValueError):
+            mpdsp.UnscentedKalmanFilter(2, 1, alpha=1.5)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.UnscentedKalmanFilter(2, 1, dtype="not_a_dtype")
+
+
+class TestUnscentedKalmanFilterCallbackGuards:
+    def test_predict_before_callback_raises(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1)
+        with pytest.raises(RuntimeError):
+            ukf.predict()
+
+    def test_update_before_callback_raises(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1)
+        ukf.set_state_function(lambda x: x)
+        # Only state func set — update should still raise for obs func.
+        with pytest.raises(RuntimeError):
+            ukf.update(np.array([1.0]))
+
+    def test_update_wrong_measurement_size_raises(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 3)
+        ukf.set_state_function(lambda x: x)
+        ukf.set_observation_function(lambda x: np.zeros(3))
+        with pytest.raises(ValueError):
+            ukf.update(np.array([1.0, 2.0]))
+
+    def test_callback_wrong_return_length_raises(self):
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1)
+        ukf.set_state_function(lambda x: np.zeros(5))  # wrong length
+        with pytest.raises(RuntimeError):
+            ukf.predict()
+
+
+class TestUnscentedKalmanFilterLinearComparable:
+    """For linear problems, the UKF should give results close to a plain
+    KalmanFilter (exact within numerical noise of the sigma-point weighting)."""
+
+    def test_linear_case_tracks_kalman(self):
+        # Same constant-velocity 2D tracker as the EKF linear test.
+        dt = 1.0
+        A = np.array([[1.0, dt], [0.0, 1.0]])
+        H = np.array([[1.0, 0.0]])
+        Q = 0.01 * np.eye(2)
+        R = 0.1 * np.eye(1)
+
+        kf = mpdsp.KalmanFilter(state_dim=2, meas_dim=1)
+        kf.F, kf.H, kf.Q, kf.R = A, H, Q, R
+        kf.state = np.array([0.0, 0.5])
+
+        ukf = mpdsp.UnscentedKalmanFilter(state_dim=2, meas_dim=1)
+        ukf.Q, ukf.R = Q, R
+        ukf.state = np.array([0.0, 0.5])
+        ukf.set_state_function(lambda x: A @ x)
+        ukf.set_observation_function(lambda x: H @ x)
+
+        for z_val in [0.6, 1.1, 1.7, 2.2, 2.9]:
+            z = np.array([z_val])
+            kf.predict()
+            kf.update(z)
+            ukf.predict()
+            ukf.update(z)
+
+        # UKF is exact for affine dynamics within sigma-point numerical
+        # noise. Loose tolerance to accommodate the weighted-mean roundoff.
+        np.testing.assert_allclose(kf.state, ukf.state, atol=1e-6)
+
+
+class TestUnscentedKalmanFilterNonlinear:
+    """Same pendulum-tracking test as EKF — UKF must track without needing
+    Jacobians, at accuracy comparable to the EKF."""
+
+    def _pendulum(self, dt=0.1, g_over_l=4.0, damping=0.1):
+        def f(x):
+            theta, omega = float(x[0]), float(x[1])
+            return np.array([
+                theta + dt * omega,
+                omega + dt * (-g_over_l * np.sin(theta) - damping * omega)])
+
+        def h(x):
+            return np.array([float(x[0])])
+
+        return f, h
+
+    def test_tracks_pendulum(self):
+        rng = np.random.default_rng(42)
+        f, h = self._pendulum()
+
+        x_true = np.array([0.5, 0.0])
+        n_steps = 50
+        true_states = [x_true.copy()]
+        measurements = []
+        for _ in range(n_steps):
+            x_true = f(x_true)
+            true_states.append(x_true.copy())
+            z = h(x_true) + rng.standard_normal(1) * 0.05
+            measurements.append(z)
+
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1)
+        ukf.set_state_function(f)
+        ukf.set_observation_function(h)
+        ukf.Q = 0.001 * np.eye(2)
+        ukf.R = 0.0025 * np.eye(1)
+        ukf.state = np.array([0.5, 0.0])
+
+        errors = []
+        for z, true_next in zip(measurements, true_states[1:]):
+            ukf.predict()
+            ukf.update(z)
+            errors.append(np.linalg.norm(ukf.state - true_next))
+
+        mean_err_second_half = float(np.mean(errors[n_steps // 2:]))
+        assert mean_err_second_half < 0.15, (
+            f"UKF tracking error too large: {mean_err_second_half}")
+
+
+class TestUnscentedKalmanFilterDtypeDispatch:
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_linear_case_across_dtypes(self, dtype):
+        A = np.array([[1.0, 1.0], [0.0, 1.0]])
+        H = np.array([[1.0, 0.0]])
+        ukf = mpdsp.UnscentedKalmanFilter(2, 1, dtype=dtype)
+        ukf.Q = 0.01 * np.eye(2)
+        ukf.R = 0.1 * np.eye(1)
+        ukf.state = np.array([0.0, 0.5])
+        ukf.set_state_function(lambda x: A @ x)
+        ukf.set_observation_function(lambda x: H @ x)
+
+        for z_val in [0.6, 1.1, 1.7, 2.2]:
+            ukf.predict()
+            ukf.update(np.array([z_val]))
+
+        s = ukf.state
+        assert s.shape == (2,)
+        assert np.all(np.isfinite(s))

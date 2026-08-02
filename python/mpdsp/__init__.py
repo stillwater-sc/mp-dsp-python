@@ -78,7 +78,7 @@ try:
         PeakEnvelope, RMSEnvelope, Compressor, AGC,
         # Estimation
         KalmanFilter,
-        ExtendedKalmanFilter,
+        ExtendedKalmanFilter, UnscentedKalmanFilter,
         LMSFilter, NLMSFilter, RLSFilter,
         # Image — generators
         checkerboard,
