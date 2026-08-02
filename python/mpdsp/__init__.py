@@ -127,6 +127,8 @@ try:
         detect_average, detect_rms, detect,
         # Spectrum analyzer — RBW / VBW filtering (gap-analysis Phase 3 / #105)
         RBWFilter, VBWFilter,
+        # Spectrum analyzer — swept LO + front-end calibration (gap-analysis Phase 3 / #106)
+        SweptLO, CalibrationProfile, FrontEndCorrector,
         # Introspection
         available_dtypes, bits_of,
     )

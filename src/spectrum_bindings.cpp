@@ -9,13 +9,19 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 
+#include <sw/dsp/instrument/calibration.hpp>  // CalibrationProfile
 #include <sw/dsp/spectrum/detectors.hpp>
+#include <sw/dsp/spectrum/front_end_corrector.hpp>
 #include <sw/dsp/spectrum/rbw_filter.hpp>
 #include <sw/dsp/spectrum/realtime_spectrum.hpp>
+#include <sw/dsp/spectrum/swept_lo.hpp>
 #include <sw/dsp/spectrum/vbw_filter.hpp>
+
+#include <nanobind/stl/vector.h>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -240,6 +246,124 @@ struct VBWFilterImpl : IVBWFilterImpl {
 	double sample_rate_hz() const override { return inner.sample_rate_hz(); }
 };
 
+// ---------------------------------------------------------------------------
+// SweptLO impl. Same type-erased pattern. The mode enum is scoped inside
+// SweptLO<T, T, T> — each template instantiation has its own type-distinct
+// `Sweep` even though the values are the same integers. Pass a plain bool
+// across the type-erasure boundary and rebuild the correct-typed enum
+// inside each SweptLOImpl<T> ctor.
+// ---------------------------------------------------------------------------
+
+static bool parse_sweep_mode_is_log(const std::string& s) {
+	if (s == "linear")      return false;
+	if (s == "log")         return true;
+	if (s == "logarithmic") return true;
+	throw std::invalid_argument(
+		"SweptLO: unknown mode '" + s + "' (expected 'linear' or 'logarithmic')");
+}
+
+struct ISweptLOImpl {
+	virtual ~ISweptLOImpl() = default;
+	virtual std::pair<double, double> process() = 0;
+	virtual std::pair<mtl::vec::dense_vector<double>,
+	                  mtl::vec::dense_vector<double>>
+	generate_block(std::size_t n) = 0;
+	virtual void reset() = 0;
+	virtual double      current_frequency_hz() const = 0;
+	virtual bool        sweep_complete()   const = 0;
+	virtual std::size_t total_sweeps()     const = 0;
+	virtual double      f_start_hz()       const = 0;
+	virtual double      f_stop_hz()        const = 0;
+	virtual double      sweep_duration_s() const = 0;
+	virtual double      sample_rate_hz()   const = 0;
+	virtual std::string mode()             const = 0;
+	virtual std::size_t num_sweep_samples() const = 0;
+};
+
+template <typename T>
+struct SweptLOImpl : ISweptLOImpl {
+	sw::dsp::spectrum::SweptLO<T, T, T> inner;
+
+	SweptLOImpl(double f_start_hz, double f_stop_hz,
+	            double sweep_duration_s, double sample_rate_hz,
+	            bool is_log)
+	    : inner(f_start_hz, f_stop_hz, sweep_duration_s, sample_rate_hz,
+	            is_log
+	                ? sw::dsp::spectrum::SweptLO<T, T, T>::Sweep::Logarithmic
+	                : sw::dsp::spectrum::SweptLO<T, T, T>::Sweep::Linear) {}
+
+	std::pair<double, double> process() override {
+		auto [c, s] = inner.process();
+		return {static_cast<double>(c), static_cast<double>(s)};
+	}
+
+	std::pair<mtl::vec::dense_vector<double>, mtl::vec::dense_vector<double>>
+	generate_block(std::size_t n) override {
+		mtl::vec::dense_vector<double> cos_out(n);
+		mtl::vec::dense_vector<double> sin_out(n);
+		for (std::size_t i = 0; i < n; ++i) {
+			auto [c, s] = inner.process();
+			cos_out[i] = static_cast<double>(c);
+			sin_out[i] = static_cast<double>(s);
+		}
+		return {std::move(cos_out), std::move(sin_out)};
+	}
+
+	void reset()                            override { inner.reset(); }
+	double current_frequency_hz() const     override { return inner.current_frequency_hz(); }
+	bool   sweep_complete()       const     override { return inner.sweep_complete(); }
+	std::size_t total_sweeps()    const     override { return inner.total_sweeps(); }
+	double f_start_hz()           const     override { return inner.f_start_hz(); }
+	double f_stop_hz()            const     override { return inner.f_stop_hz(); }
+	double sweep_duration_s()     const     override { return inner.sweep_duration_s(); }
+	double sample_rate_hz()       const     override { return inner.sample_rate_hz(); }
+	std::string mode()            const     override {
+		using Mode = typename sw::dsp::spectrum::SweptLO<T, T, T>::Sweep;
+		return inner.mode() == Mode::Linear ? "linear" : "logarithmic";
+	}
+	std::size_t num_sweep_samples() const   override { return inner.num_sweep_samples(); }
+};
+
+// ---------------------------------------------------------------------------
+// FrontEndCorrector impl. FrontEndCorrector is a using-alias for
+// EqualizerFilter — same underlying template, same streaming interface.
+// The design math runs once in the ctor (frequency-sampling design +
+// Hamming window + inverse DFT), then the class is a plain FIR.
+// ---------------------------------------------------------------------------
+
+struct IFrontEndCorrectorImpl {
+	virtual ~IFrontEndCorrectorImpl() = default;
+	virtual double process(double x) = 0;
+	virtual mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual std::size_t num_taps() const = 0;
+};
+
+template <typename T>
+struct FrontEndCorrectorImpl : IFrontEndCorrectorImpl {
+	sw::dsp::spectrum::FrontEndCorrector<T, T, T> inner;
+
+	FrontEndCorrectorImpl(const sw::dsp::instrument::CalibrationProfile& profile,
+	                      std::size_t num_taps, double sample_rate_hz,
+	                      double max_gain_dB)
+	    : inner(profile, num_taps, sample_rate_hz, max_gain_dB) {}
+
+	double process(double x) override {
+		return static_cast<double>(inner.process(static_cast<T>(x)));
+	}
+
+	mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<double> out(n);
+		for (std::size_t i = 0; i < n; ++i) {
+			out[i] = static_cast<double>(inner.process(static_cast<T>(in[i])));
+		}
+		return out;
+	}
+
+	std::size_t num_taps() const override { return inner.num_taps(); }
+};
+
 } // namespace
 
 // PyRealtimeSpectrum: streaming FFT engine.
@@ -351,6 +475,74 @@ public:
 
 private:
 	std::unique_ptr<IVBWFilterImpl> impl_;
+	std::string dtype_;
+};
+
+// PySweptLO: phase-coherent chirp generator.
+class PySweptLO {
+public:
+	PySweptLO(double f_start_hz, double f_stop_hz,
+	          double sweep_duration_s, double sample_rate_hz,
+	          const std::string& mode, const std::string& dtype)
+	    : dtype_(dtype) {
+		bool is_log = parse_sweep_mode_is_log(mode);
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			SweptLOImpl, ISweptLOImpl>(
+			mpdsp::parse_config(dtype), "SweptLO",
+			f_start_hz, f_stop_hz, sweep_duration_s, sample_rate_hz,
+			is_log);
+	}
+
+	std::pair<double, double> process() { return impl_->process(); }
+
+	nb::tuple generate_block(std::size_t n) {
+		auto [c, s] = impl_->generate_block(n);
+		return nb::make_tuple(mpdsp::bindings::vec_to_numpy(c),
+		                      mpdsp::bindings::vec_to_numpy(s));
+	}
+
+	void reset()                                { impl_->reset(); }
+	double      current_frequency_hz() const    { return impl_->current_frequency_hz(); }
+	bool        sweep_complete()       const    { return impl_->sweep_complete(); }
+	std::size_t total_sweeps()         const    { return impl_->total_sweeps(); }
+	double      f_start_hz()           const    { return impl_->f_start_hz(); }
+	double      f_stop_hz()            const    { return impl_->f_stop_hz(); }
+	double      sweep_duration_s()     const    { return impl_->sweep_duration_s(); }
+	double      sample_rate_hz()       const    { return impl_->sample_rate_hz(); }
+	std::string mode()                 const    { return impl_->mode(); }
+	std::size_t num_sweep_samples()    const    { return impl_->num_sweep_samples(); }
+	const std::string& dtype()         const    { return dtype_; }
+
+private:
+	std::unique_ptr<ISweptLOImpl> impl_;
+	std::string dtype_;
+};
+
+// PyFrontEndCorrector: FIR equalizer that inverts a CalibrationProfile.
+class PyFrontEndCorrector {
+public:
+	PyFrontEndCorrector(const sw::dsp::instrument::CalibrationProfile& profile,
+	                    std::size_t num_taps, double sample_rate_hz,
+	                    double max_gain_dB, const std::string& dtype)
+	    : dtype_(dtype) {
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			FrontEndCorrectorImpl, IFrontEndCorrectorImpl>(
+			mpdsp::parse_config(dtype), "FrontEndCorrector",
+			profile, num_taps, sample_rate_hz, max_gain_dB);
+	}
+
+	double process(double x) { return impl_->process(x); }
+
+	mpdsp::bindings::np_f64 process_block(mpdsp::bindings::np_f64_ro signal) {
+		return mpdsp::bindings::vec_to_numpy(
+			impl_->process_block(signal.data(), signal.shape(0)));
+	}
+
+	std::size_t num_taps() const           { return impl_->num_taps(); }
+	const std::string& dtype() const       { return dtype_; }
+
+private:
+	std::unique_ptr<IFrontEndCorrectorImpl> impl_;
 	std::string dtype_;
 };
 
@@ -582,5 +774,124 @@ void bind_spectrum(nb::module_& m) {
 		     "Streaming sample rate. Read-only.")
 		.def_prop_ro("dtype",
 		     [](const PyVBWFilter& self) { return self.dtype(); },
+		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// SweptLO — phase-coherent chirp generator (analyzer local oscillator).
+	// -----------------------------------------------------------------------
+	nb::class_<PySweptLO>(m, "SweptLO",
+			"Phase-coherent chirp generator that walks a frequency schedule "
+			"from f_start to f_stop over a configurable duration, then "
+			"restarts. The phase accumulator is continuous across the sweep "
+			"boundary — no glitch at restart. Linear and logarithmic "
+			"schedules are supported.\n\n"
+			"Produces (cos, sin) pairs per sample; use `generate_block(n)` "
+			"for batch generation into two ndarrays.")
+		.def(nb::init<double, double, double, double,
+		              const std::string&, const std::string&>(),
+		     nb::arg("f_start_hz"), nb::arg("f_stop_hz"),
+		     nb::arg("sweep_duration_s"), nb::arg("sample_rate_hz"),
+		     nb::arg("mode") = "linear",
+		     nb::arg("dtype") = "reference",
+		     "Design a swept LO. mode is 'linear' or 'logarithmic' "
+		     "('log' also accepted). sweep_duration_s * sample_rate_hz "
+		     "must yield at least 2 samples.")
+		.def("process", &PySweptLO::process,
+		     "Advance one sample; returns (cos, sin) as a tuple of floats.")
+		.def("generate_block", &PySweptLO::generate_block, nb::arg("n"),
+		     "Advance n samples; returns (cos_array, sin_array) as a tuple "
+		     "of NumPy float64 arrays.")
+		.def("reset", &PySweptLO::reset,
+		     "Restart the sweep at f_start with phase = 0. Coefficients "
+		     "(delta_inc / ratio_inc) are preserved.")
+		.def_prop_ro("current_frequency_hz",
+		     &PySweptLO::current_frequency_hz,
+		     "Instantaneous frequency in Hz, derived from the current "
+		     "phase increment. Read-only.")
+		.def_prop_ro("sweep_complete", &PySweptLO::sweep_complete,
+		     "True iff the MOST RECENT process() call wrapped a sweep "
+		     "boundary. One-shot per sweep — the next process() clears it. "
+		     "Read-only.")
+		.def_prop_ro("total_sweeps", &PySweptLO::total_sweeps,
+		     "Monotone count of sweep boundaries crossed since construction "
+		     "or the last reset(). Read-only.")
+		.def_prop_ro("f_start_hz",       &PySweptLO::f_start_hz)
+		.def_prop_ro("f_stop_hz",        &PySweptLO::f_stop_hz)
+		.def_prop_ro("sweep_duration_s", &PySweptLO::sweep_duration_s)
+		.def_prop_ro("sample_rate_hz",   &PySweptLO::sample_rate_hz)
+		.def_prop_ro("mode",             &PySweptLO::mode,
+		     "'linear' or 'logarithmic'. Fixed at construction. Read-only.")
+		.def_prop_ro("num_sweep_samples", &PySweptLO::num_sweep_samples,
+		     "Samples per sweep = floor(sweep_duration_s * sample_rate_hz). "
+		     "Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PySweptLO& self) { return self.dtype(); },
+		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// CalibrationProfile — non-templated value type that FrontEndCorrector
+	// consumes. Bound at the module level (not per-dtype) since the
+	// calibration measurement itself is double-precision-native.
+	// -----------------------------------------------------------------------
+	nb::class_<sw::dsp::instrument::CalibrationProfile>(m, "CalibrationProfile",
+			"Tabulated frequency-response correction for a spectrum-analyzer "
+			"or scope front end. Stores (frequency_hz, gain_dB, phase_rad) "
+			"triples; the interpolants linearly interpolate between tabulated "
+			"points and clamp outside the calibrated band. Fed to "
+			"FrontEndCorrector to design an inverse-response equalizer.")
+		.def(nb::init<std::vector<double>, std::vector<double>,
+		              std::vector<double>>(),
+		     nb::arg("frequencies"), nb::arg("gain_dB"), nb::arg("phase_rad"),
+		     "All three inputs must have the same length (>= 2). "
+		     "`frequencies` must be strictly monotonically increasing.")
+		.def_static("from_csv",
+		     &sw::dsp::instrument::CalibrationProfile::from_csv,
+		     nb::arg("path"),
+		     "Load a profile from CSV. Format: one row per frequency, "
+		     "columns freq_hz, gain_dB, phase_rad. Header row is optional; "
+		     "lines starting with '#' are treated as comments.")
+		.def("gain_dB",
+		     &sw::dsp::instrument::CalibrationProfile::gain_dB,
+		     nb::arg("freq_hz"),
+		     "Interpolated gain (dB) at the query frequency. Clamps to the "
+		     "endpoint values below freq_min / above freq_max.")
+		.def("phase_rad",
+		     &sw::dsp::instrument::CalibrationProfile::phase_rad,
+		     nb::arg("freq_hz"),
+		     "Interpolated phase (radians) at the query frequency.")
+		.def_prop_ro("size",     &sw::dsp::instrument::CalibrationProfile::size)
+		.def_prop_ro("freq_min", &sw::dsp::instrument::CalibrationProfile::freq_min)
+		.def_prop_ro("freq_max", &sw::dsp::instrument::CalibrationProfile::freq_max);
+
+	// -----------------------------------------------------------------------
+	// FrontEndCorrector — FIR equalizer inverting a CalibrationProfile.
+	// -----------------------------------------------------------------------
+	nb::class_<PyFrontEndCorrector>(m, "FrontEndCorrector",
+			"Front-end equalizer for the analyzer input path: an FIR filter "
+			"whose magnitude/phase response cancels a CalibrationProfile. "
+			"Design uses frequency-sampling with a Hamming window; the "
+			"inverse magnitude is clamped to `max_gain_dB` to avoid "
+			"amplifying noise where the profile has deep nulls.\n\n"
+			"Alias for sw::dsp::instrument::EqualizerFilter — same math, "
+			"exposed in the spectrum module under an analyzer-facing name.")
+		.def(nb::init<const sw::dsp::instrument::CalibrationProfile&,
+		              std::size_t, double, double, const std::string&>(),
+		     nb::arg("profile"), nb::arg("num_taps"),
+		     nb::arg("sample_rate_hz"),
+		     nb::arg("max_gain_dB") = 60.0,
+		     nb::arg("dtype") = "reference",
+		     "Design an equalizer from the given profile. num_taps >= 3; "
+		     "max_gain_dB caps the inverse magnitude to prevent noise "
+		     "amplification at profile nulls.")
+		.def("process", &PyFrontEndCorrector::process, nb::arg("sample"),
+		     "Filter one sample; returns the equalized scalar.")
+		.def("process_block", &PyFrontEndCorrector::process_block,
+		     nb::arg("signal"),
+		     "Filter a block of samples; returns a new NumPy array of the "
+		     "same length.")
+		.def_prop_ro("num_taps", &PyFrontEndCorrector::num_taps,
+		     "Length of the designed FIR (fixed at construction). Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PyFrontEndCorrector& self) { return self.dtype(); },
 		     "Scalar dtype fixed at construction. Read-only.");
 }

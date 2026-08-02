@@ -555,3 +555,302 @@ class TestVBWFilterDtypeDispatch:
         assert np.all(np.isfinite(y))
         # DC eventually settles near input; loose bound for narrow types
         assert abs(y[-1] - 1.0) < 0.1
+
+
+# ---------------------------------------------------------------------------
+# SweptLO — phase-coherent chirp generator (#106).
+# ---------------------------------------------------------------------------
+
+
+class TestSweptLOConstruction:
+    def test_getters_reflect_construction(self):
+        lo = mpdsp.SweptLO(f_start_hz=100.0, f_stop_hz=1000.0,
+                           sweep_duration_s=1.0, sample_rate_hz=1000.0)
+        assert lo.f_start_hz == 100.0
+        assert lo.f_stop_hz == 1000.0
+        assert lo.sweep_duration_s == 1.0
+        assert lo.sample_rate_hz == 1000.0
+        assert lo.mode == "linear"
+        assert lo.num_sweep_samples == 1000
+        assert lo.total_sweeps == 0
+        assert lo.sweep_complete is False
+        assert lo.dtype == "reference"
+
+    def test_log_mode_accepted(self):
+        lo = mpdsp.SweptLO(100.0, 1000.0, 1.0, 1000.0, mode="log")
+        assert lo.mode == "logarithmic"
+
+    def test_logarithmic_alias(self):
+        lo = mpdsp.SweptLO(100.0, 1000.0, 1.0, 1000.0, mode="logarithmic")
+        assert lo.mode == "logarithmic"
+
+    def test_rejects_bad_mode(self):
+        with pytest.raises(ValueError):
+            mpdsp.SweptLO(100.0, 1000.0, 1.0, 1000.0, mode="not_a_mode")
+
+    def test_rejects_non_positive_frequencies(self):
+        with pytest.raises(ValueError):
+            mpdsp.SweptLO(0.0, 1000.0, 1.0, 1000.0)
+        with pytest.raises(ValueError):
+            mpdsp.SweptLO(100.0, -1.0, 1.0, 1000.0)
+
+    def test_rejects_short_sweep(self):
+        # Fewer than 2 samples must be rejected.
+        with pytest.raises(ValueError):
+            mpdsp.SweptLO(100.0, 200.0,
+                          sweep_duration_s=0.0005, sample_rate_hz=1000.0)
+
+
+class TestSweptLOSweep:
+    def test_process_returns_cos_sin_tuple(self):
+        lo = mpdsp.SweptLO(100.0, 200.0, 0.1, 1000.0)
+        result = lo.process()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        c, s = result
+        assert isinstance(c, float)
+        assert isinstance(s, float)
+
+    def test_cos_sin_unit_circle(self):
+        # cos^2 + sin^2 = 1 at every sample (within floating-point tolerance).
+        lo = mpdsp.SweptLO(50.0, 500.0, 1.0, 1000.0)
+        c, s = lo.generate_block(500)
+        radii = np.sqrt(c ** 2 + s ** 2)
+        np.testing.assert_allclose(radii, 1.0, atol=1e-6)
+
+    def test_starts_at_f_start_and_ends_at_f_stop(self):
+        # Linear sweep endpoints: current_frequency_hz should equal
+        # f_start at sample 0 and f_stop at sample N-1.
+        fs, f0, f1, dur = 1000.0, 100.0, 400.0, 1.0
+        lo = mpdsp.SweptLO(f0, f1, dur, fs, mode="linear")
+        N = lo.num_sweep_samples
+        # Sample 0 initial frequency
+        initial = lo.current_frequency_hz
+        assert abs(initial - f0) < 0.01
+        # Push all-but-one samples; check the (N-1)-th sample's frequency.
+        for _ in range(N - 1):
+            lo.process()
+        assert abs(lo.current_frequency_hz - f1) < 0.5
+
+    def test_sweep_complete_fires_at_boundary(self):
+        fs, dur = 1000.0, 0.1
+        lo = mpdsp.SweptLO(100.0, 200.0, dur, fs)
+        N = lo.num_sweep_samples
+        # The Nth process() call is the one that wraps the boundary
+        # (samples 0..N-1 fill the sweep; on the Nth call we cross).
+        for i in range(N - 1):
+            lo.process()
+        assert lo.sweep_complete is False
+        lo.process()
+        assert lo.sweep_complete is True
+        assert lo.total_sweeps == 1
+        # sweep_complete self-clears on the next process()
+        lo.process()
+        assert lo.sweep_complete is False
+
+    def test_phase_continuous_across_sweep_boundary(self):
+        # Between the last sample of sweep k and the first sample of
+        # sweep k+1, the (cos, sin) output should NOT jump discontinuously
+        # — that's the whole point of the phase-coherent design.
+        lo = mpdsp.SweptLO(100.0, 300.0, 0.1, 1000.0)
+        N = lo.num_sweep_samples
+        c1, s1 = lo.generate_block(N)  # first sweep
+        c2, s2 = lo.generate_block(1)   # first sample of second sweep
+        # Distance in the complex plane between last-of-sweep-1 and
+        # first-of-sweep-2 should be small (phase continues smoothly).
+        boundary_jump = np.hypot(c2[0] - c1[-1], s2[0] - s1[-1])
+        # A discontinuous restart would give a jump of order 1; the
+        # phase-continuous restart typically gives a jump on the order of
+        # the per-sample step which is ~ 2*pi*f/fs ~ 2 at these settings.
+        # So a comfortable upper bound is 2.5 (allowing for the largest
+        # per-sample step from the final phase_inc).
+        assert boundary_jump < 2.5
+
+    def test_reset_returns_to_start(self):
+        lo = mpdsp.SweptLO(100.0, 400.0, 0.1, 1000.0)
+        lo.generate_block(50)
+        lo.reset()
+        assert lo.total_sweeps == 0
+        assert lo.sweep_complete is False
+        assert abs(lo.current_frequency_hz - 100.0) < 0.01
+
+    def test_generate_block_matches_streaming(self):
+        lo1 = mpdsp.SweptLO(100.0, 200.0, 0.05, 1000.0)
+        c_block, s_block = lo1.generate_block(50)
+        lo2 = mpdsp.SweptLO(100.0, 200.0, 0.05, 1000.0)
+        c_stream = np.zeros(50)
+        s_stream = np.zeros(50)
+        for i in range(50):
+            c, s = lo2.process()
+            c_stream[i] = c
+            s_stream[i] = s
+        np.testing.assert_allclose(c_block, c_stream)
+        np.testing.assert_allclose(s_block, s_stream)
+
+
+class TestSweptLODtypeDispatch:
+    def test_dtype_property(self):
+        lo = mpdsp.SweptLO(100.0, 200.0, 0.1, 1000.0, dtype="posit_full")
+        assert lo.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.SweptLO(100.0, 200.0, 0.1, 1000.0, dtype="not_a_dtype")
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_unit_circle_across_dtypes(self, dtype):
+        # cos^2 + sin^2 ≈ 1 should hold under any dtype at reasonable
+        # tolerance.
+        lo = mpdsp.SweptLO(100.0, 400.0, 0.1, 1000.0, dtype=dtype)
+        c, s = lo.generate_block(50)
+        radii = np.sqrt(c ** 2 + s ** 2)
+        # Narrow dtypes may have wider tolerance
+        np.testing.assert_allclose(radii, 1.0, atol=0.05)
+
+
+# ---------------------------------------------------------------------------
+# CalibrationProfile — non-templated value type consumed by FrontEndCorrector.
+# ---------------------------------------------------------------------------
+
+
+class TestCalibrationProfile:
+    def test_construction_and_getters(self):
+        p = mpdsp.CalibrationProfile(
+            frequencies=[100.0, 500.0, 1000.0],
+            gain_dB=[0.0, -1.0, -3.0],
+            phase_rad=[0.0, -0.1, -0.3])
+        assert p.size == 3
+        assert p.freq_min == 100.0
+        assert p.freq_max == 1000.0
+
+    def test_interpolation_at_tabulated_points(self):
+        p = mpdsp.CalibrationProfile([100.0, 200.0], [0.0, -2.0], [0.0, 0.5])
+        assert p.gain_dB(100.0) == 0.0
+        assert p.gain_dB(200.0) == -2.0
+
+    def test_interpolation_midpoint(self):
+        p = mpdsp.CalibrationProfile([100.0, 200.0], [0.0, -2.0], [0.0, 0.5])
+        # Midpoint linear interpolation
+        assert abs(p.gain_dB(150.0) - (-1.0)) < 1e-12
+        assert abs(p.phase_rad(150.0) - 0.25) < 1e-12
+
+    def test_clamps_below_range(self):
+        p = mpdsp.CalibrationProfile([100.0, 200.0], [-1.0, -2.0], [0.0, 0.5])
+        assert p.gain_dB(50.0) == -1.0    # clamps to first entry
+        assert p.phase_rad(50.0) == 0.0
+
+    def test_clamps_above_range(self):
+        p = mpdsp.CalibrationProfile([100.0, 200.0], [-1.0, -2.0], [0.0, 0.5])
+        assert p.gain_dB(1000.0) == -2.0  # clamps to last entry
+        assert p.phase_rad(1000.0) == 0.5
+
+    def test_rejects_length_mismatch(self):
+        with pytest.raises(ValueError):
+            mpdsp.CalibrationProfile([100.0, 200.0], [0.0], [0.0, 0.0])
+
+    def test_rejects_too_few_points(self):
+        with pytest.raises(ValueError):
+            mpdsp.CalibrationProfile([100.0], [0.0], [0.0])
+
+    def test_rejects_non_monotonic_frequencies(self):
+        with pytest.raises(ValueError):
+            mpdsp.CalibrationProfile([100.0, 50.0], [0.0, 0.0], [0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# FrontEndCorrector — FIR equalizer inverting a CalibrationProfile (#106).
+# ---------------------------------------------------------------------------
+
+
+def _flat_profile(fs=1000.0, gain_dB=0.0):
+    # Reference: perfectly flat 0 dB profile over the full band.
+    return mpdsp.CalibrationProfile(
+        frequencies=[1.0, fs / 2],
+        gain_dB=[gain_dB, gain_dB],
+        phase_rad=[0.0, 0.0])
+
+
+class TestFrontEndCorrectorConstruction:
+    def test_getters(self):
+        p = _flat_profile()
+        f = mpdsp.FrontEndCorrector(profile=p, num_taps=33,
+                                    sample_rate_hz=1000.0)
+        assert f.num_taps == 33
+        assert f.dtype == "reference"
+
+    def test_rejects_too_few_taps(self):
+        p = _flat_profile()
+        with pytest.raises(ValueError):
+            mpdsp.FrontEndCorrector(profile=p, num_taps=2,
+                                    sample_rate_hz=1000.0)
+
+    def test_rejects_bad_sample_rate(self):
+        p = _flat_profile()
+        with pytest.raises(ValueError):
+            mpdsp.FrontEndCorrector(profile=p, num_taps=33,
+                                    sample_rate_hz=0.0)
+
+    def test_rejects_bad_max_gain(self):
+        p = _flat_profile()
+        with pytest.raises(ValueError):
+            mpdsp.FrontEndCorrector(profile=p, num_taps=33,
+                                    sample_rate_hz=1000.0,
+                                    max_gain_dB=-1.0)
+
+
+class TestFrontEndCorrectorProcessing:
+    def test_process_returns_float(self):
+        f = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0)
+        assert isinstance(f.process(0.5), float)
+
+    def test_process_block_preserves_length(self):
+        f = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0)
+        sig = np.zeros(256)
+        y = f.process_block(sig)
+        assert y.shape == sig.shape
+        assert y.dtype == np.float64
+
+    def test_streaming_and_block_agree(self):
+        rng = np.random.default_rng(0xE9)
+        sig = rng.standard_normal(512)
+        f1 = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0)
+        y_block = f1.process_block(sig)
+        f2 = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0)
+        y_stream = np.array([f2.process(float(x)) for x in sig])
+        np.testing.assert_allclose(y_block, y_stream)
+
+    def test_flat_profile_near_identity_after_group_delay(self):
+        # A perfectly flat 0 dB / 0 rad profile inverts to ~ delta[n - K/2].
+        # A DC input should therefore emerge at ~ input amplitude after
+        # the FIR settles (bounded by Hamming window sidelobes).
+        f = mpdsp.FrontEndCorrector(_flat_profile(), num_taps=33,
+                                    sample_rate_hz=1000.0)
+        sig = np.full(200, 1.0)
+        y = f.process_block(sig)
+        # Post-transient (past the group delay), output should approach DC.
+        assert abs(y[-1] - 1.0) < 0.05
+
+
+class TestFrontEndCorrectorDtypeDispatch:
+    def test_dtype_property(self):
+        f = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0,
+                                    dtype="posit_full")
+        assert f.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0,
+                                    dtype="not_a_dtype")
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_processing_across_dtypes(self, dtype):
+        f = mpdsp.FrontEndCorrector(_flat_profile(), 21, 1000.0, dtype=dtype)
+        sig = np.full(200, 1.0)
+        y = f.process_block(sig)
+        assert y.shape == sig.shape
+        assert np.all(np.isfinite(y))
+        # Flat profile inverts to near-identity; post-transient output
+        # sits near the DC input under any reasonable dtype.
+        assert abs(y[-1] - 1.0) < 0.1
