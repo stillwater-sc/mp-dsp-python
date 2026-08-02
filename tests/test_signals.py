@@ -224,13 +224,33 @@ class TestWindows:
         # Peak normalized to 1.0.
         assert abs(w.max() - 1.0) < 1e-10
 
-    # NOTE on upstream limitation: the current
-    # mixed-precision-dsp dolph_chebyshev_window implementation appears to
-    # produce a near-constant output regardless of attenuation_db — all taps
-    # sit within ~1e-14 of the peak for representative (N, atten_db) pairs.
-    # We bind the function unchanged and cover the shape/symmetry/peak
-    # invariants that DO hold; a "different attenuation → different taps"
-    # test would be the natural addition but must wait on an upstream fix.
+    def test_dolph_chebyshev_peak_at_center(self):
+        # Peak sits at the center of the window, not at the edges. Regression
+        # guard against the upstream #200 collapse where the whole window went
+        # to ~1.0 (all "peaks" everywhere).
+        w = mpdsp.dolph_chebyshev(256, attenuation_db=80.0)
+        assert w[128] > w[0] + 0.5
+
+    def test_dolph_chebyshev_attenuation_threaded_through(self):
+        # 40 dB and 120 dB windows are meaningfully different. Under the
+        # pre-#200 upstream bug both collapsed to essentially the same
+        # constant; different attenuation values are only distinguishable
+        # after that fix landed.
+        w_low  = mpdsp.dolph_chebyshev(256, attenuation_db=40.0)
+        w_high = mpdsp.dolph_chebyshev(256, attenuation_db=120.0)
+        # Sum of |diff| over the whole window — small tolerance is fine
+        # because Dolph-Cheby edges differ by orders of magnitude between
+        # these attenuation levels.
+        assert np.sum(np.abs(w_low - w_high)) > 1.0
+
+    def test_dolph_chebyshev_edges_below_peak(self):
+        # At 100 dB attenuation the edges should be MUCH smaller than the
+        # peak. Finite-N Dolph-Cheby edges don't reach the ideal
+        # 10^(-atten/20) = 1e-5 asymptote, but they should easily be
+        # below 0.2 of the peak for N=256.
+        w = mpdsp.dolph_chebyshev(256, attenuation_db=100.0)
+        assert w[0] < 0.2
+        assert w[-1] < 0.2
 
     def test_dolph_chebyshev_rejects_nonpositive_attenuation(self):
         with pytest.raises((ValueError, RuntimeError)):
