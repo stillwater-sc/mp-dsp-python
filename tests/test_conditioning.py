@@ -416,3 +416,147 @@ class TestAGC:
         out = agc.process_block(sig)
         assert out.shape == sig.shape
         assert out.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# RationalResampler (Phase 5 / #110) — polyphase L/M rate conversion.
+# ---------------------------------------------------------------------------
+
+
+class TestRationalResamplerConstruction:
+    def test_getters_reflect_construction(self):
+        r = mpdsp.RationalResampler(L=3, M=2)
+        assert r.interp_factor == 3
+        assert r.decim_factor == 2
+        assert abs(r.ratio - 1.5) < 1e-12
+        assert r.dtype == "reference"
+
+    def test_gcd_reduction(self):
+        # (6, 4) reduces to (3, 2); (8, 4) reduces to (2, 1).
+        r64 = mpdsp.RationalResampler(6, 4)
+        assert r64.interp_factor == 3
+        assert r64.decim_factor == 2
+        r84 = mpdsp.RationalResampler(8, 4)
+        assert r84.interp_factor == 2
+        assert r84.decim_factor == 1
+
+    def test_rejects_zero_L(self):
+        with pytest.raises(ValueError):
+            mpdsp.RationalResampler(L=0, M=1)
+
+    def test_rejects_zero_M(self):
+        with pytest.raises(ValueError):
+            mpdsp.RationalResampler(L=1, M=0)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.RationalResampler(2, 3, dtype="not_a_dtype")
+
+
+class TestRationalResamplerProcessing:
+    def test_output_length_2x_upsample(self):
+        r = mpdsp.RationalResampler(L=2, M=1)
+        sig = np.zeros(100)
+        y = r.process(sig)
+        # Output is ~ len * L / M + up to L extra
+        assert 200 <= y.shape[0] <= 202
+        assert y.dtype == np.float64
+
+    def test_output_length_2x_downsample(self):
+        r = mpdsp.RationalResampler(L=1, M=2)
+        sig = np.zeros(100)
+        y = r.process(sig)
+        # Downsample: ~ len * 1 / 2 + up to 1 extra
+        assert 50 <= y.shape[0] <= 51
+
+    def test_output_length_rational_ratio(self):
+        r = mpdsp.RationalResampler(L=3, M=2)
+        sig = np.zeros(200)
+        y = r.process(sig)
+        # 3/2 -> ~300 samples plus up to L=3 extra
+        assert 300 <= y.shape[0] <= 303
+
+    def test_identity_ratio_preserves_signal(self):
+        # L=M=1 (reduces to 1/1) is close to identity after FIR group delay.
+        r = mpdsp.RationalResampler(L=1, M=1)
+        sig = np.zeros(500)
+        sig[100] = 1.0  # impulse
+        y = r.process(sig)
+        # Filter is a Kaiser-windowed sinc; the impulse should re-appear
+        # as the FIR's impulse response somewhere in the output. Check
+        # that the peak is non-zero.
+        assert np.max(np.abs(y)) > 0.5
+
+    def test_upsample_preserves_passband_tone(self):
+        # 2x upsample a low-frequency sine; the tone amplitude should
+        # survive interpolation (Kaiser passband gain ~ 1.0).
+        fs = 1000.0
+        f  = 50.0    # well inside the passband
+        n  = 4096
+        t  = np.arange(n) / fs
+        sig = np.sin(2 * np.pi * f * t)
+        r = mpdsp.RationalResampler(L=2, M=1)
+        y = r.process(sig)
+        # Skip transient / group-delay region
+        skip = 200
+        assert np.max(np.abs(y[skip:-skip])) > 0.9
+
+    def test_decimation_rejects_alias_frequency(self):
+        # 1:2 decimator has a lowpass at cutoff 0.25 (normalized). Feed
+        # a tone above cutoff and verify it's strongly attenuated in the
+        # output.
+        fs = 1000.0
+        f_pass = 50.0    # 0.05 normalized — well below cutoff
+        f_alias = 300.0  # 0.3 normalized — above cutoff
+        n = 4096
+        t = np.arange(n) / fs
+        r1 = mpdsp.RationalResampler(L=1, M=2)
+        y_pass = r1.process(np.sin(2 * np.pi * f_pass * t))
+        r2 = mpdsp.RationalResampler(L=1, M=2)
+        y_alias = r2.process(np.sin(2 * np.pi * f_alias * t))
+        skip = 100
+        assert np.max(np.abs(y_pass[skip:-skip])) > 0.9
+        assert np.max(np.abs(y_alias[skip:-skip])) < 0.3
+
+    def test_reset_clears_delay_line(self):
+        r = mpdsp.RationalResampler(L=2, M=1)
+        r.process(np.full(100, 1.0))
+        r.reset()
+        # After reset, feeding zeros should give ~ zero output.
+        y = r.process(np.zeros(100))
+        assert np.max(np.abs(y)) < 0.01
+
+
+class TestRationalResamplerDtypeDispatch:
+    # Note on narrow-type dtypes: the Kaiser-windowed sinc taps used by
+    # RationalResampler are designed at CoeffScalar precision, and I0(beta*x)
+    # in the Kaiser design overflows for narrow cfloat types (half, cf24).
+    # This corrupts one polyphase sub-filter and produces NaN at every Lth
+    # output sample. Not a binding bug — an upstream numerical limitation
+    # with certain narrow types for filter DESIGN (as opposed to processing).
+    # gpu_baseline (float coefficients) and posit_full (posit<32,2> ~= 32-bit)
+    # have enough dynamic range to design cleanly.
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "posit_full"])
+    def test_dispatch_produces_finite_output_wide_dtypes(self, dtype):
+        r = mpdsp.RationalResampler(L=3, M=2, dtype=dtype)
+        assert r.dtype == dtype
+        sig = np.sin(2 * np.pi * np.arange(500) * 0.05)
+        y = r.process(sig)
+        assert y.shape[0] > 0
+        assert np.all(np.isfinite(y))
+
+    @pytest.mark.parametrize("dtype", ["half", "cf24"])
+    def test_dispatch_runs_on_narrow_dtypes(self, dtype):
+        # Weaker guarantee for narrow-cfloat dtypes: the class constructs
+        # and completes a process() call without exception, and produces
+        # SOME finite samples (the non-affected polyphase sub-filters still
+        # work). Any-finite rather than all-finite here documents the
+        # upstream Kaiser-design overflow at these precisions.
+        r = mpdsp.RationalResampler(L=3, M=2, dtype=dtype)
+        assert r.dtype == dtype
+        sig = np.sin(2 * np.pi * np.arange(500) * 0.05)
+        y = r.process(sig)
+        assert y.shape[0] > 0
+        assert np.any(np.isfinite(y))

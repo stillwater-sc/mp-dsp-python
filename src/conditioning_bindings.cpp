@@ -16,6 +16,7 @@
 #include <sw/dsp/conditioning/agc.hpp>
 #include <sw/dsp/conditioning/compressor.hpp>
 #include <sw/dsp/conditioning/envelope.hpp>
+#include <sw/dsp/conditioning/src.hpp>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -32,6 +33,7 @@ using mpdsp::bindings::np_f64;
 using mpdsp::bindings::np_f64_ro;
 using mpdsp::bindings::make_f64_array;
 using mpdsp::bindings::make_impl_for_dtype;
+using mpdsp::bindings::vec_to_numpy;
 
 namespace {
 
@@ -385,6 +387,94 @@ private:
 	std::string dtype_;
 };
 
+// ===========================================================================
+// RationalResampler (Phase 5 / #110)
+//
+// Polyphase L/M rate conversion — the missing scipy-parity primitive
+// (parallels scipy.signal.resample_poly). Kaiser-windowed sinc lowpass at
+// cutoff 0.5 / max(L, M) is designed at construction and decomposed into
+// L polyphase sub-filters. (L, M) are reduced by their GCD upstream, so
+// 6/4 and 3/2 give identical filters.
+//
+// process(input) returns a fresh ndarray of ceil(len * L / M) + L samples.
+// The extra +L samples are because the streaming state advances by a
+// fractional amount per input and the exact output length depends on the
+// time-register state at call time; the upstream reserves a cap and
+// returns the actual filled portion.
+// ===========================================================================
+
+namespace {
+
+struct IRationalResamplerImpl {
+	virtual ~IRationalResamplerImpl() = default;
+	virtual mtl::vec::dense_vector<double>
+	process(const double* in, std::size_t n) = 0;
+	virtual void reset() = 0;
+	virtual double      ratio()         const = 0;
+	virtual std::size_t interp_factor() const = 0;
+	virtual std::size_t decim_factor()  const = 0;
+};
+
+template <typename T>
+struct RationalResamplerImpl : IRationalResamplerImpl {
+	sw::dsp::RationalResampler<T, T, T> inner;
+
+	RationalResamplerImpl(std::size_t L, std::size_t M,
+	                       std::size_t filter_half_length, double beta)
+	    : inner(L, M, filter_half_length, static_cast<T>(beta)) {}
+
+	mtl::vec::dense_vector<double>
+	process(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed_in(n);
+		for (std::size_t i = 0; i < n; ++i) typed_in[i] = static_cast<T>(in[i]);
+		auto typed_out = inner.process(typed_in);
+		mtl::vec::dense_vector<double> out(typed_out.size());
+		for (std::size_t i = 0; i < typed_out.size(); ++i) {
+			out[i] = static_cast<double>(typed_out[i]);
+		}
+		return out;
+	}
+
+	void reset()                       override { inner.reset(); }
+	double      ratio()         const override { return inner.ratio(); }
+	std::size_t interp_factor() const override { return inner.interp_factor(); }
+	std::size_t decim_factor()  const override { return inner.decim_factor(); }
+};
+
+} // namespace
+
+// PyRationalResampler: polyphase L/M rate conversion.
+class PyRationalResampler {
+public:
+	PyRationalResampler(std::size_t L, std::size_t M,
+	                    std::size_t filter_half_length, double beta,
+	                    const std::string& dtype)
+	    : dtype_(dtype) {
+		if (L == 0 || M == 0) {
+			throw std::invalid_argument(
+				"RationalResampler: L and M must be > 0");
+		}
+		impl_ = make_impl_for_dtype<
+			RationalResamplerImpl, IRationalResamplerImpl>(
+			mpdsp::parse_config(dtype), "RationalResampler",
+			L, M, filter_half_length, beta);
+	}
+
+	np_f64 process(np_f64_ro signal) {
+		return vec_to_numpy(impl_->process(signal.data(), signal.shape(0)));
+	}
+
+	void   reset()                       { impl_->reset(); }
+	double      ratio()         const    { return impl_->ratio(); }
+	std::size_t interp_factor() const    { return impl_->interp_factor(); }
+	std::size_t decim_factor()  const    { return impl_->decim_factor(); }
+	const std::string& dtype() const     { return dtype_; }
+
+private:
+	std::unique_ptr<IRationalResamplerImpl> impl_;
+	std::string dtype_;
+};
+
 void bind_conditioning(nb::module_& m) {
 	nb::class_<PyPeakEnvelope>(m, "PeakEnvelope",
 		"Peak envelope follower with exponential attack and release.\n\n"
@@ -480,5 +570,46 @@ void bind_conditioning(nb::module_& m) {
 		.def("reset", &PyAGC::reset,
 		     "Clear the internal RMS envelope state.")
 		.def_prop_ro("dtype", &PyAGC::dtype,
+		     "The arithmetic configuration selected at construction.");
+
+	// -----------------------------------------------------------------------
+	// RationalResampler — polyphase L/M rate conversion (Phase 5 / #110).
+	// -----------------------------------------------------------------------
+	nb::class_<PyRationalResampler>(m, "RationalResampler",
+			"Polyphase L/M rate conversion — the missing scipy-parity "
+			"primitive (parallels scipy.signal.resample_poly). A Kaiser-"
+			"windowed sinc lowpass at cutoff 0.5 / max(L, M) is designed at "
+			"construction and decomposed into L polyphase sub-filters. "
+			"(L, M) are reduced by their GCD upstream, so mpdsp."
+			"RationalResampler(6, 4) and mpdsp.RationalResampler(3, 2) give "
+			"identical filters and identical output.\n\n"
+			"process(input) returns a fresh NumPy array — the output length "
+			"is roughly ceil(len(input) * L / M) plus up to L extra samples "
+			"depending on the streaming time-register state. State persists "
+			"across calls; use reset() to clear.")
+		.def(nb::init<std::size_t, std::size_t, std::size_t, double,
+		              const std::string&>(),
+		     nb::arg("L"), nb::arg("M"),
+		     nb::arg("filter_half_length") = static_cast<std::size_t>(10),
+		     nb::arg("beta") = 5.0,
+		     nb::arg("dtype") = "reference",
+		     "Construct a resampler with interpolation factor L and "
+		     "decimation factor M (both > 0). filter_half_length is the "
+		     "polyphase filter half-length in periods of the slower rate; "
+		     "beta is the Kaiser window shape parameter.")
+		.def("process", &PyRationalResampler::process, nb::arg("signal"),
+		     "Resample a 1D NumPy float64 signal. Returns a fresh output "
+		     "array; length is ~ len(signal) * L / M plus up to L extra "
+		     "depending on streaming state.")
+		.def("reset", &PyRationalResampler::reset,
+		     "Clear the delay line and time register. Coefficients are "
+		     "preserved.")
+		.def_prop_ro("ratio", &PyRationalResampler::ratio,
+		     "L / M as a float. Read-only.")
+		.def_prop_ro("interp_factor", &PyRationalResampler::interp_factor,
+		     "Interpolation factor L (after GCD reduction). Read-only.")
+		.def_prop_ro("decim_factor", &PyRationalResampler::decim_factor,
+		     "Decimation factor M (after GCD reduction). Read-only.")
+		.def_prop_ro("dtype", &PyRationalResampler::dtype,
 		     "The arithmetic configuration selected at construction.");
 }

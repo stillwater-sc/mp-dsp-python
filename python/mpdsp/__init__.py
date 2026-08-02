@@ -76,6 +76,8 @@ try:
         filtfilt,
         # Conditioning
         PeakEnvelope, RMSEnvelope, Compressor, AGC,
+        # Conditioning — rate conversion (gap-analysis Phase 5 / #110)
+        RationalResampler,
         # Estimation
         KalmanFilter,
         ExtendedKalmanFilter, UnscentedKalmanFilter,
