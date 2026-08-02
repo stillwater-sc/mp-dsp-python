@@ -302,6 +302,7 @@ nanobind_add_module(_core
   src/acquisition_bindings.cpp
   src/instrument_bindings.cpp
   src/spectrum_bindings.cpp
+  src/math_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 

@@ -123,6 +123,10 @@ try:
         enob_from_snr_db, snr_db,
         CICBitGrowthReport, AcquisitionPrecisionRow,
         write_acquisition_csv,
+        # Math — numerical utilities (gap-analysis Phase 5 / #113)
+        evaluate_polynomial, multiply_polynomials,
+        solve_quadratic, solve_quadratic_1, solve_quadratic_2,
+        elliptic_K, RootFinder,
         # Acquisition — high-rate ADC -> baseband pipeline primitives (Phase 3 / #86)
         NCO, CICDecimator, CICInterpolator,
         HalfBandFilter, PolyphaseDecimator, PolyphaseInterpolator,

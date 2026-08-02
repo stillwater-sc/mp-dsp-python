@@ -22,6 +22,7 @@ void bind_analysis(nb::module_& m);
 void bind_acquisition(nb::module_& m);
 void bind_instrument(nb::module_& m);
 void bind_spectrum(nb::module_& m);
+void bind_math(nb::module_& m);
 
 NB_MODULE(_core, m) {
 	m.doc() = "mpdsp C++ core: mixed-precision DSP bindings via nanobind";
@@ -48,4 +49,5 @@ NB_MODULE(_core, m) {
 	bind_acquisition(m);
 	bind_instrument(m);
 	bind_spectrum(m);
+	bind_math(m);
 }
