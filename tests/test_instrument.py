@@ -359,3 +359,200 @@ class TestPeakDetectDecimatorConstruction:
         assert maxs.shape == (8,)
         assert np.all(np.isfinite(mins))
         assert np.all(np.isfinite(maxs))
+
+
+# ---------------------------------------------------------------------------
+# TriggerRingBuffer — pre/post-trigger scope capture (#103).
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerRingBufferBasics:
+    def test_construction_stores_capacities(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=32,
+                                      post_trigger_samples=48)
+        assert buf.pre_trigger_capacity == 32
+        assert buf.post_trigger_capacity == 48
+        assert buf.dtype == "reference"
+
+    def test_fresh_instance_not_complete(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=8,
+                                      post_trigger_samples=4)
+        assert buf.capture_complete is False
+        # Empty segment while not complete
+        assert buf.captured_segment().shape == (0,)
+
+    def test_dtype_property(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=4,
+                                      post_trigger_samples=4,
+                                      dtype="posit_full")
+        assert buf.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.TriggerRingBuffer(pre_trigger_samples=4,
+                                    post_trigger_samples=4,
+                                    dtype="not_a_dtype")
+
+
+class TestTriggerRingBufferCapture:
+    def test_capture_after_full_prefill(self):
+        pre, post = 4, 3
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=pre,
+                                      post_trigger_samples=post)
+        # Fill the pre-trigger ring
+        for x in [1.0, 2.0, 3.0, 4.0]:
+            buf.push(x)
+        assert buf.capture_complete is False
+        # Fire trigger and push post-trigger samples
+        buf.push_trigger(99.0)
+        assert buf.capture_complete is False  # still waiting for post
+        for x in [10.0, 20.0, 30.0]:
+            buf.push(x)
+        assert buf.capture_complete is True
+        seg = buf.captured_segment()
+        # Full capture = pre + trigger + post = 4 + 1 + 3 = 8 samples
+        np.testing.assert_allclose(
+            seg, [1.0, 2.0, 3.0, 4.0, 99.0, 10.0, 20.0, 30.0])
+
+    def test_short_capture_when_triggered_during_prefill(self):
+        # Trigger arrives before pre-trigger ring is full: capture uses
+        # whatever pre-context has accumulated (partial).
+        pre, post = 8, 2
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=pre,
+                                      post_trigger_samples=post)
+        buf.push(1.0)
+        buf.push(2.0)
+        buf.push(3.0)
+        buf.push_trigger(50.0)
+        buf.push(60.0)
+        buf.push(70.0)
+        assert buf.capture_complete is True
+        seg = buf.captured_segment()
+        # Only 3 pre-context samples + trigger + 2 post = 6 samples total
+        np.testing.assert_allclose(seg, [1.0, 2.0, 3.0, 50.0, 60.0, 70.0])
+
+    def test_ring_shows_only_most_recent_pre_samples(self):
+        # Push more than pre_size samples pre-trigger; only the last
+        # pre_size should appear as pre-context.
+        pre, post = 3, 1
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=pre,
+                                      post_trigger_samples=post)
+        for x in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            buf.push(x)
+        buf.push_trigger(9.0)
+        buf.push(11.0)
+        assert buf.capture_complete is True
+        seg = buf.captured_segment()
+        # Last 3 pre samples are [3, 4, 5], then trigger, then post
+        np.testing.assert_allclose(seg, [3.0, 4.0, 5.0, 9.0, 11.0])
+
+    def test_zero_post_trigger_completes_immediately(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=4,
+                                      post_trigger_samples=0)
+        for x in [1.0, 2.0, 3.0, 4.0]:
+            buf.push(x)
+        assert buf.capture_complete is False
+        buf.push_trigger(5.0)
+        assert buf.capture_complete is True
+        np.testing.assert_allclose(buf.captured_segment(),
+                                   [1.0, 2.0, 3.0, 4.0, 5.0])
+
+    def test_zero_pre_trigger_captures_trigger_and_post(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=0,
+                                      post_trigger_samples=3)
+        buf.push_trigger(7.0)
+        buf.push(8.0)
+        buf.push(9.0)
+        buf.push(10.0)
+        assert buf.capture_complete is True
+        np.testing.assert_allclose(buf.captured_segment(),
+                                   [7.0, 8.0, 9.0, 10.0])
+
+
+class TestTriggerRingBufferLifecycle:
+    def test_pushes_after_complete_are_dropped(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=2,
+                                      post_trigger_samples=1)
+        buf.push(1.0)
+        buf.push(2.0)
+        buf.push_trigger(9.0)
+        buf.push(3.0)
+        assert buf.capture_complete is True
+        before = buf.captured_segment().copy()
+        # Extra pushes are silently ignored
+        buf.push(999.0)
+        buf.push(-999.0)
+        assert buf.capture_complete is True
+        np.testing.assert_array_equal(buf.captured_segment(), before)
+
+    def test_push_trigger_during_capturing_is_ignored(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=2,
+                                      post_trigger_samples=2)
+        buf.push(1.0)
+        buf.push(2.0)
+        buf.push_trigger(9.0)
+        # Second trigger call during Capturing must be a no-op — the
+        # sample it carries must NOT be treated as post-trigger data.
+        buf.push_trigger(-999.0)
+        buf.push(3.0)
+        buf.push(4.0)
+        assert buf.capture_complete is True
+        seg = buf.captured_segment()
+        # -999.0 must not appear anywhere in the captured window.
+        assert -999.0 not in seg.tolist()
+
+    def test_rearm_allows_second_capture(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=2,
+                                      post_trigger_samples=1)
+        buf.push(1.0)
+        buf.push(2.0)
+        buf.push_trigger(9.0)
+        buf.push(3.0)
+        assert buf.capture_complete is True
+        buf.rearm()
+        assert buf.capture_complete is False
+        # After rearm, the pre-ring retains [1, 2] so an immediate trigger
+        # gets the full pre-context (from upstream contract).
+        buf.push_trigger(19.0)
+        buf.push(29.0)
+        assert buf.capture_complete is True
+        np.testing.assert_allclose(buf.captured_segment(),
+                                   [1.0, 2.0, 19.0, 29.0])
+
+    def test_reset_wipes_everything(self):
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=3,
+                                      post_trigger_samples=1)
+        for x in [1.0, 2.0, 3.0]:
+            buf.push(x)
+        buf.push_trigger(9.0)
+        buf.push(4.0)
+        assert buf.capture_complete is True
+        buf.reset()
+        assert buf.capture_complete is False
+        assert buf.captured_segment().shape == (0,)
+        # After reset, an immediate trigger produces a short capture
+        # because the ring is empty (returned to PreFill).
+        buf.push_trigger(50.0)
+        buf.push(60.0)
+        assert buf.capture_complete is True
+        np.testing.assert_allclose(buf.captured_segment(), [50.0, 60.0])
+
+
+class TestTriggerRingBufferDtypeDispatch:
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_captures_correctly_across_dtypes(self, dtype):
+        # Use small integer-valued samples so any narrow dtype represents
+        # them exactly; capture ordering / length is what matters here.
+        buf = mpdsp.TriggerRingBuffer(pre_trigger_samples=3,
+                                      post_trigger_samples=2,
+                                      dtype=dtype)
+        for x in [1.0, 2.0, 3.0]:
+            buf.push(x)
+        buf.push_trigger(9.0)
+        buf.push(10.0)
+        buf.push(11.0)
+        assert buf.capture_complete is True
+        seg = buf.captured_segment()
+        assert seg.shape == (6,)
+        np.testing.assert_allclose(seg, [1.0, 2.0, 3.0, 9.0, 10.0, 11.0])

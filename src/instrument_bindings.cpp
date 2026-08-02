@@ -26,6 +26,7 @@
 
 #include <sw/dsp/instrument/measurements.hpp>
 #include <sw/dsp/instrument/peak_detect.hpp>
+#include <sw/dsp/instrument/ring_buffer.hpp>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -143,6 +144,54 @@ struct PeakDetectDecimatorImpl : IPeakDetectDecimatorImpl {
 	std::size_t samples_in_window() const override { return inner.samples_in_window(); }
 };
 
+// ---------------------------------------------------------------------------
+// TriggerRingBuffer impl. Same type-erased pattern. captured_segment() is
+// copied out into a fresh dense_vector<double> so ownership on the Python
+// side is trivial — the upstream span is only valid until the next rearm().
+//
+// captured_length is exposed as a separate accessor so Python can size the
+// output buffer without materializing captured_segment when the caller only
+// wants the length.
+// ---------------------------------------------------------------------------
+
+struct ITriggerRingBufferImpl {
+	virtual ~ITriggerRingBufferImpl() = default;
+	virtual void push(double x) = 0;
+	virtual void push_trigger(double x) = 0;
+	virtual bool capture_complete() const = 0;
+	virtual mtl::vec::dense_vector<double> captured_segment() const = 0;
+	virtual void rearm() = 0;
+	virtual void reset() = 0;
+	virtual std::size_t pre_trigger_capacity() const = 0;
+	virtual std::size_t post_trigger_capacity() const = 0;
+};
+
+template <typename T>
+struct TriggerRingBufferImpl : ITriggerRingBufferImpl {
+	sw::dsp::instrument::TriggerRingBuffer<T> inner;
+
+	TriggerRingBufferImpl(std::size_t pre, std::size_t post) : inner(pre, post) {}
+
+	void push(double x)         override { inner.push(static_cast<T>(x)); }
+	void push_trigger(double x) override { inner.push_trigger(static_cast<T>(x)); }
+	bool capture_complete()     const override { return inner.capture_complete(); }
+
+	mtl::vec::dense_vector<double> captured_segment() const override {
+		auto span = inner.captured_segment();
+		mtl::vec::dense_vector<double> out(span.size());
+		for (std::size_t i = 0; i < span.size(); ++i) {
+			out[i] = static_cast<double>(span[i]);
+		}
+		return out;
+	}
+
+	void rearm() override { inner.rearm(); }
+	void reset() override { inner.reset(); }
+
+	std::size_t pre_trigger_capacity()  const override { return inner.pre_trigger_capacity(); }
+	std::size_t post_trigger_capacity() const override { return inner.post_trigger_capacity(); }
+};
+
 } // namespace
 
 // PyPeakDetectDecimator: Python-facing class holding the type-erased impl.
@@ -188,6 +237,39 @@ public:
 
 private:
 	std::unique_ptr<IPeakDetectDecimatorImpl> impl_;
+	std::string dtype_;
+};
+
+// PyTriggerRingBuffer: pre/post-trigger scope capture.
+class PyTriggerRingBuffer {
+public:
+	PyTriggerRingBuffer(std::size_t pre_trigger_samples,
+	                    std::size_t post_trigger_samples,
+	                    const std::string& dtype)
+	    : dtype_(dtype) {
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			TriggerRingBufferImpl, ITriggerRingBufferImpl>(
+			mpdsp::parse_config(dtype), "TriggerRingBuffer",
+			pre_trigger_samples, post_trigger_samples);
+	}
+
+	void push(double x)             { impl_->push(x); }
+	void push_trigger(double x)     { impl_->push_trigger(x); }
+	bool capture_complete() const   { return impl_->capture_complete(); }
+
+	mpdsp::bindings::np_f64 captured_segment() const {
+		return mpdsp::bindings::vec_to_numpy(impl_->captured_segment());
+	}
+
+	void rearm() { impl_->rearm(); }
+	void reset() { impl_->reset(); }
+
+	std::size_t pre_trigger_capacity()  const { return impl_->pre_trigger_capacity(); }
+	std::size_t post_trigger_capacity() const { return impl_->post_trigger_capacity(); }
+	const std::string& dtype() const          { return dtype_; }
+
+private:
+	std::unique_ptr<ITriggerRingBufferImpl> impl_;
 	std::string dtype_;
 };
 
@@ -354,5 +436,63 @@ void bind_instrument(nb::module_& m) {
 		     "is emitted, then wraps back to 0.")
 		.def_prop_ro("dtype",
 		     [](const PyPeakDetectDecimator& self) { return self.dtype(); },
+		     "Sample-scalar dtype fixed at construction. Read-only.");
+
+	nb::class_<PyTriggerRingBuffer>(m, "TriggerRingBuffer",
+			"Pre/post-trigger ring buffer for scope-style capture.\n\n"
+			"Feed non-trigger samples with .push(x); fire the trigger with "
+			".push_trigger(x). After post_trigger_samples more pushes, "
+			".capture_complete becomes True and .captured_segment() returns "
+			"the pre + trigger + post window as a NumPy 1D array. Call "
+			".rearm() to discard the capture and resume (pre-trigger ring "
+			"retains its content — near-immediate re-triggers don't lose "
+			"context). Call .reset() to wipe everything.\n\n"
+			"State exposure: `state` as a string is intentionally not "
+			"exposed — the upstream state enum is private and duplicating "
+			"the state machine on the wrapper would be fragile. Use "
+			".capture_complete as the main state check; the pre-fill vs. "
+			"armed distinction is only visible through behavior (calling "
+			".push_trigger() during pre-fill produces a shorter capture).")
+		.def(nb::init<std::size_t, std::size_t, const std::string&>(),
+		     nb::arg("pre_trigger_samples"), nb::arg("post_trigger_samples"),
+		     nb::arg("dtype") = "reference",
+		     "Construct with pre/post capacities (either may be zero). "
+		     "dtype selects the sample scalar; Python I/O is always float64.")
+		.def("push", &PyTriggerRingBuffer::push, nb::arg("sample"),
+		     "Feed one non-trigger sample. Rotates through the pre-trigger "
+		     "ring during PreFill/Armed; extends the capture during "
+		     "Capturing; silently dropped in Complete (rearm first).")
+		.def("push_trigger", &PyTriggerRingBuffer::push_trigger,
+		     nb::arg("sample"),
+		     "Feed the sample that fires the trigger. Starts a capture "
+		     "using whatever pre-context has accumulated so far — if the "
+		     "pre-trigger ring isn't full yet, the resulting captured "
+		     "segment will be correspondingly shorter. Silently ignored "
+		     "if a capture is already in progress or complete.")
+		.def("captured_segment", &PyTriggerRingBuffer::captured_segment,
+		     "Return the captured pre + trigger + post window as a NumPy "
+		     "float64 array. Returns an empty array if capture is not yet "
+		     "complete. The output is a fresh copy — safe to hold across "
+		     "rearm().")
+		.def("rearm", &PyTriggerRingBuffer::rearm,
+		     "Discard the captured segment and resume waiting for the next "
+		     "trigger. The pre-trigger ring retains its content, so a "
+		     "trigger arriving immediately still gets full pre-context.")
+		.def("reset", &PyTriggerRingBuffer::reset,
+		     "Wipe both the ring and any captured segment; return to a "
+		     "fresh PreFill state.")
+		.def_prop_ro("capture_complete",
+		     &PyTriggerRingBuffer::capture_complete,
+		     "True once the post-trigger region has been filled (or "
+		     "immediately after push_trigger when post_trigger_samples "
+		     "is zero). Read-only.")
+		.def_prop_ro("pre_trigger_capacity",
+		     &PyTriggerRingBuffer::pre_trigger_capacity,
+		     "Configured pre-trigger sample capacity. Read-only.")
+		.def_prop_ro("post_trigger_capacity",
+		     &PyTriggerRingBuffer::post_trigger_capacity,
+		     "Configured post-trigger sample count. Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PyTriggerRingBuffer& self) { return self.dtype(); },
 		     "Sample-scalar dtype fixed at construction. Read-only.");
 }
