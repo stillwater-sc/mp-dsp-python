@@ -1,5 +1,10 @@
 # Python Bindings Gap Analysis — 2026-08-01
 
+> **⚠️ Superseded by [`gap_analysis_2026-08-02.md`](./gap_analysis_2026-08-02.md).**
+> This snapshot documents the pre-roadmap state. Preserved as the work plan
+> that drove the 5-phase bindings-gap closure work; refer to the successor
+> for the current coverage status.
+
 Compares the Python surface exposed by **mp-dsp-python** against the full C++
 API of **mixed-precision-dsp v0.6.0**. Goal: identify missing modules,
 missing primitives inside partially covered modules, and prioritize what to
