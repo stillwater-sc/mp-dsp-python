@@ -29,6 +29,9 @@
 #include <mtl/vec/dense_vector.hpp>
 #include <sw/dsp/spectral/laplace.hpp>
 #include <sw/dsp/spectral/ztransform.hpp>
+#include <sw/dsp/types/biquad_coefficients.hpp>
+#include <sw/dsp/types/complex_pair.hpp>
+#include <sw/dsp/types/pole_zero_pair.hpp>
 #include <sw/dsp/types/projection.hpp>
 #include <sw/dsp/types/transfer_function.hpp>
 
@@ -502,4 +505,107 @@ void bind_types(nb::module_& m) {
 		nb::arg("tf"), nb::arg("omega_max"), nb::arg("num_points") = 512,
 		"Evaluate H(j*omega) at `num_points` uniformly spaced angular "
 		"frequencies in [0, omega_max). Returns complex128 ndarray.");
+
+	// -----------------------------------------------------------------------
+	// Phase 5 / #114: first-class structured types.
+	// Bound on double only (matches the TransferFunction rationale earlier
+	// in this file). Read-write fields per the design discussion.
+	// -----------------------------------------------------------------------
+
+	using CP = sw::dsp::ComplexPair<double>;
+	using PZ = sw::dsp::PoleZeroPair<double>;
+	using BQ = sw::dsp::BiquadCoefficients<double>;
+	using cd = std::complex<double>;
+
+	nb::class_<CP>(m, "ComplexPair",
+			"A pair of complex numbers — the building block for pole/zero "
+			"representations that map directly to second-order sections. "
+			"Typically holds either a conjugate pair or a pair of real "
+			"values.")
+		.def(nb::init<>(),
+		     "Default construct (both entries zero).")
+		.def(nb::init<const cd&>(), nb::arg("c1"),
+		     "Construct with a single value; the second entry is zero.")
+		.def(nb::init<const cd&, const cd&>(), nb::arg("c1"), nb::arg("c2"),
+		     "Construct with both entries specified.")
+		.def_rw("first",  &CP::first)
+		.def_rw("second", &CP::second)
+		.def("is_conjugate", &CP::is_conjugate,
+		     "True if second == conj(first).")
+		.def("is_real", &CP::is_real,
+		     "True if both entries have zero imaginary part.")
+		.def("is_matched_pair", &CP::is_matched_pair,
+		     "True if this is either a conjugate pair or a pair of real "
+		     "values where neither is zero.")
+		.def("is_nan", &CP::is_nan,
+		     "True if any real or imaginary component is NaN.");
+
+	nb::class_<PZ>(m, "PoleZeroPair",
+			"Poles + zeros for a single second-order section (biquad). "
+			"For a first-order section, the `.second` complex value in "
+			"each ComplexPair is zero (see is_single_pole()).")
+		.def(nb::init<>(),
+		     "Default construct (all entries zero).")
+		.def(nb::init<const cd&, const cd&>(),
+		     nb::arg("pole"), nb::arg("zero"),
+		     "First-order section: single pole and zero.")
+		.def(nb::init<const cd&, const cd&, const cd&, const cd&>(),
+		     nb::arg("pole1"), nb::arg("zero1"),
+		     nb::arg("pole2"), nb::arg("zero2"),
+		     "Second-order section: conjugate pair of poles and zeros.")
+		.def_rw("poles", &PZ::poles)
+		.def_rw("zeros", &PZ::zeros)
+		.def("is_single_pole", &PZ::is_single_pole,
+		     "True if this represents a first-order section (second entries "
+		     "of both pole and zero pairs are zero).")
+		.def("is_nan", &PZ::is_nan);
+
+	nb::class_<BQ>(m, "BiquadCoefficients",
+			"Coefficients for a second-order (biquad) IIR section:\n"
+			"  H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)\n\n"
+			"Note the a0-normalized convention: a0 is implicitly 1; only "
+			"a1 and a2 are stored. Fields are read-write — construct a "
+			"list of these and pass to IIRFilter.from_coefficients(list) "
+			"to build a filter from raw coefficients (the workflow that "
+			"was previously unreachable from Python).")
+		.def(nb::init<>(),
+		     "Default construct (all coefficients zero).")
+		.def(nb::init<double, double, double, double, double>(),
+		     nb::arg("b0"), nb::arg("b1"), nb::arg("b2"),
+		     nb::arg("a1"), nb::arg("a2"),
+		     "Construct with explicit coefficients.")
+		.def_rw("b0", &BQ::b0)
+		.def_rw("b1", &BQ::b1)
+		.def_rw("b2", &BQ::b2)
+		.def_rw("a1", &BQ::a1)
+		.def_rw("a2", &BQ::a2)
+		.def("set_identity", &BQ::set_identity,
+		     "Reset to the pass-through filter H(z) = 1 "
+		     "(b0=1, all others zero).")
+		.def("set_one_pole", &BQ::set_one_pole,
+		     nb::arg("pole"), nb::arg("zero"),
+		     "Set from a first-order section (single pole, single zero).")
+		.def("set_two_pole", &BQ::set_two_pole,
+		     nb::arg("pole1"), nb::arg("zero1"),
+		     nb::arg("pole2"), nb::arg("zero2"),
+		     "Set from a conjugate pair of poles and zeros (second-order "
+		     "section).")
+		.def("set_from_pole_zero_pair", &BQ::set_from_pole_zero_pair,
+		     nb::arg("pz"),
+		     "Set from a PoleZeroPair. Dispatches to set_one_pole or "
+		     "set_two_pole based on pz.is_single_pole().")
+		.def("apply_scale", &BQ::apply_scale, nb::arg("scale"),
+		     "Multiply the numerator coefficients (b0, b1, b2) by a "
+		     "gain scale factor.")
+		.def("response", &BQ::response, nb::arg("normalized_freq"),
+		     "Evaluate H(e^{j*2*pi*f}) at the normalized frequency "
+		     "f in [0, 0.5], where f = frequency / sample_rate. Returns "
+		     "complex.")
+		.def("__repr__", [](const BQ& b) {
+			return "BiquadCoefficients(b0=" + std::to_string(b.b0)
+			     + ", b1=" + std::to_string(b.b1)
+			     + ", b2=" + std::to_string(b.b2)
+			     + ", a1=" + std::to_string(b.a1)
+			     + ", a2=" + std::to_string(b.a2) + ")";
+		});
 }

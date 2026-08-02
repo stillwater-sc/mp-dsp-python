@@ -351,6 +351,32 @@ class PyIIRFilter {
 public:
 	CascadeD cascade;
 
+	// Construct from a list of BiquadCoefficients — the "from raw
+	// coefficients" workflow that was previously unreachable from Python
+	// (design functions were the only way to make an IIRFilter). Bound as
+	// a def_static classmethod: IIRFilter.from_coefficients(list). Length
+	// must be in [1, kMaxStages]; each element is copied into a cascade
+	// stage in order.
+	static PyIIRFilter from_coefficients(
+			const std::vector<sw::dsp::BiquadCoefficients<double>>& biquads) {
+		if (biquads.empty()) {
+			throw std::invalid_argument(
+				"IIRFilter.from_coefficients: at least one biquad required");
+		}
+		if (biquads.size() > static_cast<std::size_t>(kMaxStages)) {
+			throw std::invalid_argument(
+				"IIRFilter.from_coefficients: too many biquads (max "
+				+ std::to_string(kMaxStages) + ", got "
+				+ std::to_string(biquads.size()) + ")");
+		}
+		PyIIRFilter filt;
+		filt.cascade.set_num_stages(static_cast<int>(biquads.size()));
+		for (std::size_t i = 0; i < biquads.size(); ++i) {
+			filt.cascade.stage(static_cast<int>(i)) = biquads[i];
+		}
+		return filt;
+	}
+
 	int num_stages() const { return cascade.num_stages(); }
 
 	std::vector<std::tuple<double, double, double, double, double>>
@@ -941,9 +967,18 @@ double PyIIRFilter::pole_displacement(const std::string& dtype) const {
 void bind_filters(nb::module_& m) {
 	nb::class_<PyIIRFilter>(m, "IIRFilter",
 		"Cascade-of-biquads IIR filter.\n\n"
-		"Construct via one of the design functions. Coefficients are stored "
-		"in double precision; process() dispatches state/sample arithmetic "
-		"on the dtype argument.")
+		"Construct via one of the design functions (butterworth_lowpass, "
+		"chebyshev1_bandpass, etc.) or via IIRFilter.from_coefficients() "
+		"if you already have the raw biquad coefficients. Coefficients are "
+		"stored in double precision; process() dispatches state/sample "
+		"arithmetic on the dtype argument.")
+		.def_static("from_coefficients", &PyIIRFilter::from_coefficients,
+		     nb::arg("biquads"),
+		     "Construct an IIRFilter from a list of BiquadCoefficients. "
+		     "Length must be in [1, 8] (compile-time cascade bound). Each "
+		     "element populates one biquad section in order. Enables "
+		     "importing coefficients designed elsewhere (scipy, MATLAB, "
+		     "hand-designed cascades) into the mpdsp processing pipeline.")
 		.def("num_stages", &PyIIRFilter::num_stages,
 		     "Number of active biquad sections.")
 		.def("coefficients", &PyIIRFilter::coefficients,

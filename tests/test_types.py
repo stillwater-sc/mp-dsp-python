@@ -332,3 +332,208 @@ class TestLaplaceFreqs:
         ctf = mpdsp.ContinuousTransferFunction(
             np.array([1.0]), np.array([1.0, 1.0]))
         assert mpdsp.laplace_freqs(ctf, 10.0).shape == (512,)
+
+
+# ---------------------------------------------------------------------------
+# Structured types (Phase 5 / #114):
+# ComplexPair, PoleZeroPair, BiquadCoefficients, and
+# IIRFilter.from_coefficients().
+# ---------------------------------------------------------------------------
+
+
+class TestComplexPair:
+    def test_default_construction(self):
+        cp = mpdsp.ComplexPair()
+        assert cp.first == 0.0 + 0j
+        assert cp.second == 0.0 + 0j
+
+    def test_single_value_construction(self):
+        cp = mpdsp.ComplexPair(3.0 + 4.0j)
+        assert cp.first == 3.0 + 4.0j
+        assert cp.second == 0.0 + 0j
+
+    def test_two_value_construction(self):
+        cp = mpdsp.ComplexPair(1 + 2j, 3 + 4j)
+        assert cp.first == 1 + 2j
+        assert cp.second == 3 + 4j
+
+    def test_is_conjugate(self):
+        cp = mpdsp.ComplexPair(0.5 + 0.8j, 0.5 - 0.8j)
+        assert cp.is_conjugate() is True
+        cp2 = mpdsp.ComplexPair(0.5 + 0.8j, 0.5 + 0.8j)
+        assert cp2.is_conjugate() is False
+
+    def test_is_real(self):
+        real_pair = mpdsp.ComplexPair(1 + 0j, 2 + 0j)
+        assert real_pair.is_real() is True
+        complex_pair = mpdsp.ComplexPair(1 + 1j, 2 + 0j)
+        assert complex_pair.is_real() is False
+
+    def test_field_round_trip(self):
+        cp = mpdsp.ComplexPair()
+        cp.first = 5 + 6j
+        cp.second = 7 + 8j
+        assert cp.first == 5 + 6j
+        assert cp.second == 7 + 8j
+
+
+class TestPoleZeroPair:
+    def test_default_construction(self):
+        pz = mpdsp.PoleZeroPair()
+        assert pz.is_single_pole() is True   # both entries default zero
+        assert pz.poles.first == 0j
+        assert pz.zeros.first == 0j
+
+    def test_first_order_construction(self):
+        pz = mpdsp.PoleZeroPair(0.5 + 0j, -1 + 0j)
+        assert pz.poles.first == 0.5 + 0j
+        assert pz.zeros.first == -1 + 0j
+        assert pz.is_single_pole() is True
+
+    def test_second_order_construction(self):
+        pz = mpdsp.PoleZeroPair(0.5 + 0.5j, -1 + 0j,
+                                 0.5 - 0.5j, -1 + 0j)
+        assert pz.poles.first == 0.5 + 0.5j
+        assert pz.poles.second == 0.5 - 0.5j
+        assert pz.is_single_pole() is False
+
+    def test_field_mutation(self):
+        pz = mpdsp.PoleZeroPair()
+        pz.poles = mpdsp.ComplexPair(0.7 + 0.7j, 0.7 - 0.7j)
+        assert pz.poles.first == 0.7 + 0.7j
+        assert pz.poles.second == 0.7 - 0.7j
+
+
+class TestBiquadCoefficients:
+    def test_default_construction(self):
+        bq = mpdsp.BiquadCoefficients()
+        assert bq.b0 == 0.0
+        assert bq.b1 == 0.0
+        assert bq.b2 == 0.0
+        assert bq.a1 == 0.0
+        assert bq.a2 == 0.0
+
+    def test_explicit_construction(self):
+        bq = mpdsp.BiquadCoefficients(1.0, 2.0, 3.0, 4.0, 5.0)
+        assert bq.b0 == 1.0
+        assert bq.b1 == 2.0
+        assert bq.b2 == 3.0
+        assert bq.a1 == 4.0
+        assert bq.a2 == 5.0
+
+    def test_field_mutation(self):
+        bq = mpdsp.BiquadCoefficients()
+        bq.b0 = 0.5
+        bq.a2 = -0.25
+        assert bq.b0 == 0.5
+        assert bq.a2 == -0.25
+
+    def test_set_identity(self):
+        bq = mpdsp.BiquadCoefficients(0.1, 0.2, 0.3, 0.4, 0.5)
+        bq.set_identity()
+        assert bq.b0 == 1.0
+        assert bq.b1 == 0.0
+        assert bq.b2 == 0.0
+        assert bq.a1 == 0.0
+        assert bq.a2 == 0.0
+
+    def test_identity_response_is_unity(self):
+        bq = mpdsp.BiquadCoefficients()
+        bq.set_identity()
+        # H(z) = 1 -> response at every frequency is 1+0j
+        for f in [0.0, 0.1, 0.25, 0.5]:
+            assert bq.response(f) == pytest.approx(1.0 + 0j)
+
+    def test_response_at_dc(self):
+        # H(1) = (b0 + b1 + b2) / (1 + a1 + a2) at z=1 (DC, f=0).
+        bq = mpdsp.BiquadCoefficients(1.0, 0.5, 0.25, -0.5, 0.25)
+        # numerator = 1 + 0.5 + 0.25 = 1.75
+        # denominator = 1 - 0.5 + 0.25 = 0.75
+        assert bq.response(0.0) == pytest.approx(1.75 / 0.75 + 0j)
+
+    def test_apply_scale(self):
+        bq = mpdsp.BiquadCoefficients(1.0, 2.0, 3.0, 0.0, 0.0)
+        bq.apply_scale(2.0)
+        assert bq.b0 == 2.0
+        assert bq.b1 == 4.0
+        assert bq.b2 == 6.0
+        # Denominator unchanged
+        assert bq.a1 == 0.0
+        assert bq.a2 == 0.0
+
+    def test_set_one_pole(self):
+        bq = mpdsp.BiquadCoefficients()
+        bq.set_one_pole(pole=0.5 + 0j, zero=-1.0 + 0j)
+        # b0 = 1, b1 = -zero = 1, b2 = 0
+        # a1 = -pole = -0.5, a2 = 0
+        assert bq.b0 == 1.0
+        assert bq.b1 == 1.0
+        assert bq.a1 == -0.5
+
+    def test_repr(self):
+        bq = mpdsp.BiquadCoefficients(1.0, 2.0, 3.0, 4.0, 5.0)
+        s = repr(bq)
+        for field in ["b0", "b1", "b2", "a1", "a2"]:
+            assert field in s
+
+
+class TestIIRFilterFromCoefficients:
+    def test_construct_from_single_biquad(self):
+        bq = mpdsp.BiquadCoefficients(1.0, 0.0, 0.0, 0.0, 0.0)   # identity
+        filt = mpdsp.IIRFilter.from_coefficients([bq])
+        assert isinstance(filt, mpdsp.IIRFilter)
+        assert filt.num_stages() == 1
+
+    def test_identity_biquad_is_passthrough(self):
+        bq = mpdsp.BiquadCoefficients()
+        bq.set_identity()
+        filt = mpdsp.IIRFilter.from_coefficients([bq])
+        rng = np.random.default_rng(42)
+        sig = rng.standard_normal(256)
+        y = filt.process(sig)
+        np.testing.assert_allclose(y, sig, atol=1e-12)
+
+    def test_multi_stage_cascade(self):
+        # Build a 3-stage cascade of identity biquads — output should
+        # still equal input (3 identities in cascade == identity).
+        biquads = []
+        for _ in range(3):
+            b = mpdsp.BiquadCoefficients()
+            b.set_identity()
+            biquads.append(b)
+        filt = mpdsp.IIRFilter.from_coefficients(biquads)
+        assert filt.num_stages() == 3
+        sig = np.arange(64.0)
+        np.testing.assert_allclose(filt.process(sig), sig, atol=1e-12)
+
+    def test_roundtrip_via_coefficients(self):
+        # Design a Butterworth, extract its coefficients, construct a new
+        # filter from them, and verify the two produce identical output.
+        original = mpdsp.butterworth_lowpass(order=4, sample_rate=8000.0,
+                                              cutoff=1000.0)
+        # coefficients() returns list of (b0, b1, b2, a1, a2) tuples.
+        biquads = [mpdsp.BiquadCoefficients(*c) for c in original.coefficients()]
+        rebuilt = mpdsp.IIRFilter.from_coefficients(biquads)
+        assert rebuilt.num_stages() == original.num_stages()
+        sig = np.sin(2 * np.pi * 300.0 * np.arange(2048) / 8000.0)
+        np.testing.assert_allclose(rebuilt.process(sig),
+                                   original.process(sig), atol=1e-12)
+
+    def test_rejects_empty_list(self):
+        with pytest.raises(ValueError):
+            mpdsp.IIRFilter.from_coefficients([])
+
+    def test_rejects_too_many_biquads(self):
+        biquads = [mpdsp.BiquadCoefficients() for _ in range(9)]  # max=8
+        with pytest.raises(ValueError):
+            mpdsp.IIRFilter.from_coefficients(biquads)
+
+    def test_max_biquads_accepted(self):
+        # Exactly 8 biquads should be accepted.
+        biquads = []
+        for _ in range(8):
+            b = mpdsp.BiquadCoefficients()
+            b.set_identity()
+            biquads.append(b)
+        filt = mpdsp.IIRFilter.from_coefficients(biquads)
+        assert filt.num_stages() == 8

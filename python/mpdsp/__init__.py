@@ -115,6 +115,8 @@ try:
         # Types — rational transfer function + type projection
         TransferFunction, ContinuousTransferFunction,
         project_onto, projection_error,
+        # Types — biquad-level structured types (gap-analysis Phase 5 / #114)
+        ComplexPair, PoleZeroPair, BiquadCoefficients,
         # Types — spectral-analysis free functions over transfer functions
         ztransform, freqz, group_delay, laplace_freqs,
         # Analysis — free-function primitives (method-form lives on IIRFilter)
