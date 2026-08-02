@@ -16,10 +16,13 @@
 #include <sw/dsp/instrument/calibration.hpp>  // CalibrationProfile
 #include <sw/dsp/spectrum/detectors.hpp>
 #include <sw/dsp/spectrum/front_end_corrector.hpp>
+#include <sw/dsp/spectrum/markers.hpp>
 #include <sw/dsp/spectrum/rbw_filter.hpp>
 #include <sw/dsp/spectrum/realtime_spectrum.hpp>
 #include <sw/dsp/spectrum/swept_lo.hpp>
+#include <sw/dsp/spectrum/trace_averaging.hpp>
 #include <sw/dsp/spectrum/vbw_filter.hpp>
+#include <sw/dsp/spectrum/waterfall_buffer.hpp>
 
 #include <nanobind/stl/vector.h>
 
@@ -364,6 +367,152 @@ struct FrontEndCorrectorImpl : IFrontEndCorrectorImpl {
 	std::size_t num_taps() const override { return inner.num_taps(); }
 };
 
+// ---------------------------------------------------------------------------
+// TraceAverager impl. Mode is a class-template-scoped enum, so cross the
+// type-erasure boundary as an int mode_code (same integer values across
+// all instantiations, cast per-Impl to the right enum type — same
+// technique as SweptLO's is_log bool).
+//
+// Mode codes match the enum member order in trace_averaging.hpp:
+//   0: Linear, 1: Exponential, 2: MaxHold, 3: MinHold, 4: MaxHoldN.
+// ---------------------------------------------------------------------------
+
+static int parse_averager_mode_code(const std::string& s) {
+	if (s == "linear")      return 0;
+	if (s == "exponential") return 1;
+	if (s == "max_hold")    return 2;
+	if (s == "min_hold")    return 3;
+	if (s == "max_hold_n")  return 4;
+	throw std::invalid_argument(
+		"TraceAverager: unknown mode '" + s + "' (expected 'linear', "
+		"'exponential', 'max_hold', 'min_hold', 'max_hold_n')");
+}
+
+static std::string averager_mode_to_string(int mode_code) {
+	switch (mode_code) {
+		case 0: return "linear";
+		case 1: return "exponential";
+		case 2: return "max_hold";
+		case 3: return "min_hold";
+		case 4: return "max_hold_n";
+	}
+	return "unknown";
+}
+
+struct ITraceAveragerImpl {
+	virtual ~ITraceAveragerImpl() = default;
+	virtual void accept_sweep(const double* trace, std::size_t n) = 0;
+	virtual mtl::vec::dense_vector<double> current_trace() const = 0;
+	virtual void reset() = 0;
+	virtual std::size_t sweeps_accumulated() const = 0;
+	virtual std::size_t trace_length()       const = 0;
+	virtual int         mode_code()          const = 0;
+};
+
+template <typename T>
+struct TraceAveragerImpl : ITraceAveragerImpl {
+	using ModeEnum = typename sw::dsp::spectrum::TraceAverager<T>::Mode;
+
+	static ModeEnum from_code(int code) {
+		switch (code) {
+			case 0: return ModeEnum::Linear;
+			case 1: return ModeEnum::Exponential;
+			case 2: return ModeEnum::MaxHold;
+			case 3: return ModeEnum::MinHold;
+			case 4: return ModeEnum::MaxHoldN;
+		}
+		throw std::invalid_argument("TraceAverager: bad mode code");
+	}
+
+	sw::dsp::spectrum::TraceAverager<T> inner;
+	int mode_code_;
+
+	TraceAveragerImpl(std::size_t trace_length, int mode_code, double config)
+	    : inner(trace_length, from_code(mode_code), config),
+	      mode_code_(mode_code) {}
+
+	void accept_sweep(const double* trace, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed(n);
+		for (std::size_t i = 0; i < n; ++i) typed[i] = static_cast<T>(trace[i]);
+		inner.accept_sweep(std::span<const T>(typed.data(), typed.size()));
+	}
+
+	mtl::vec::dense_vector<double> current_trace() const override {
+		auto span = inner.current_trace();
+		mtl::vec::dense_vector<double> out(span.size());
+		for (std::size_t i = 0; i < span.size(); ++i) {
+			out[i] = static_cast<double>(span[i]);
+		}
+		return out;
+	}
+
+	void reset()                              override { inner.reset(); }
+	std::size_t sweeps_accumulated() const    override { return inner.sweeps_accumulated(); }
+	std::size_t trace_length()       const    override { return inner.trace_length(); }
+	int         mode_code()          const    override { return mode_code_; }
+};
+
+// ---------------------------------------------------------------------------
+// WaterfallBuffer impl. Pure storage; no arithmetic. Reads copy out to
+// fresh dense_vector<double> — the upstream zero-copy span into the ring
+// is invalidated by subsequent push_frame() calls, so we can't safely
+// expose a NumPy view without holding a Python reference to the buffer.
+// The `last_frames(count)` method returns a flat vector of length
+// count*num_bins; the Py wrapper reshapes to 2D on the way out.
+// ---------------------------------------------------------------------------
+
+struct IWaterfallBufferImpl {
+	virtual ~IWaterfallBufferImpl() = default;
+	virtual void push_frame(const double* magnitude, std::size_t n) = 0;
+	virtual mtl::vec::dense_vector<double>
+	frame_at(std::size_t idx_from_oldest) const = 0;
+	virtual mtl::vec::dense_vector<double>
+	last_frames(std::size_t count) = 0;
+	virtual void clear() = 0;
+	virtual std::size_t num_bins()            const = 0;
+	virtual std::size_t num_frames_capacity() const = 0;
+	virtual std::size_t num_frames_filled()   const = 0;
+};
+
+template <typename T>
+struct WaterfallBufferImpl : IWaterfallBufferImpl {
+	sw::dsp::spectrum::WaterfallBuffer<T> inner;
+
+	WaterfallBufferImpl(std::size_t num_bins, std::size_t num_frames)
+	    : inner(num_bins, num_frames) {}
+
+	void push_frame(const double* magnitude, std::size_t n) override {
+		mtl::vec::dense_vector<T> typed(n);
+		for (std::size_t i = 0; i < n; ++i) typed[i] = static_cast<T>(magnitude[i]);
+		inner.push_frame(std::span<const T>(typed.data(), typed.size()));
+	}
+
+	mtl::vec::dense_vector<double>
+	frame_at(std::size_t idx_from_oldest) const override {
+		auto span = inner.frame_at(idx_from_oldest);
+		mtl::vec::dense_vector<double> out(span.size());
+		for (std::size_t i = 0; i < span.size(); ++i) {
+			out[i] = static_cast<double>(span[i]);
+		}
+		return out;
+	}
+
+	mtl::vec::dense_vector<double>
+	last_frames(std::size_t count) override {
+		auto span = inner.last_frames(count);
+		mtl::vec::dense_vector<double> out(span.size());
+		for (std::size_t i = 0; i < span.size(); ++i) {
+			out[i] = static_cast<double>(span[i]);
+		}
+		return out;
+	}
+
+	void clear() override { inner.clear(); }
+	std::size_t num_bins()            const override { return inner.num_bins(); }
+	std::size_t num_frames_capacity() const override { return inner.num_frames_capacity(); }
+	std::size_t num_frames_filled()   const override { return inner.num_frames_filled(); }
+};
+
 } // namespace
 
 // PyRealtimeSpectrum: streaming FFT engine.
@@ -543,6 +692,88 @@ public:
 
 private:
 	std::unique_ptr<IFrontEndCorrectorImpl> impl_;
+	std::string dtype_;
+};
+
+// PyTraceAverager: cross-sweep trace accumulator (5 modes).
+class PyTraceAverager {
+public:
+	PyTraceAverager(std::size_t trace_length, const std::string& mode,
+	                double config, const std::string& dtype)
+	    : dtype_(dtype) {
+		int code = parse_averager_mode_code(mode);
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			TraceAveragerImpl, ITraceAveragerImpl>(
+			mpdsp::parse_config(dtype), "TraceAverager",
+			trace_length, code, config);
+	}
+
+	void accept_sweep(mpdsp::bindings::np_f64_ro trace) {
+		impl_->accept_sweep(trace.data(), trace.shape(0));
+	}
+
+	mpdsp::bindings::np_f64 current_trace() const {
+		return mpdsp::bindings::vec_to_numpy(impl_->current_trace());
+	}
+
+	void reset()                              { impl_->reset(); }
+	std::size_t sweeps_accumulated() const    { return impl_->sweeps_accumulated(); }
+	std::size_t trace_length()       const    { return impl_->trace_length(); }
+	std::string mode()               const    { return averager_mode_to_string(impl_->mode_code()); }
+	const std::string& dtype()       const    { return dtype_; }
+
+private:
+	std::unique_ptr<ITraceAveragerImpl> impl_;
+	std::string dtype_;
+};
+
+// PyWaterfallBuffer: 2D ring of the last num_frames FFT magnitude frames.
+class PyWaterfallBuffer {
+public:
+	PyWaterfallBuffer(std::size_t num_bins, std::size_t num_frames,
+	                  const std::string& dtype)
+	    : dtype_(dtype) {
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			WaterfallBufferImpl, IWaterfallBufferImpl>(
+			mpdsp::parse_config(dtype), "WaterfallBuffer",
+			num_bins, num_frames);
+	}
+
+	void push_frame(mpdsp::bindings::np_f64_ro magnitude) {
+		impl_->push_frame(magnitude.data(), magnitude.shape(0));
+	}
+
+	mpdsp::bindings::np_f64 frame_at(std::size_t idx_from_oldest) const {
+		return mpdsp::bindings::vec_to_numpy(impl_->frame_at(idx_from_oldest));
+	}
+
+	// last_frames returns a 2D NumPy array shape (available, num_bins).
+	// The Impl produces a flat vector; we reshape by building the ndarray
+	// with two-dim shape directly.
+	nb::ndarray<nb::numpy, double>
+	last_frames(std::size_t count) {
+		auto flat = impl_->last_frames(count);
+		std::size_t nb = impl_->num_bins();
+		std::size_t nf = nb == 0 ? 0 : flat.size() / nb;
+		double* out_ptr = nullptr;
+		double* raw = new double[nf * nb];
+		out_ptr = raw;
+		nb::capsule owner(raw, [](void* p) noexcept {
+			delete[] static_cast<double*>(p);
+		});
+		for (std::size_t i = 0; i < flat.size(); ++i) out_ptr[i] = flat[i];
+		std::size_t shape[2] = { nf, nb };
+		return nb::ndarray<nb::numpy, double>(raw, 2, shape, owner);
+	}
+
+	void clear() { impl_->clear(); }
+	std::size_t num_bins()            const { return impl_->num_bins(); }
+	std::size_t num_frames_capacity() const { return impl_->num_frames_capacity(); }
+	std::size_t num_frames_filled()   const { return impl_->num_frames_filled(); }
+	const std::string& dtype()        const { return dtype_; }
+
+private:
+	std::unique_ptr<IWaterfallBufferImpl> impl_;
 	std::string dtype_;
 };
 
@@ -894,4 +1125,168 @@ void bind_spectrum(nb::module_& m) {
 		.def_prop_ro("dtype",
 		     [](const PyFrontEndCorrector& self) { return self.dtype(); },
 		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// TraceAverager — cross-sweep trace accumulation (5 modes).
+	// -----------------------------------------------------------------------
+	nb::class_<PyTraceAverager>(m, "TraceAverager",
+			"Cross-sweep trace averaging with five commercial-analyzer modes:\n"
+			"  linear      — cumulative unweighted mean of all sweeps.\n"
+			"  exponential — single-pole IIR y = alpha*x + (1-alpha)*y_prev.\n"
+			"                config is alpha in (0, 1].\n"
+			"  max_hold    — element-wise max across all sweeps.\n"
+			"  min_hold    — element-wise min across all sweeps.\n"
+			"  max_hold_n  — element-wise max over the last N sweeps.\n"
+			"                config is the window N >= 1 (integer-valued).\n\n"
+			"Distinct from within-bin detector reduction (see mpdsp.detect_*): "
+			"trace averaging reduces ACROSS sweeps, detectors reduce WITHIN a "
+			"bin.")
+		.def(nb::init<std::size_t, const std::string&, double, const std::string&>(),
+		     nb::arg("trace_length"), nb::arg("mode"),
+		     nb::arg("config") = 0.0,
+		     nb::arg("dtype") = "reference",
+		     "Construct with a fixed trace_length (>= 1). mode selects the "
+		     "reduction; config is mode-specific (alpha for exponential, N "
+		     "for max_hold_n, ignored otherwise).")
+		.def("accept_sweep", &PyTraceAverager::accept_sweep, nb::arg("trace"),
+		     "Push a new sweep. Length must equal trace_length.")
+		.def("current_trace", &PyTraceAverager::current_trace,
+		     "Return the current accumulated trace as a NumPy array. Value "
+		     "is meaningful only after at least one accept_sweep().")
+		.def("reset", &PyTraceAverager::reset,
+		     "Discard accumulated state; mode and config are preserved.")
+		.def_prop_ro("sweeps_accumulated",
+		     &PyTraceAverager::sweeps_accumulated,
+		     "Number of sweeps accepted since construction or last reset(). "
+		     "Read-only.")
+		.def_prop_ro("trace_length", &PyTraceAverager::trace_length,
+		     "Fixed bin count per sweep. Read-only.")
+		.def_prop_ro("mode", &PyTraceAverager::mode,
+		     "'linear' / 'exponential' / 'max_hold' / 'min_hold' / "
+		     "'max_hold_n'. Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PyTraceAverager& self) { return self.dtype(); },
+		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// WaterfallBuffer — 2D ring for the most recent N FFT magnitude frames.
+	// -----------------------------------------------------------------------
+	nb::class_<PyWaterfallBuffer>(m, "WaterfallBuffer",
+			"Circular buffer storing the last num_frames FFT magnitude "
+			"frames from a streaming spectrum processor. Each frame has "
+			"num_bins samples. When the ring is full, push_frame overwrites "
+			"the oldest frame.\n\n"
+			"Distinct from spectral.Spectrogram (batch STFT) — this class is "
+			"the analyzer-side display memory that fills incrementally as "
+			"FFTs land.")
+		.def(nb::init<std::size_t, std::size_t, const std::string&>(),
+		     nb::arg("num_bins"), nb::arg("num_frames"),
+		     nb::arg("dtype") = "reference",
+		     "Construct with num_bins per frame and num_frames capacity. "
+		     "Both must be > 0; num_bins * num_frames must fit in size_t.")
+		.def("push_frame", &PyWaterfallBuffer::push_frame,
+		     nb::arg("magnitude"),
+		     "Append one frame. Length must equal num_bins.")
+		.def("frame_at", &PyWaterfallBuffer::frame_at,
+		     nb::arg("idx_from_oldest"),
+		     "Return the chronologically-indexed frame (0 = oldest, "
+		     "num_frames_filled - 1 = newest) as a NumPy 1D array. Fresh "
+		     "copy — safe to hold across further push_frame calls.")
+		.def("last_frames", &PyWaterfallBuffer::last_frames, nb::arg("count"),
+		     "Return the most recent `count` frames as a 2D NumPy array "
+		     "shape (available, num_bins), oldest first. count is clamped "
+		     "to num_frames_filled — fewer-than-requested frames are "
+		     "returned when the buffer hasn't filled yet.")
+		.def("clear", &PyWaterfallBuffer::clear,
+		     "Discard all stored frames; capacity preserved.")
+		.def_prop_ro("num_bins", &PyWaterfallBuffer::num_bins)
+		.def_prop_ro("num_frames_capacity",
+		     &PyWaterfallBuffer::num_frames_capacity)
+		.def_prop_ro("num_frames_filled",
+		     &PyWaterfallBuffer::num_frames_filled)
+		.def_prop_ro("dtype",
+		     [](const PyWaterfallBuffer& self) { return self.dtype(); });
+
+	// -----------------------------------------------------------------------
+	// Marker + DeltaMarker structs. Simple data types — expose fields as
+	// read-only properties so Python users can inspect but not mutate the
+	// results of find_peaks / harmonic_markers.
+	// -----------------------------------------------------------------------
+	nb::class_<sw::dsp::spectrum::Marker>(m, "Marker",
+			"A single marker on a spectrum trace: bin index, sub-bin-"
+			"interpolated frequency (Hz), and amplitude. Returned by "
+			"find_peaks() and harmonic_markers(); consumed by "
+			"make_delta_marker().")
+		.def(nb::init<>())
+		.def_rw("bin_index",    &sw::dsp::spectrum::Marker::bin_index)
+		.def_rw("frequency_hz", &sw::dsp::spectrum::Marker::frequency_hz)
+		.def_rw("amplitude",    &sw::dsp::spectrum::Marker::amplitude)
+		.def("__repr__", [](const sw::dsp::spectrum::Marker& m) {
+			return "Marker(bin_index=" + std::to_string(m.bin_index)
+			     + ", frequency_hz=" + std::to_string(m.frequency_hz)
+			     + ", amplitude="    + std::to_string(m.amplitude) + ")";
+		});
+
+	nb::class_<sw::dsp::spectrum::DeltaMarker>(m, "DeltaMarker",
+			"Two-marker delta measurement. delta_freq_hz and "
+			"delta_amplitude are `b` minus `a`, matching the convention "
+			"of every commercial analyzer's delta-marker mode.")
+		.def(nb::init<>())
+		.def_rw("a",               &sw::dsp::spectrum::DeltaMarker::a)
+		.def_rw("b",               &sw::dsp::spectrum::DeltaMarker::b)
+		.def_rw("delta_freq_hz",   &sw::dsp::spectrum::DeltaMarker::delta_freq_hz)
+		.def_rw("delta_amplitude", &sw::dsp::spectrum::DeltaMarker::delta_amplitude);
+
+	// -----------------------------------------------------------------------
+	// Marker free functions. find_peaks / harmonic_markers dispatch on the
+	// dtype used to compare amplitudes; make_delta_marker is pure double
+	// arithmetic on two Markers (no dispatch needed).
+	// -----------------------------------------------------------------------
+	m.def("find_peaks",
+		[](np_f64_ro trace, double bin_freq_step_hz,
+		   std::size_t top_n, std::size_t min_separation_bins,
+		   const std::string& dtype) {
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "find_peaks", [&]<typename T>() {
+				auto v = cast_signal<T>(trace);
+				return sw::dsp::spectrum::find_peaks<T>(
+					std::span<const T>(v.data(), v.size()),
+					bin_freq_step_hz, top_n, min_separation_bins);
+			});
+		},
+		nb::arg("trace"), nb::arg("bin_freq_step_hz"), nb::arg("top_n"),
+		nb::arg("min_separation_bins") = static_cast<std::size_t>(3),
+		nb::arg("dtype") = "reference",
+		"Find the top-N strongest peaks in a trace with a minimum-"
+		"separation greedy selection. Returns a list of Marker objects in "
+		"descending amplitude order. Sub-bin frequency position is "
+		"recovered via parabolic interpolation across the three bins around "
+		"each peak; edge bins skip interpolation.");
+
+	m.def("harmonic_markers",
+		[](np_f64_ro trace, double bin_freq_step_hz,
+		   double fundamental_hz, std::size_t harmonics,
+		   const std::string& dtype) {
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "harmonic_markers",
+				[&]<typename T>() {
+					auto v = cast_signal<T>(trace);
+					return sw::dsp::spectrum::harmonic_markers<T>(
+						std::span<const T>(v.data(), v.size()),
+						bin_freq_step_hz, fundamental_hz, harmonics);
+				});
+		},
+		nb::arg("trace"), nb::arg("bin_freq_step_hz"),
+		nb::arg("fundamental_hz"), nb::arg("harmonics"),
+		nb::arg("dtype") = "reference",
+		"Markers at bins nearest k * fundamental_hz for k = 2..harmonics+1. "
+		"Returns a list of Marker objects; harmonics past the trace's "
+		"frequency range are silently omitted. Combine with find_peaks() "
+		"and a small neighborhood search to peak-snap each harmonic.");
+
+	m.def("make_delta_marker",
+		&sw::dsp::spectrum::make_delta_marker,
+		nb::arg("a"), nb::arg("b"),
+		"Compute a DeltaMarker from two Markers: delta_freq_hz and "
+		"delta_amplitude are b - a.");
 }

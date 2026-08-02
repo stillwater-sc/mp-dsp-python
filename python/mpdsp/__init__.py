@@ -129,6 +129,10 @@ try:
         RBWFilter, VBWFilter,
         # Spectrum analyzer — swept LO + front-end calibration (gap-analysis Phase 3 / #106)
         SweptLO, CalibrationProfile, FrontEndCorrector,
+        # Spectrum analyzer — trace / waterfall / markers (gap-analysis Phase 3 / #107)
+        TraceAverager, WaterfallBuffer,
+        Marker, DeltaMarker,
+        find_peaks, harmonic_markers, make_delta_marker,
         # Introspection
         available_dtypes, bits_of,
     )

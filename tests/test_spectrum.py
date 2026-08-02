@@ -854,3 +854,363 @@ class TestFrontEndCorrectorDtypeDispatch:
         # Flat profile inverts to near-identity; post-transient output
         # sits near the DC input under any reasonable dtype.
         assert abs(y[-1] - 1.0) < 0.1
+
+
+# ---------------------------------------------------------------------------
+# TraceAverager — cross-sweep accumulation (#107).
+# ---------------------------------------------------------------------------
+
+
+class TestTraceAveragerConstruction:
+    def test_linear_default_config_ignored(self):
+        avg = mpdsp.TraceAverager(trace_length=64, mode="linear")
+        assert avg.trace_length == 64
+        assert avg.mode == "linear"
+        assert avg.sweeps_accumulated == 0
+        assert avg.dtype == "reference"
+
+    def test_exponential_needs_valid_alpha(self):
+        avg = mpdsp.TraceAverager(64, "exponential", config=0.1)
+        assert avg.mode == "exponential"
+
+    def test_exponential_rejects_bad_alpha(self):
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(64, "exponential", config=0.0)
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(64, "exponential", config=1.5)
+
+    def test_max_hold_n_needs_integer_window(self):
+        avg = mpdsp.TraceAverager(64, "max_hold_n", config=4.0)
+        assert avg.mode == "max_hold_n"
+
+    def test_max_hold_n_rejects_non_integer(self):
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(64, "max_hold_n", config=2.5)
+
+    def test_max_hold_n_rejects_zero(self):
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(64, "max_hold_n", config=0.0)
+
+    def test_rejects_zero_trace_length(self):
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(0, "linear")
+
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError):
+            mpdsp.TraceAverager(64, "not_a_mode")
+
+
+class TestTraceAveragerModes:
+    def test_linear_averages_identical_sweeps(self):
+        avg = mpdsp.TraceAverager(4, "linear")
+        for _ in range(5):
+            avg.accept_sweep(np.array([1.0, 2.0, 3.0, 4.0]))
+        np.testing.assert_allclose(avg.current_trace(),
+                                   [1.0, 2.0, 3.0, 4.0])
+        assert avg.sweeps_accumulated == 5
+
+    def test_linear_averages_different_sweeps(self):
+        avg = mpdsp.TraceAverager(3, "linear")
+        avg.accept_sweep(np.array([1.0, 2.0, 3.0]))
+        avg.accept_sweep(np.array([3.0, 4.0, 5.0]))
+        # Mean = ([1+3, 2+4, 3+5]) / 2 = [2, 3, 4]
+        np.testing.assert_allclose(avg.current_trace(), [2.0, 3.0, 4.0])
+
+    def test_exponential_seeds_from_first_sweep(self):
+        # First sweep must NOT be dragged toward zero.
+        avg = mpdsp.TraceAverager(3, "exponential", config=0.1)
+        avg.accept_sweep(np.array([5.0, 6.0, 7.0]))
+        np.testing.assert_allclose(avg.current_trace(), [5.0, 6.0, 7.0])
+
+    def test_exponential_converges(self):
+        # Repeated identical input pulls the exponential average toward
+        # that value.
+        avg = mpdsp.TraceAverager(2, "exponential", config=0.3)
+        avg.accept_sweep(np.array([10.0, 20.0]))
+        for _ in range(50):
+            avg.accept_sweep(np.array([0.0, 0.0]))
+        out = avg.current_trace()
+        assert abs(out[0]) < 0.5
+        assert abs(out[1]) < 0.5
+
+    def test_max_hold_keeps_max(self):
+        avg = mpdsp.TraceAverager(3, "max_hold")
+        avg.accept_sweep(np.array([1.0, 5.0, 3.0]))
+        avg.accept_sweep(np.array([4.0, 2.0, 6.0]))
+        avg.accept_sweep(np.array([2.0, 3.0, 1.0]))
+        np.testing.assert_allclose(avg.current_trace(), [4.0, 5.0, 6.0])
+
+    def test_min_hold_keeps_min(self):
+        avg = mpdsp.TraceAverager(3, "min_hold")
+        avg.accept_sweep(np.array([1.0, 5.0, 3.0]))
+        avg.accept_sweep(np.array([4.0, 2.0, 6.0]))
+        avg.accept_sweep(np.array([2.0, 3.0, 1.0]))
+        np.testing.assert_allclose(avg.current_trace(), [1.0, 2.0, 1.0])
+
+    def test_max_hold_n_rolling_window(self):
+        # N=2: only the last 2 sweeps contribute to the max.
+        avg = mpdsp.TraceAverager(3, "max_hold_n", config=2.0)
+        avg.accept_sweep(np.array([9.0, 9.0, 9.0]))   # dominates initially
+        avg.accept_sweep(np.array([1.0, 2.0, 3.0]))   # window [9], [1..3] -> [9, 9, 9]
+        avg.accept_sweep(np.array([4.0, 5.0, 6.0]))   # window [1..3], [4..6] -> [4, 5, 6]
+        np.testing.assert_allclose(avg.current_trace(), [4.0, 5.0, 6.0])
+
+    def test_reset_clears_state_but_preserves_mode(self):
+        avg = mpdsp.TraceAverager(3, "max_hold")
+        avg.accept_sweep(np.array([5.0, 5.0, 5.0]))
+        assert avg.sweeps_accumulated == 1
+        avg.reset()
+        assert avg.sweeps_accumulated == 0
+        assert avg.mode == "max_hold"
+
+    def test_accept_sweep_rejects_length_mismatch(self):
+        avg = mpdsp.TraceAverager(4, "linear")
+        with pytest.raises(ValueError):
+            avg.accept_sweep(np.array([1.0, 2.0, 3.0]))
+
+
+class TestTraceAveragerDtypeDispatch:
+    def test_dtype_property(self):
+        avg = mpdsp.TraceAverager(8, "linear", dtype="posit_full")
+        assert avg.dtype == "posit_full"
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_linear_across_dtypes(self, dtype):
+        avg = mpdsp.TraceAverager(4, "linear", dtype=dtype)
+        for _ in range(3):
+            avg.accept_sweep(np.array([1.0, 2.0, 3.0, 4.0]))
+        out = avg.current_trace()
+        np.testing.assert_allclose(out, [1.0, 2.0, 3.0, 4.0], atol=0.1)
+
+
+# ---------------------------------------------------------------------------
+# WaterfallBuffer (#107).
+# ---------------------------------------------------------------------------
+
+
+class TestWaterfallBuffer:
+    def test_construction_and_capacities(self):
+        wf = mpdsp.WaterfallBuffer(num_bins=8, num_frames=4)
+        assert wf.num_bins == 8
+        assert wf.num_frames_capacity == 4
+        assert wf.num_frames_filled == 0
+        assert wf.dtype == "reference"
+
+    def test_rejects_zero_dimensions(self):
+        with pytest.raises(ValueError):
+            mpdsp.WaterfallBuffer(0, 4)
+        with pytest.raises(ValueError):
+            mpdsp.WaterfallBuffer(4, 0)
+
+    def test_push_and_frame_at(self):
+        wf = mpdsp.WaterfallBuffer(3, 4)
+        wf.push_frame(np.array([1.0, 2.0, 3.0]))
+        wf.push_frame(np.array([4.0, 5.0, 6.0]))
+        assert wf.num_frames_filled == 2
+        np.testing.assert_allclose(wf.frame_at(0), [1.0, 2.0, 3.0])
+        np.testing.assert_allclose(wf.frame_at(1), [4.0, 5.0, 6.0])
+
+    def test_push_frame_rejects_wrong_length(self):
+        wf = mpdsp.WaterfallBuffer(3, 4)
+        with pytest.raises(ValueError):
+            wf.push_frame(np.array([1.0, 2.0]))
+
+    def test_ring_wraps_over_capacity(self):
+        wf = mpdsp.WaterfallBuffer(2, 3)  # 3-frame ring
+        for k in range(5):  # push 5 frames -> oldest 2 dropped
+            wf.push_frame(np.array([float(k), float(k) + 0.5]))
+        assert wf.num_frames_filled == 3
+        # After wrap: chronological order is frames 2, 3, 4
+        np.testing.assert_allclose(wf.frame_at(0), [2.0, 2.5])
+        np.testing.assert_allclose(wf.frame_at(1), [3.0, 3.5])
+        np.testing.assert_allclose(wf.frame_at(2), [4.0, 4.5])
+
+    def test_frame_at_out_of_range(self):
+        wf = mpdsp.WaterfallBuffer(2, 3)
+        wf.push_frame(np.array([1.0, 2.0]))
+        with pytest.raises(IndexError):
+            wf.frame_at(1)
+
+    def test_last_frames_2d_shape_and_content(self):
+        wf = mpdsp.WaterfallBuffer(2, 4)
+        for k in range(3):
+            wf.push_frame(np.array([float(k), float(k) + 0.5]))
+        block = wf.last_frames(2)
+        assert block.shape == (2, 2)
+        # last_frames(2) = frames 1, 2 (chronological, oldest first)
+        np.testing.assert_allclose(block, [[1.0, 1.5], [2.0, 2.5]])
+
+    def test_last_frames_clamps_to_available(self):
+        wf = mpdsp.WaterfallBuffer(2, 4)
+        wf.push_frame(np.array([1.0, 2.0]))
+        block = wf.last_frames(10)
+        assert block.shape == (1, 2)   # only 1 available
+
+    def test_last_frames_empty_when_no_frames(self):
+        wf = mpdsp.WaterfallBuffer(2, 4)
+        block = wf.last_frames(5)
+        assert block.shape == (0, 2)
+
+    def test_clear_resets_fill(self):
+        wf = mpdsp.WaterfallBuffer(2, 4)
+        wf.push_frame(np.array([1.0, 2.0]))
+        wf.push_frame(np.array([3.0, 4.0]))
+        wf.clear()
+        assert wf.num_frames_filled == 0
+        # Capacity preserved
+        assert wf.num_frames_capacity == 4
+
+
+# ---------------------------------------------------------------------------
+# Marker / DeltaMarker + free functions (#107).
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerAndDeltaMarker:
+    def test_marker_default_construction(self):
+        m = mpdsp.Marker()
+        assert m.bin_index == 0
+        assert m.frequency_hz == 0.0
+        assert m.amplitude == 0.0
+
+    def test_marker_field_read_write(self):
+        m = mpdsp.Marker()
+        m.bin_index = 42
+        m.frequency_hz = 1234.5
+        m.amplitude = -30.0
+        assert m.bin_index == 42
+        assert m.frequency_hz == 1234.5
+        assert m.amplitude == -30.0
+
+    def test_marker_repr(self):
+        m = mpdsp.Marker()
+        m.bin_index = 5
+        m.frequency_hz = 500.0
+        m.amplitude = -12.0
+        # Repr contains the field values
+        r = repr(m)
+        assert "bin_index=5" in r
+        assert "frequency_hz" in r
+        assert "amplitude" in r
+
+    def test_make_delta_marker(self):
+        a = mpdsp.Marker()
+        a.frequency_hz = 100.0
+        a.amplitude = -20.0
+        b = mpdsp.Marker()
+        b.frequency_hz = 250.0
+        b.amplitude = -15.0
+        d = mpdsp.make_delta_marker(a, b)
+        assert d.delta_freq_hz == 150.0
+        assert d.delta_amplitude == 5.0
+        assert d.a.frequency_hz == 100.0
+        assert d.b.amplitude == -15.0
+
+
+class TestFindPeaks:
+    def test_returns_top_n_in_descending_amplitude(self):
+        # Trace with three clear peaks far apart.
+        trace = np.array([0.0, 5.0, 0.0, 0.0, 0.0,
+                          0.0, 3.0, 0.0, 0.0, 0.0,
+                          0.0, 8.0, 0.0])
+        peaks = mpdsp.find_peaks(trace, bin_freq_step_hz=10.0, top_n=3)
+        assert len(peaks) == 3
+        # Descending amplitude order
+        assert peaks[0].amplitude >= peaks[1].amplitude >= peaks[2].amplitude
+        # Top peak is bin 11 (amp 8.0)
+        assert peaks[0].bin_index == 11
+        assert abs(peaks[0].frequency_hz - 110.0) < 5.0  # bin 11 * 10 Hz
+
+    def test_top_n_zero_returns_empty(self):
+        trace = np.array([0.0, 5.0, 0.0])
+        peaks = mpdsp.find_peaks(trace, bin_freq_step_hz=1.0, top_n=0)
+        assert peaks == []
+
+    def test_empty_trace_returns_empty(self):
+        peaks = mpdsp.find_peaks(np.array([]), bin_freq_step_hz=1.0, top_n=5)
+        assert peaks == []
+
+    def test_min_separation_suppresses_adjacent(self):
+        # Two peaks close together: min_separation should reject the
+        # weaker one.
+        trace = np.array([0.0, 5.0, 0.0, 6.0, 0.0])
+        peaks = mpdsp.find_peaks(trace, bin_freq_step_hz=1.0,
+                                 top_n=5, min_separation_bins=3)
+        # The two peaks are 2 bins apart; only the taller (bin 3, amp 6)
+        # survives with min_separation=3.
+        assert len(peaks) == 1
+        assert peaks[0].bin_index == 3
+
+    def test_sub_bin_frequency_interpolation(self):
+        # Symmetric peak: parabolic offset should be 0.
+        trace = np.array([1.0, 2.0, 5.0, 2.0, 1.0])
+        peaks = mpdsp.find_peaks(trace, bin_freq_step_hz=1.0, top_n=1)
+        assert peaks[0].bin_index == 2
+        assert abs(peaks[0].frequency_hz - 2.0) < 1e-9  # no offset
+
+    def test_rejects_bad_bin_step(self):
+        trace = np.array([1.0, 2.0, 1.0])
+        with pytest.raises(ValueError):
+            mpdsp.find_peaks(trace, bin_freq_step_hz=0.0, top_n=1)
+
+
+class TestHarmonicMarkers:
+    def test_returns_bins_at_multiples_of_fundamental(self):
+        # trace of 100 bins at 1 Hz/bin. Fundamental = 10 Hz.
+        # 2f=20, 3f=30, 4f=40 -> bins 20, 30, 40.
+        trace = np.arange(100, dtype=np.float64)
+        markers = mpdsp.harmonic_markers(trace, bin_freq_step_hz=1.0,
+                                          fundamental_hz=10.0,
+                                          harmonics=3)
+        assert len(markers) == 3
+        assert markers[0].bin_index == 20
+        assert markers[1].bin_index == 30
+        assert markers[2].bin_index == 40
+        # Amplitudes match trace at target bins.
+        assert markers[0].amplitude == 20.0
+
+    def test_omits_out_of_range_harmonics(self):
+        # Only 2nd harmonic fits in the trace; 3rd would be past the end.
+        trace = np.arange(25, dtype=np.float64)
+        markers = mpdsp.harmonic_markers(trace, bin_freq_step_hz=1.0,
+                                          fundamental_hz=10.0,
+                                          harmonics=3)
+        # 2nd = 20 (in range), 3rd = 30 (out of range)
+        assert len(markers) == 1
+        assert markers[0].bin_index == 20
+
+    def test_zero_harmonics_returns_empty(self):
+        trace = np.arange(100, dtype=np.float64)
+        markers = mpdsp.harmonic_markers(trace, 1.0, 10.0, 0)
+        assert markers == []
+
+    def test_empty_trace_returns_empty(self):
+        markers = mpdsp.harmonic_markers(np.array([]), 1.0, 10.0, 3)
+        assert markers == []
+
+    def test_rejects_bad_bin_step(self):
+        with pytest.raises(ValueError):
+            mpdsp.harmonic_markers(np.arange(10, dtype=np.float64),
+                                    bin_freq_step_hz=0.0,
+                                    fundamental_hz=1.0, harmonics=2)
+
+    def test_rejects_bad_fundamental(self):
+        with pytest.raises(ValueError):
+            mpdsp.harmonic_markers(np.arange(10, dtype=np.float64),
+                                    bin_freq_step_hz=1.0,
+                                    fundamental_hz=-1.0, harmonics=2)
+
+
+class TestMarkersDtypeDispatch:
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_find_peaks_across_dtypes(self, dtype):
+        trace = np.array([0.0, 5.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0])
+        peaks = mpdsp.find_peaks(trace, bin_freq_step_hz=1.0, top_n=2,
+                                  dtype=dtype)
+        # Peak bin locations are precision-insensitive at these amplitudes.
+        assert len(peaks) == 2
+        # Strongest at bin 5, second at bin 1.
+        assert peaks[0].bin_index == 5
+        assert peaks[1].bin_index == 1
