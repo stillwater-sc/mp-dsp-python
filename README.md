@@ -236,7 +236,6 @@ mp-dsp-python/
 │   └── mpdsp/
 │       ├── __init__.py             # Public API surface
 │       ├── filters.py              # Pythonic filter wrapper classes
-│       ├── spectral.py             # Spectral analysis helpers
 │       ├── estimation.py           # Kalman/adaptive filter wrappers
 │       ├── image.py                # Image processing helpers
 │       ├── analysis.py             # Analysis helpers
