@@ -528,35 +528,22 @@ class TestRationalResamplerProcessing:
 
 
 class TestRationalResamplerDtypeDispatch:
-    # Note on narrow-type dtypes: the Kaiser-windowed sinc taps used by
-    # RationalResampler are designed at CoeffScalar precision, and I0(beta*x)
-    # in the Kaiser design overflows for narrow cfloat types (half, cf24).
-    # This corrupts one polyphase sub-filter and produces NaN at every Lth
-    # output sample. Not a binding bug — an upstream numerical limitation
-    # with certain narrow types for filter DESIGN (as opposed to processing).
-    # gpu_baseline (float coefficients) and posit_full (posit<32,2> ~= 32-bit)
-    # have enough dynamic range to design cleanly.
+    # Previously split into wide-dtype (all-finite) vs. narrow-dtype
+    # (any-finite) tests because upstream design_fir_lowpass produced NaN
+    # at the center tap under narrow cfloat CoeffScalar — my original
+    # note here blamed Kaiser I0 overflow, but the actual root cause was
+    # the T(1e12) threshold in design_fir_lowpass overflowing the 5-bit
+    # exponent of cfloat<16,5>/cfloat<24,5>. Fixed upstream in
+    # mixed-precision-dsp#201 (integer-index center-tap check instead
+    # of float-space threshold). Now every dispatched dtype produces
+    # all-finite output.
 
     @pytest.mark.parametrize(
-        "dtype", ["gpu_baseline", "posit_full"])
-    def test_dispatch_produces_finite_output_wide_dtypes(self, dtype):
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_dispatch_across_dtypes(self, dtype):
         r = mpdsp.RationalResampler(L=3, M=2, dtype=dtype)
         assert r.dtype == dtype
         sig = np.sin(2 * np.pi * np.arange(500) * 0.05)
         y = r.process(sig)
         assert y.shape[0] > 0
         assert np.all(np.isfinite(y))
-
-    @pytest.mark.parametrize("dtype", ["half", "cf24"])
-    def test_dispatch_runs_on_narrow_dtypes(self, dtype):
-        # Weaker guarantee for narrow-cfloat dtypes: the class constructs
-        # and completes a process() call without exception, and produces
-        # SOME finite samples (the non-affected polyphase sub-filters still
-        # work). Any-finite rather than all-finite here documents the
-        # upstream Kaiser-design overflow at these precisions.
-        r = mpdsp.RationalResampler(L=3, M=2, dtype=dtype)
-        assert r.dtype == dtype
-        sig = np.sin(2 * np.pi * np.arange(500) * 0.05)
-        y = r.process(sig)
-        assert y.shape[0] > 0
-        assert np.any(np.isfinite(y))
