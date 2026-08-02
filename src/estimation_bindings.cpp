@@ -10,6 +10,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 
+#include <sw/dsp/estimation/ekf.hpp>
 #include <sw/dsp/estimation/kalman.hpp>
 #include <sw/dsp/estimation/lms.hpp>
 #include <sw/dsp/estimation/rls.hpp>
@@ -197,6 +198,242 @@ public:
 
 private:
 	std::unique_ptr<IKalmanImpl> impl_;
+	std::string dtype_;
+};
+
+// ===========================================================================
+// ExtendedKalmanFilter (EKF)
+//
+// Nonlinear generalization of KalmanFilter. Python users supply four
+// callbacks — f(x), F(x), h(x), H(x) — that return numpy arrays. Each
+// per-dtype impl wraps those callbacks in std::function closures that
+// marshal dense_vector<T> <-> NumPy at the boundary.
+//
+// The Python callback objects (nb::callable) live inside the closure via
+// capture-by-value; nanobind manages their destruction under the GIL when
+// the EKFImpl is torn down (which happens under Python GC, GIL held).
+//
+// GIL: predict()/update() are bound normally (no gil_scoped_release), so
+// the GIL is held when C++ invokes the closures — safe to call Python from
+// within.
+// ===========================================================================
+
+namespace {
+
+// Convert a Python callback's return value into a dense_vector<T> of the
+// expected length. The callback is required to return a 1D float64 ndarray;
+// lists / other convertibles are rejected loudly (nb::cast throws).
+template <typename T>
+static mtl::vec::dense_vector<T>
+callback_result_to_vec(nb::handle result, std::size_t expected,
+                        const char* name) {
+	auto arr = nb::cast<np_f64_ro>(result);
+	if (arr.shape(0) != expected) {
+		throw std::runtime_error(std::string(name) +
+			" returned vector of length " + std::to_string(arr.shape(0)) +
+			" but expected " + std::to_string(expected));
+	}
+	mtl::vec::dense_vector<T> out(expected);
+	for (std::size_t i = 0; i < expected; ++i) {
+		out[i] = static_cast<T>(arr.data()[i]);
+	}
+	return out;
+}
+
+// Convert a Python callback's return value into a dense2D<T> of the expected
+// shape. Callback must return a 2D float64 c-contiguous ndarray.
+template <typename T>
+static mtl::mat::dense2D<T>
+callback_result_to_mat(nb::handle result,
+                        std::size_t rows, std::size_t cols,
+                        const char* name) {
+	auto arr = nb::cast<np_f64_2d_ro>(result);
+	if (arr.shape(0) != rows || arr.shape(1) != cols) {
+		throw std::runtime_error(std::string(name) +
+			" returned matrix of shape " + std::to_string(arr.shape(0)) +
+			"x" + std::to_string(arr.shape(1)) +
+			" but expected " + std::to_string(rows) + "x" + std::to_string(cols));
+	}
+	mtl::mat::dense2D<T> out(rows, cols);
+	const double* data = arr.data();
+	for (std::size_t r = 0; r < rows; ++r) {
+		for (std::size_t c = 0; c < cols; ++c) {
+			out(r, c) = static_cast<T>(data[r * cols + c]);
+		}
+	}
+	return out;
+}
+
+struct IEKFImpl {
+	virtual ~IEKFImpl() = default;
+
+	virtual std::size_t state_dim() const = 0;
+	virtual std::size_t meas_dim()  const = 0;
+
+	virtual np_f64_2d get_Q() const = 0;
+	virtual np_f64_2d get_R() const = 0;
+	virtual np_f64_2d get_P() const = 0;
+	virtual np_f64    get_state() const = 0;
+
+	virtual void set_Q(np_f64_2d_ro a) = 0;
+	virtual void set_R(np_f64_2d_ro a) = 0;
+	virtual void set_P(np_f64_2d_ro a) = 0;
+	virtual void set_state(np_f64_ro v) = 0;
+
+	virtual void set_state_function(nb::callable f, nb::callable F) = 0;
+	virtual void set_observation_function(nb::callable h, nb::callable H) = 0;
+	virtual bool state_func_set() const = 0;
+	virtual bool obs_func_set()   const = 0;
+
+	virtual void predict() = 0;
+	virtual void update(np_f64_ro z) = 0;
+};
+
+template <typename T>
+struct EKFImpl : IEKFImpl {
+	sw::dsp::ExtendedKalmanFilter<T> inner;
+	bool state_func_set_ = false;
+	bool obs_func_set_   = false;
+
+	EKFImpl(std::size_t s, std::size_t m) : inner(s, m) {}
+
+	std::size_t state_dim() const override { return inner.state_dim(); }
+	std::size_t meas_dim()  const override { return inner.meas_dim();  }
+
+	np_f64_2d get_Q() const override { return mat_to_numpy(inner.Q()); }
+	np_f64_2d get_R() const override { return mat_to_numpy(inner.R()); }
+	np_f64_2d get_P() const override { return mat_to_numpy(inner.P()); }
+	np_f64    get_state() const override { return vec_to_numpy(inner.state()); }
+
+	void set_Q(np_f64_2d_ro a) override { numpy_to_mat(a, inner.Q(), "Q"); }
+	void set_R(np_f64_2d_ro a) override { numpy_to_mat(a, inner.R(), "R"); }
+	void set_P(np_f64_2d_ro a) override { numpy_to_mat(a, inner.P(), "P"); }
+	void set_state(np_f64_ro v) override { numpy_to_vec(v, inner.state(), "state"); }
+
+	void set_state_function(nb::callable f, nb::callable F) override {
+		const std::size_t sd = inner.state_dim();
+		// Capture callbacks by value — copies keep the underlying Python
+		// object alive for the lifetime of the closures.
+		inner.set_state_function(
+			[f, sd](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::vec::dense_vector<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = f(x_arr);
+				return callback_result_to_vec<T>(result, sd,
+				    "ExtendedKalmanFilter state function f(x)");
+			},
+			[F, sd](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::mat::dense2D<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = F(x_arr);
+				return callback_result_to_mat<T>(result, sd, sd,
+				    "ExtendedKalmanFilter state Jacobian F(x)");
+			});
+		state_func_set_ = true;
+	}
+
+	void set_observation_function(nb::callable h, nb::callable H) override {
+		const std::size_t sd = inner.state_dim();
+		const std::size_t md = inner.meas_dim();
+		inner.set_observation_function(
+			[h, md](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::vec::dense_vector<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = h(x_arr);
+				return callback_result_to_vec<T>(result, md,
+				    "ExtendedKalmanFilter observation function h(x)");
+			},
+			[H, sd, md](const mtl::vec::dense_vector<T>& x)
+			      -> mtl::mat::dense2D<T> {
+				auto x_arr = vec_to_numpy(x);
+				nb::object result = H(x_arr);
+				return callback_result_to_mat<T>(result, md, sd,
+				    "ExtendedKalmanFilter observation Jacobian H(x)");
+			});
+		obs_func_set_ = true;
+	}
+
+	bool state_func_set() const override { return state_func_set_; }
+	bool obs_func_set()   const override { return obs_func_set_;   }
+
+	void predict() override { inner.predict(); }
+
+	void update(np_f64_ro z) override {
+		mtl::vec::dense_vector<T> zv(inner.meas_dim());
+		numpy_to_vec(z, zv, "z");
+		inner.update(zv);
+	}
+};
+
+static std::unique_ptr<IEKFImpl>
+make_ekf_impl(mpdsp::ArithConfig config,
+              std::size_t state_dim, std::size_t meas_dim) {
+	return make_impl_for_dtype<EKFImpl, IEKFImpl>(
+		config, "ExtendedKalmanFilter", state_dim, meas_dim);
+}
+
+} // namespace
+
+class PyExtendedKalmanFilter {
+public:
+	PyExtendedKalmanFilter(std::size_t state_dim, std::size_t meas_dim,
+	                       const std::string& dtype) {
+		if (state_dim == 0)
+			throw std::invalid_argument(
+				"ExtendedKalmanFilter: state_dim must be > 0");
+		if (meas_dim == 0)
+			throw std::invalid_argument(
+				"ExtendedKalmanFilter: meas_dim must be > 0");
+		impl_ = make_ekf_impl(mpdsp::parse_config(dtype), state_dim, meas_dim);
+		dtype_ = dtype;
+	}
+
+	std::size_t state_dim() const { return impl_->state_dim(); }
+	std::size_t meas_dim()  const { return impl_->meas_dim(); }
+
+	np_f64_2d get_Q() const { return impl_->get_Q(); }
+	np_f64_2d get_R() const { return impl_->get_R(); }
+	np_f64_2d get_P() const { return impl_->get_P(); }
+	np_f64    get_state() const { return impl_->get_state(); }
+
+	void set_Q(np_f64_2d_ro a) { impl_->set_Q(a); }
+	void set_R(np_f64_2d_ro a) { impl_->set_R(a); }
+	void set_P(np_f64_2d_ro a) { impl_->set_P(a); }
+	void set_state(np_f64_ro v) { impl_->set_state(v); }
+
+	void set_state_function(nb::callable f, nb::callable F) {
+		impl_->set_state_function(f, F);
+	}
+	void set_observation_function(nb::callable h, nb::callable H) {
+		impl_->set_observation_function(h, H);
+	}
+
+	void predict() {
+		if (!impl_->state_func_set()) {
+			throw std::runtime_error(
+				"ExtendedKalmanFilter.predict: state function not set "
+				"— call set_state_function(f, F) first");
+		}
+		impl_->predict();
+	}
+
+	void update(np_f64_ro z) {
+		if (!impl_->obs_func_set()) {
+			throw std::runtime_error(
+				"ExtendedKalmanFilter.update: observation function not set "
+				"— call set_observation_function(h, H) first");
+		}
+		if (z.shape(0) != meas_dim()) {
+			throw std::invalid_argument(
+				"ExtendedKalmanFilter.update(z): z must have length meas_dim");
+		}
+		impl_->update(z);
+	}
+
+	const std::string& dtype() const { return dtype_; }
+
+private:
+	std::unique_ptr<IEKFImpl> impl_;
 	std::string dtype_;
 };
 
@@ -533,6 +770,67 @@ void bind_estimation(nb::module_& m) {
 		     nb::arg("z"),
 		     "Update step with a measurement vector of length meas_dim.")
 		.def_prop_ro("dtype", &PyKalmanFilter::dtype,
+		             "Arithmetic configuration selected at construction.");
+
+	// -----------------------------------------------------------------------
+	// ExtendedKalmanFilter — nonlinear Kalman via analytical Jacobians.
+	// -----------------------------------------------------------------------
+	nb::class_<PyExtendedKalmanFilter>(m, "ExtendedKalmanFilter",
+			"Nonlinear Kalman filter that linearizes the state-transition "
+			"f(x) and observation h(x) via their Jacobians F(x), H(x) at "
+			"each step. Users supply FOUR Python callbacks — f, F, h, H — "
+			"that take a 1D NumPy state vector and return either a 1D "
+			"vector (for f, h) or a 2D matrix (for F, H).\n\n"
+			"predict() advances the state through f and propagates the "
+			"covariance with F; update(z) computes the Kalman gain from H "
+			"and applies the measurement innovation.\n\n"
+			"Q, R, P, and state are read/write NumPy arrays sharing the "
+			"KalmanFilter accessor pattern. No F/H/B properties — those "
+			"matrices are computed per-step by the user's Jacobian "
+			"callbacks.")
+		.def(nb::init<std::size_t, std::size_t, const std::string&>(),
+		     nb::arg("state_dim"), nb::arg("meas_dim"),
+		     nb::arg("dtype") = "reference",
+		     "Construct an EKF. Both dimensions must be > 0. Callbacks "
+		     "must be set via set_state_function() and "
+		     "set_observation_function() before calling predict()/update().")
+		.def("set_state_function", &PyExtendedKalmanFilter::set_state_function,
+		     nb::arg("f"), nb::arg("F"),
+		     "Register the nonlinear state transition f(x) -> vector[state_dim] "
+		     "and its Jacobian F(x) -> matrix[state_dim, state_dim]. Both must "
+		     "be Python callables returning float64 ndarrays.")
+		.def("set_observation_function",
+		     &PyExtendedKalmanFilter::set_observation_function,
+		     nb::arg("h"), nb::arg("H"),
+		     "Register the nonlinear observation h(x) -> vector[meas_dim] and "
+		     "its Jacobian H(x) -> matrix[meas_dim, state_dim].")
+		.def_prop_ro("state_dim", &PyExtendedKalmanFilter::state_dim)
+		.def_prop_ro("meas_dim",  &PyExtendedKalmanFilter::meas_dim)
+		.def_prop_rw("Q", &PyExtendedKalmanFilter::get_Q,
+		                  &PyExtendedKalmanFilter::set_Q,
+		             nb::rv_policy::take_ownership,
+		             "Process-noise covariance (state_dim x state_dim).")
+		.def_prop_rw("R", &PyExtendedKalmanFilter::get_R,
+		                  &PyExtendedKalmanFilter::set_R,
+		             nb::rv_policy::take_ownership,
+		             "Measurement-noise covariance (meas_dim x meas_dim).")
+		.def_prop_rw("P", &PyExtendedKalmanFilter::get_P,
+		                  &PyExtendedKalmanFilter::set_P,
+		             nb::rv_policy::take_ownership,
+		             "State-estimation covariance (state_dim x state_dim). "
+		             "Initialized to the identity; overwrite for informative "
+		             "priors.")
+		.def_prop_rw("state", &PyExtendedKalmanFilter::get_state,
+		                      &PyExtendedKalmanFilter::set_state,
+		             nb::rv_policy::take_ownership,
+		             "Current state estimate (length state_dim).")
+		.def("predict", &PyExtendedKalmanFilter::predict,
+		     "Propagate the state through f and the covariance through F. "
+		     "Raises if the state function pair hasn't been set.")
+		.def("update", &PyExtendedKalmanFilter::update, nb::arg("z"),
+		     "Apply a measurement of length meas_dim. Raises if the "
+		     "observation function pair hasn't been set.")
+		.def_prop_ro("dtype", &PyExtendedKalmanFilter::dtype,
 		             "Arithmetic configuration selected at construction.");
 
 	// Shared docstring fragment for the three adaptive filters.

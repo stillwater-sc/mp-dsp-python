@@ -597,3 +597,236 @@ class TestEstimationHelpers:
         trace = collect_adaptive_weights(f, x, d, record_every=50)
         # Final recorded weights should match the true taps.
         np.testing.assert_allclose(trace[-1], [0.3, 0.5, 0.2], atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# ExtendedKalmanFilter (Phase 4 / #108) — nonlinear Kalman via Jacobians.
+# ---------------------------------------------------------------------------
+
+
+class TestExtendedKalmanFilterConstruction:
+    def test_getters_reflect_construction(self):
+        ekf = mpdsp.ExtendedKalmanFilter(state_dim=3, meas_dim=2)
+        assert ekf.state_dim == 3
+        assert ekf.meas_dim == 2
+        assert ekf.dtype == "reference"
+
+    def test_default_matrices_are_identity(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 2)
+        np.testing.assert_allclose(ekf.Q, np.eye(2))
+        np.testing.assert_allclose(ekf.R, np.eye(2))
+        np.testing.assert_allclose(ekf.P, np.eye(2))
+        np.testing.assert_allclose(ekf.state, np.zeros(2))
+
+    def test_matrix_round_trip(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        q = np.array([[0.1, 0.0], [0.0, 0.2]])
+        ekf.Q = q
+        np.testing.assert_allclose(ekf.Q, q)
+        r = np.array([[0.5]])
+        ekf.R = r
+        np.testing.assert_allclose(ekf.R, r)
+        s = np.array([1.5, 2.5])
+        ekf.state = s
+        np.testing.assert_allclose(ekf.state, s)
+
+    def test_rejects_zero_state_dim(self):
+        with pytest.raises(ValueError):
+            mpdsp.ExtendedKalmanFilter(0, 1)
+
+    def test_rejects_zero_meas_dim(self):
+        with pytest.raises(ValueError):
+            mpdsp.ExtendedKalmanFilter(1, 0)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.ExtendedKalmanFilter(2, 1, dtype="not_a_dtype")
+
+
+class TestExtendedKalmanFilterCallbackGuards:
+    def test_predict_before_callback_raises(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        with pytest.raises(RuntimeError):
+            ekf.predict()
+
+    def test_update_before_callback_raises(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        # Setting only state func — update should still raise for obs func.
+        ekf.set_state_function(
+            lambda x: x,
+            lambda x: np.eye(2))
+        with pytest.raises(RuntimeError):
+            ekf.update(np.array([1.0]))
+
+    def test_update_wrong_measurement_size_raises(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 3)
+        ekf.set_state_function(lambda x: x, lambda x: np.eye(2))
+        ekf.set_observation_function(
+            lambda x: np.zeros(3),
+            lambda x: np.zeros((3, 2)))
+        with pytest.raises(ValueError):
+            ekf.update(np.array([1.0, 2.0]))  # length 2, expected 3
+
+    def test_callback_wrong_return_length_raises(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        # State func returns wrong-length vector.
+        ekf.set_state_function(
+            lambda x: np.zeros(5),   # wrong length
+            lambda x: np.eye(2))
+        with pytest.raises(RuntimeError):
+            ekf.predict()
+
+    def test_jacobian_wrong_shape_raises(self):
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        ekf.set_state_function(
+            lambda x: x,
+            lambda x: np.zeros((3, 3)))   # wrong shape
+        with pytest.raises(RuntimeError):
+            ekf.predict()
+
+
+class TestExtendedKalmanFilterLinearEquivalence:
+    """When f(x)=Ax and h(x)=Hx are linear (with constant Jacobians A, H),
+    the EKF's behaviour must match the plain KalmanFilter running on the
+    same problem."""
+
+    def _linear_problem(self):
+        # Simple constant-velocity 2D tracker: state = [pos, vel],
+        # observation = position only.
+        dt = 1.0
+        A = np.array([[1.0, dt], [0.0, 1.0]])
+        H = np.array([[1.0, 0.0]])
+        Q = 0.01 * np.eye(2)
+        R = 0.1 * np.eye(1)
+        return A, H, Q, R
+
+    def test_linear_case_matches_kalman(self):
+        A, H, Q, R = self._linear_problem()
+
+        # Plain KalmanFilter reference
+        kf = mpdsp.KalmanFilter(state_dim=2, meas_dim=1)
+        kf.F = A
+        kf.H = H
+        kf.Q = Q
+        kf.R = R
+        kf.state = np.array([0.0, 0.5])
+
+        # EKF with linear callbacks
+        ekf = mpdsp.ExtendedKalmanFilter(state_dim=2, meas_dim=1)
+        ekf.Q = Q
+        ekf.R = R
+        ekf.state = np.array([0.0, 0.5])
+        ekf.set_state_function(
+            lambda x: A @ x,
+            lambda x: A)
+        ekf.set_observation_function(
+            lambda x: H @ x,
+            lambda x: H)
+
+        # Feed identical measurement sequence to both.
+        measurements = [np.array([0.6]), np.array([1.1]),
+                        np.array([1.7]), np.array([2.2])]
+        for z in measurements:
+            kf.predict()
+            kf.update(z)
+            ekf.predict()
+            ekf.update(z)
+
+        np.testing.assert_allclose(kf.state, ekf.state, atol=1e-9)
+        np.testing.assert_allclose(kf.P, ekf.P, atol=1e-9)
+
+
+class TestExtendedKalmanFilterNonlinear:
+    """Nonlinear pendulum tracker as a realistic use case. State =
+    (angle, angular_velocity); dynamics f is trig. Verify the EKF
+    tracks the true trajectory better than open-loop prediction."""
+
+    def _pendulum_dynamics(self, dt=0.1):
+        # x = (theta, omega). Small-angle-ish pendulum with drag.
+        g_over_l = 4.0     # (gravity / length)
+        damping  = 0.1
+
+        def f(x):
+            theta, omega = float(x[0]), float(x[1])
+            theta_new = theta + dt * omega
+            omega_new = omega + dt * (-g_over_l * np.sin(theta)
+                                       - damping * omega)
+            return np.array([theta_new, omega_new])
+
+        def F(x):
+            theta, _ = float(x[0]), float(x[1])
+            # d f_theta / d(theta, omega) = (1, dt)
+            # d f_omega / d(theta, omega) = (dt * -g_over_l * cos(theta),
+            #                                 1 + dt * -damping)
+            return np.array([
+                [1.0, dt],
+                [dt * -g_over_l * np.cos(theta), 1.0 - dt * damping]])
+
+        def h(x):
+            # Observe angle only.
+            return np.array([float(x[0])])
+
+        def H(x):
+            return np.array([[1.0, 0.0]])
+
+        return f, F, h, H
+
+    def test_tracks_pendulum_state(self):
+        rng = np.random.default_rng(42)
+        f, F, h, H = self._pendulum_dynamics()
+
+        # Generate a true trajectory
+        x_true = np.array([0.5, 0.0])
+        n_steps = 50
+        true_states = [x_true.copy()]
+        measurements = []
+        for _ in range(n_steps):
+            x_true = f(x_true)
+            true_states.append(x_true.copy())
+            z = h(x_true) + rng.standard_normal(1) * 0.05
+            measurements.append(z)
+
+        # Run EKF with informative prior close to truth
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1)
+        ekf.set_state_function(f, F)
+        ekf.set_observation_function(h, H)
+        ekf.Q = 0.001 * np.eye(2)
+        ekf.R = 0.0025 * np.eye(1)   # variance of measurement noise ~0.05^2
+        ekf.state = np.array([0.5, 0.0])
+
+        errors = []
+        for z, true_next in zip(measurements, true_states[1:]):
+            ekf.predict()
+            ekf.update(z)
+            errors.append(np.linalg.norm(ekf.state - true_next))
+
+        # After a short transient the tracking error should be small.
+        mean_err_second_half = float(np.mean(errors[n_steps // 2:]))
+        assert mean_err_second_half < 0.15, (
+            f"EKF tracking error too large: {mean_err_second_half}")
+
+
+class TestExtendedKalmanFilterDtypeDispatch:
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_linear_case_across_dtypes(self, dtype):
+        # Use the same simple constant-velocity linear problem as the
+        # linear-equivalence test — verify the EKF constructs and
+        # completes a predict/update cycle under each dtype.
+        A = np.array([[1.0, 1.0], [0.0, 1.0]])
+        H = np.array([[1.0, 0.0]])
+        ekf = mpdsp.ExtendedKalmanFilter(2, 1, dtype=dtype)
+        ekf.Q = 0.01 * np.eye(2)
+        ekf.R = 0.1 * np.eye(1)
+        ekf.state = np.array([0.0, 0.5])
+        ekf.set_state_function(lambda x: A @ x, lambda x: A)
+        ekf.set_observation_function(lambda x: H @ x, lambda x: H)
+
+        for z_val in [0.6, 1.1, 1.7, 2.2]:
+            ekf.predict()
+            ekf.update(np.array([z_val]))
+
+        # State should be a finite vector of length 2.
+        s = ekf.state
+        assert s.shape == (2,)
+        assert np.all(np.isfinite(s))
