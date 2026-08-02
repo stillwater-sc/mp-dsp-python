@@ -13,7 +13,9 @@
 #include <nanobind/stl/tuple.h>
 
 #include <sw/dsp/spectrum/detectors.hpp>
+#include <sw/dsp/spectrum/rbw_filter.hpp>
 #include <sw/dsp/spectrum/realtime_spectrum.hpp>
+#include <sw/dsp/spectrum/vbw_filter.hpp>
 
 #include "_binding_helpers.hpp"
 #include "types.hpp"
@@ -147,6 +149,97 @@ private:
 	}
 };
 
+// ---------------------------------------------------------------------------
+// RBWFilter impl. Same type-erased pattern. process_block returns a new
+// NumPy array rather than binding the in-place / two-span overloads —
+// Python callers create new buffers rather than mutating in place.
+// ---------------------------------------------------------------------------
+
+struct IRBWFilterImpl {
+	virtual ~IRBWFilterImpl() = default;
+	virtual double process(double x) = 0;
+	virtual mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual void retune(double center_freq_hz, double bandwidth_hz) = 0;
+	virtual double shape_factor() const = 0;
+	virtual void reset() = 0;
+	virtual double      center_freq_hz() const = 0;
+	virtual double      bandwidth_hz()   const = 0;
+	virtual double      sample_rate_hz() const = 0;
+	virtual std::size_t order()          const = 0;
+};
+
+template <typename T>
+struct RBWFilterImpl : IRBWFilterImpl {
+	sw::dsp::spectrum::RBWFilter<T, T, T> inner;
+
+	RBWFilterImpl(double center_freq_hz, double bandwidth_hz,
+	              double sample_rate_hz, std::size_t order)
+	    : inner(center_freq_hz, bandwidth_hz, sample_rate_hz, order) {}
+
+	double process(double x) override {
+		return static_cast<double>(inner.process(static_cast<T>(x)));
+	}
+
+	mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<double> out(n);
+		for (std::size_t i = 0; i < n; ++i) {
+			out[i] = static_cast<double>(inner.process(static_cast<T>(in[i])));
+		}
+		return out;
+	}
+
+	void retune(double c, double b) override { inner.retune(c, b); }
+	double shape_factor() const   override { return inner.shape_factor(); }
+	void reset()                  override { inner.reset(); }
+	double      center_freq_hz() const override { return inner.center_freq_hz(); }
+	double      bandwidth_hz()   const override { return inner.bandwidth_hz(); }
+	double      sample_rate_hz() const override { return inner.sample_rate_hz(); }
+	std::size_t order()          const override { return inner.order(); }
+};
+
+// ---------------------------------------------------------------------------
+// VBWFilter impl. Same pattern; simpler class (one-pole LPF, single cutoff).
+// ---------------------------------------------------------------------------
+
+struct IVBWFilterImpl {
+	virtual ~IVBWFilterImpl() = default;
+	virtual double process(double x) = 0;
+	virtual mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) = 0;
+	virtual void set_cutoff(double cutoff_hz) = 0;
+	virtual void reset() = 0;
+	virtual double cutoff_hz()      const = 0;
+	virtual double sample_rate_hz() const = 0;
+};
+
+template <typename T>
+struct VBWFilterImpl : IVBWFilterImpl {
+	sw::dsp::spectrum::VBWFilter<T, T, T> inner;
+
+	VBWFilterImpl(double cutoff_hz, double sample_rate_hz)
+	    : inner(cutoff_hz, sample_rate_hz) {}
+
+	double process(double x) override {
+		return static_cast<double>(inner.process(static_cast<T>(x)));
+	}
+
+	mtl::vec::dense_vector<double>
+	process_block(const double* in, std::size_t n) override {
+		mtl::vec::dense_vector<double> out(n);
+		for (std::size_t i = 0; i < n; ++i) {
+			out[i] = static_cast<double>(inner.process(static_cast<T>(in[i])));
+		}
+		return out;
+	}
+
+	void set_cutoff(double cutoff_hz) override { inner.set_cutoff(cutoff_hz); }
+	void reset()                      override { inner.reset(); }
+	double cutoff_hz()      const override { return inner.cutoff_hz(); }
+	double sample_rate_hz() const override { return inner.sample_rate_hz(); }
+};
+
 } // namespace
 
 // PyRealtimeSpectrum: streaming FFT engine.
@@ -189,6 +282,75 @@ public:
 
 private:
 	std::unique_ptr<IRealtimeSpectrumImpl> impl_;
+	std::string dtype_;
+};
+
+// PyRBWFilter: N-stage synchronously-tuned bandpass cascade around a
+// tuned center frequency. Bumpless retune preserves biquad state.
+class PyRBWFilter {
+public:
+	PyRBWFilter(double center_freq_hz, double bandwidth_hz,
+	            double sample_rate_hz, std::size_t order,
+	            const std::string& dtype)
+	    : dtype_(dtype) {
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			RBWFilterImpl, IRBWFilterImpl>(
+			mpdsp::parse_config(dtype), "RBWFilter",
+			center_freq_hz, bandwidth_hz, sample_rate_hz, order);
+	}
+
+	double process(double x) { return impl_->process(x); }
+
+	mpdsp::bindings::np_f64 process_block(mpdsp::bindings::np_f64_ro signal) {
+		return mpdsp::bindings::vec_to_numpy(
+			impl_->process_block(signal.data(), signal.shape(0)));
+	}
+
+	void retune(double center_freq_hz, double bandwidth_hz) {
+		impl_->retune(center_freq_hz, bandwidth_hz);
+	}
+
+	double      shape_factor()   const { return impl_->shape_factor(); }
+	void        reset()                { impl_->reset(); }
+	double      center_freq_hz() const { return impl_->center_freq_hz(); }
+	double      bandwidth_hz()   const { return impl_->bandwidth_hz(); }
+	double      sample_rate_hz() const { return impl_->sample_rate_hz(); }
+	std::size_t order()          const { return impl_->order(); }
+	const std::string& dtype()   const { return dtype_; }
+
+private:
+	std::unique_ptr<IRBWFilterImpl> impl_;
+	std::string dtype_;
+};
+
+// PyVBWFilter: single-pole leaky-integrator LPF for post-detector smoothing.
+// Bumpless set_cutoff() preserves y_prev.
+class PyVBWFilter {
+public:
+	PyVBWFilter(double cutoff_hz, double sample_rate_hz,
+	            const std::string& dtype)
+	    : dtype_(dtype) {
+		impl_ = mpdsp::bindings::make_impl_for_dtype<
+			VBWFilterImpl, IVBWFilterImpl>(
+			mpdsp::parse_config(dtype), "VBWFilter",
+			cutoff_hz, sample_rate_hz);
+	}
+
+	double process(double x) { return impl_->process(x); }
+
+	mpdsp::bindings::np_f64 process_block(mpdsp::bindings::np_f64_ro signal) {
+		return mpdsp::bindings::vec_to_numpy(
+			impl_->process_block(signal.data(), signal.shape(0)));
+	}
+
+	void   set_cutoff(double cutoff_hz) { impl_->set_cutoff(cutoff_hz); }
+	void   reset()                      { impl_->reset(); }
+	double cutoff_hz()      const       { return impl_->cutoff_hz(); }
+	double sample_rate_hz() const       { return impl_->sample_rate_hz(); }
+	const std::string& dtype() const    { return dtype_; }
+
+private:
+	std::unique_ptr<IVBWFilterImpl> impl_;
 	std::string dtype_;
 };
 
@@ -338,5 +500,87 @@ void bind_spectrum(nb::module_& m) {
 		     "`total_ffts > 0`). Read-only.")
 		.def_prop_ro("dtype",
 		     [](const PyRealtimeSpectrum& self) { return self.dtype(); },
+		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// RBWFilter — resolution-bandwidth filter (pre-detection).
+	// -----------------------------------------------------------------------
+	nb::class_<PyRBWFilter>(m, "RBWFilter",
+			"Resolution-bandwidth filter for a spectrum analyzer: an N-stage "
+			"synchronously-tuned cascade of RBJ-style bandpass biquads. Sits "
+			"between the mixer and the detector; selects a narrow window "
+			"around a center frequency. Higher order tightens the shape "
+			"factor (60 dB / 3 dB bandwidth ratio) — order=5 gives ~10x "
+			"shape factor, comparable to a Gaussian for analyzer use.\n\n"
+			"retune() is bumpless — biquad state is preserved across the "
+			"coefficient redesign, so the displayed trace stays continuous "
+			"when the user slides the RBW knob.")
+		.def(nb::init<double, double, double, std::size_t, const std::string&>(),
+		     nb::arg("center_freq_hz"), nb::arg("bandwidth_hz"),
+		     nb::arg("sample_rate_hz"),
+		     nb::arg("order") = static_cast<std::size_t>(5),
+		     nb::arg("dtype") = "reference",
+		     "Design an RBW filter. center_freq_hz in (0, sample_rate/2); "
+		     "bandwidth_hz must keep both -3 dB shoulders inside the sampled "
+		     "band; order in [1, 8].")
+		.def("process", &PyRBWFilter::process, nb::arg("sample"),
+		     "Filter one sample; returns the filtered scalar.")
+		.def("process_block", &PyRBWFilter::process_block, nb::arg("signal"),
+		     "Filter a block of samples; returns a new NumPy array of the "
+		     "same length.")
+		.def("retune", &PyRBWFilter::retune,
+		     nb::arg("center_freq_hz"), nb::arg("bandwidth_hz"),
+		     "Redesign coefficients around the new (center, bandwidth). "
+		     "State is preserved (bumpless).")
+		.def("reset", &PyRBWFilter::reset,
+		     "Clear biquad delay-line state; coefficients and order retained.")
+		.def_prop_ro("shape_factor", &PyRBWFilter::shape_factor,
+		     "Closed-form analytical 60 dB / 3 dB bandwidth ratio for the "
+		     "current order. Doesn't depend on tuning. Read-only.")
+		.def_prop_ro("center_freq_hz", &PyRBWFilter::center_freq_hz,
+		     "Currently tuned center frequency. Read-only.")
+		.def_prop_ro("bandwidth_hz", &PyRBWFilter::bandwidth_hz,
+		     "Currently configured -3 dB bandwidth. Read-only.")
+		.def_prop_ro("sample_rate_hz", &PyRBWFilter::sample_rate_hz,
+		     "Streaming sample rate. Read-only.")
+		.def_prop_ro("order", &PyRBWFilter::order,
+		     "Number of biquad stages (fixed at construction). Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PyRBWFilter& self) { return self.dtype(); },
+		     "Scalar dtype fixed at construction. Read-only.");
+
+	// -----------------------------------------------------------------------
+	// VBWFilter — video-bandwidth filter (post-detection).
+	// -----------------------------------------------------------------------
+	nb::class_<PyVBWFilter>(m, "VBWFilter",
+			"Video-bandwidth filter: a single-pole leaky-integrator LPF that "
+			"smooths detector output before the trace memory. Lower cutoff = "
+			"more averaging = lower noise floor at the cost of slower "
+			"response; higher cutoff = faster response but noisier trace. "
+			"The standard analyzer noise-vs-speed knob.\n\n"
+			"set_cutoff() is bumpless — the running y_prev is preserved, so "
+			"the displayed trace stays continuous when the user slides the "
+			"VBW knob.")
+		.def(nb::init<double, double, const std::string&>(),
+		     nb::arg("cutoff_hz"), nb::arg("sample_rate_hz"),
+		     nb::arg("dtype") = "reference",
+		     "Design a VBW filter. cutoff_hz in (0, sample_rate/2].")
+		.def("process", &PyVBWFilter::process, nb::arg("sample"),
+		     "Filter one sample; returns the filtered scalar.")
+		.def("process_block", &PyVBWFilter::process_block, nb::arg("signal"),
+		     "Filter a block of samples; returns a new NumPy array of the "
+		     "same length.")
+		.def("set_cutoff", &PyVBWFilter::set_cutoff, nb::arg("cutoff_hz"),
+		     "Redesign alpha for the new cutoff. y_prev is preserved "
+		     "(bumpless).")
+		.def("reset", &PyVBWFilter::reset,
+		     "Clear the running state y_prev to zero; cutoff and sample "
+		     "rate are preserved.")
+		.def_prop_ro("cutoff_hz", &PyVBWFilter::cutoff_hz,
+		     "Currently configured -3 dB cutoff. Read-only.")
+		.def_prop_ro("sample_rate_hz", &PyVBWFilter::sample_rate_hz,
+		     "Streaming sample rate. Read-only.")
+		.def_prop_ro("dtype",
+		     [](const PyVBWFilter& self) { return self.dtype(); },
 		     "Scalar dtype fixed at construction. Read-only.");
 }

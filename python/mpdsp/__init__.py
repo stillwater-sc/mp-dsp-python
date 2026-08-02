@@ -125,6 +125,8 @@ try:
         RealtimeSpectrum,
         detect_peak, detect_negative_peak, detect_sample,
         detect_average, detect_rms, detect,
+        # Spectrum analyzer — RBW / VBW filtering (gap-analysis Phase 3 / #105)
+        RBWFilter, VBWFilter,
         # Introspection
         available_dtypes, bits_of,
     )

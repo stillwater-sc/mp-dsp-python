@@ -299,3 +299,259 @@ class TestRealtimeSpectrumDtypeDispatch:
         peak_bin = int(np.argmax(mag_db[:N // 2]))
         expected_bin = int(round(freq / fs * N))
         assert abs(peak_bin - expected_bin) <= 1
+
+
+# ---------------------------------------------------------------------------
+# RBWFilter — resolution-bandwidth filter (#105).
+# ---------------------------------------------------------------------------
+
+
+class TestRBWFilterConstruction:
+    def test_default_order_and_getters(self):
+        f = mpdsp.RBWFilter(center_freq_hz=1000.0, bandwidth_hz=100.0,
+                            sample_rate_hz=8000.0)
+        assert f.center_freq_hz == 1000.0
+        assert f.bandwidth_hz == 100.0
+        assert f.sample_rate_hz == 8000.0
+        assert f.order == 5
+        assert f.dtype == "reference"
+
+    def test_custom_order(self):
+        f = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=3)
+        assert f.order == 3
+
+    def test_shape_factor_improves_with_order(self):
+        low  = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=1)
+        mid  = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=5)
+        high = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=8)
+        # Lower shape factor = tighter shape = better selectivity
+        assert low.shape_factor > mid.shape_factor > high.shape_factor
+        # order=5 sync-tuned lands around 10x per header prose
+        assert 5.0 < mid.shape_factor < 20.0
+
+    def test_rejects_bad_sample_rate(self):
+        with pytest.raises(ValueError):
+            mpdsp.RBWFilter(1000.0, 100.0, sample_rate_hz=0.0)
+        with pytest.raises(ValueError):
+            mpdsp.RBWFilter(1000.0, 100.0, sample_rate_hz=-1.0)
+
+    def test_rejects_bad_order(self):
+        with pytest.raises(ValueError):
+            mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=0)
+        with pytest.raises(ValueError):
+            mpdsp.RBWFilter(1000.0, 100.0, 8000.0, order=9)  # kMaxOrder=8
+
+    def test_rejects_center_at_or_above_nyquist(self):
+        with pytest.raises(ValueError):
+            mpdsp.RBWFilter(center_freq_hz=4000.0, bandwidth_hz=100.0,
+                            sample_rate_hz=8000.0)  # exactly Nyquist
+
+    def test_rejects_bandwidth_that_pushes_shoulder_below_zero(self):
+        with pytest.raises(ValueError):
+            # center=100, bw=300 → lower shoulder = -50, invalid
+            mpdsp.RBWFilter(center_freq_hz=100.0, bandwidth_hz=300.0,
+                            sample_rate_hz=8000.0)
+
+    def test_rejects_bandwidth_that_pushes_shoulder_above_nyquist(self):
+        with pytest.raises(ValueError):
+            # center=3500, bw=1500 at fs=8000 → upper shoulder=4250 > Nyquist(4000)
+            mpdsp.RBWFilter(center_freq_hz=3500.0, bandwidth_hz=1500.0,
+                            sample_rate_hz=8000.0)
+
+
+class TestRBWFilterProcessing:
+    def _mk(self, fc=1000.0, bw=100.0, fs=8000.0, order=5):
+        return mpdsp.RBWFilter(fc, bw, fs, order=order)
+
+    def test_process_single_sample_returns_float(self):
+        f = self._mk()
+        y = f.process(0.5)
+        assert isinstance(y, float)
+
+    def test_process_block_preserves_length(self):
+        f = self._mk()
+        sig = np.zeros(256)
+        y = f.process_block(sig)
+        assert y.shape == sig.shape
+        assert y.dtype == np.float64
+
+    def test_streaming_and_block_agree(self):
+        rng = np.random.default_rng(0xB055)
+        sig = rng.standard_normal(512)
+        y_block = self._mk().process_block(sig)
+        f_stream = self._mk()
+        y_stream = np.array([f_stream.process(float(x)) for x in sig])
+        np.testing.assert_allclose(y_block, y_stream)
+
+    def test_passes_center_frequency_tone(self):
+        # Sine at the tuned center should pass through with high output
+        # energy relative to a far-off-center sine.
+        fs, fc = 8000.0, 1000.0
+        f = self._mk(fc=fc, bw=100.0)
+        t = np.arange(4096) / fs
+        pass_sig = np.sin(2 * np.pi * fc * t)
+        stop_sig = np.sin(2 * np.pi * (fc * 3) * t)  # far off center
+        # Skip transient
+        skip = 500
+        y_pass = f.process_block(pass_sig)[skip:]
+        f2 = self._mk(fc=fc, bw=100.0)
+        y_stop = f2.process_block(stop_sig)[skip:]
+        # In-band should be at least an order of magnitude stronger.
+        assert np.sqrt(np.mean(y_pass ** 2)) > \
+               10.0 * np.sqrt(np.mean(y_stop ** 2))
+
+    def test_retune_is_bumpless(self):
+        # After retune, the last-y should be very close to what it was
+        # before retune (state preserved). Compare against a fresh
+        # filter which would produce very different transient output.
+        f = self._mk(fc=1000.0, bw=100.0)
+        sig = np.sin(2 * np.pi * 1000.0 * np.arange(4096) / 8000.0)
+        f.process_block(sig)
+        last_before = f.process(0.5)  # one more sample, record output
+        f.retune(1500.0, 100.0)
+        # Next output shouldn't be a sudden jump to zero from state clear.
+        # Loose check: an order of magnitude of last_before.
+        after = f.process(0.0)
+        assert abs(after) > 1e-6 or abs(last_before) < 1e-6
+
+    def test_reset_clears_state(self):
+        f = self._mk()
+        f.process_block(np.ones(1024))
+        # After reset, feeding a fresh impulse train should behave as
+        # fresh construction — first output should be very small (transient).
+        f.reset()
+        first_out = f.process(1.0)
+        assert abs(first_out) < 0.5   # unit input, zero state
+
+
+class TestRBWFilterDtypeDispatch:
+    def test_dtype_property(self):
+        f = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, dtype="posit_full")
+        assert f.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.RBWFilter(1000.0, 100.0, 8000.0, dtype="not_a_dtype")
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_construction_and_processing_across_dtypes(self, dtype):
+        f = mpdsp.RBWFilter(1000.0, 100.0, 8000.0, dtype=dtype)
+        sig = np.sin(2 * np.pi * 1000.0 * np.arange(512) / 8000.0)
+        y = f.process_block(sig)
+        assert y.shape == sig.shape
+        assert np.all(np.isfinite(y))
+
+
+# ---------------------------------------------------------------------------
+# VBWFilter — video-bandwidth filter (#105).
+# ---------------------------------------------------------------------------
+
+
+class TestVBWFilterConstruction:
+    def test_getters(self):
+        f = mpdsp.VBWFilter(cutoff_hz=10.0, sample_rate_hz=1000.0)
+        assert f.cutoff_hz == 10.0
+        assert f.sample_rate_hz == 1000.0
+        assert f.dtype == "reference"
+
+    def test_rejects_bad_sample_rate(self):
+        with pytest.raises(ValueError):
+            mpdsp.VBWFilter(cutoff_hz=10.0, sample_rate_hz=0.0)
+
+    def test_rejects_bad_cutoff(self):
+        with pytest.raises(ValueError):
+            mpdsp.VBWFilter(cutoff_hz=0.0, sample_rate_hz=1000.0)
+        with pytest.raises(ValueError):
+            mpdsp.VBWFilter(cutoff_hz=-1.0, sample_rate_hz=1000.0)
+
+    def test_rejects_cutoff_above_nyquist(self):
+        with pytest.raises(ValueError):
+            mpdsp.VBWFilter(cutoff_hz=600.0, sample_rate_hz=1000.0)
+
+
+class TestVBWFilterProcessing:
+    def test_process_returns_float(self):
+        f = mpdsp.VBWFilter(10.0, 1000.0)
+        assert isinstance(f.process(0.5), float)
+
+    def test_process_block_preserves_length(self):
+        f = mpdsp.VBWFilter(10.0, 1000.0)
+        sig = np.zeros(256)
+        y = f.process_block(sig)
+        assert y.shape == (256,)
+        assert y.dtype == np.float64
+
+    def test_streaming_and_block_agree(self):
+        rng = np.random.default_rng(1)
+        sig = rng.standard_normal(512)
+        y_block = mpdsp.VBWFilter(10.0, 1000.0).process_block(sig)
+        f_stream = mpdsp.VBWFilter(10.0, 1000.0)
+        y_stream = np.array([f_stream.process(float(x)) for x in sig])
+        np.testing.assert_allclose(y_block, y_stream)
+
+    def test_dc_passes_through(self):
+        # Steady DC input eventually settles at the DC value.
+        f = mpdsp.VBWFilter(cutoff_hz=10.0, sample_rate_hz=1000.0)
+        y = f.process_block(np.full(2000, 2.0))
+        # After many samples the leaky integrator should be very close
+        # to the DC input.
+        assert abs(y[-1] - 2.0) < 0.01
+
+    def test_high_frequency_attenuated(self):
+        # A high-frequency component well above cutoff should be
+        # attenuated relative to a low-frequency component well below.
+        fs = 1000.0
+        fc = 10.0
+        f_low  = mpdsp.VBWFilter(fc, fs)
+        f_high = mpdsp.VBWFilter(fc, fs)
+        t = np.arange(4096) / fs
+        low_sig  = np.sin(2 * np.pi * 2.0 * t)   # 2 Hz, well below fc=10
+        high_sig = np.sin(2 * np.pi * 200.0 * t) # 200 Hz, far above fc
+        y_low  = f_low.process_block(low_sig)
+        y_high = f_high.process_block(high_sig)
+        skip = 500
+        # Low freq mostly passes; high freq is strongly attenuated.
+        assert np.sqrt(np.mean(y_low[skip:] ** 2)) > \
+               10.0 * np.sqrt(np.mean(y_high[skip:] ** 2))
+
+    def test_set_cutoff_is_bumpless(self):
+        # Similar to RBW: after changing cutoff, output shouldn't jump
+        # discontinuously to zero (state preservation).
+        f = mpdsp.VBWFilter(10.0, 1000.0)
+        f.process_block(np.full(500, 2.0))  # settle at DC=2
+        last_before = f.process(2.0)
+        f.set_cutoff(50.0)
+        after = f.process(2.0)
+        # State preserved -> both outputs close to input DC
+        assert abs(after - 2.0) < 0.1
+        assert abs(last_before - 2.0) < 0.1
+
+    def test_reset_clears_state(self):
+        f = mpdsp.VBWFilter(10.0, 1000.0)
+        f.process_block(np.full(1000, 5.0))
+        f.reset()
+        # After reset, feeding zero should give ~zero (no leftover DC).
+        y = f.process(0.0)
+        assert abs(y) < 1e-6
+
+
+class TestVBWFilterDtypeDispatch:
+    def test_dtype_property(self):
+        f = mpdsp.VBWFilter(10.0, 1000.0, dtype="posit_full")
+        assert f.dtype == "posit_full"
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.VBWFilter(10.0, 1000.0, dtype="not_a_dtype")
+
+    @pytest.mark.parametrize(
+        "dtype", ["gpu_baseline", "half", "cf24", "posit_full"])
+    def test_construction_and_processing_across_dtypes(self, dtype):
+        f = mpdsp.VBWFilter(10.0, 1000.0, dtype=dtype)
+        sig = np.full(1000, 1.0)  # DC input
+        y = f.process_block(sig)
+        assert y.shape == (1000,)
+        assert np.all(np.isfinite(y))
+        # DC eventually settles near input; loose bound for narrow types
+        assert abs(y[-1] - 1.0) < 0.1
