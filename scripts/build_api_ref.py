@@ -157,6 +157,9 @@ CATEGORIES = [
         "fir_lowpass", "fir_highpass", "fir_bandpass", "fir_bandstop",
         "fir_filter",
     ]),
+    ("Acquisition — high-rate ADC → baseband pipeline", [
+        "design_halfband", "polyphase_decompose",
+    ]),
     ("Image — generators", [
         "checkerboard", "stripes_horizontal", "stripes_vertical", "grid",
         "gradient_horizontal", "gradient_vertical", "gradient_radial",
@@ -214,6 +217,8 @@ CLASSES = [
     "IIRFilter", "FIRFilter",
     "RPDFDither", "TPDFDither", "FirstOrderNoiseShaper",
     "PeakEnvelope", "RMSEnvelope", "Compressor", "AGC",
+    "NCO", "CICDecimator", "CICInterpolator", "HalfBandFilter",
+    "PolyphaseDecimator", "PolyphaseInterpolator", "DDC",
     "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
     "TransferFunction", "ContinuousTransferFunction",
 ]
@@ -423,6 +428,14 @@ CLASS_INTROS = {
         "(negated) onto the next input. First-order shaping is a high-"
         "pass on the noise floor — most useful upstream of a lowpass "
         "reconstruction that rejects the shifted noise."
+    ),
+    "DDC": (
+        "Digital down-converter: NCO mixing followed by matched polyphase "
+        "decimation of the I and Q streams. The decimator is fixed to "
+        "`PolyphaseDecimator` and built from the `taps` / `decimation_factor` "
+        "arguments. `process_block` returns a `(real, imag)` tuple, matching "
+        "`NCO.mix_down`; the internal oscillator is exposed read-only through "
+        "`.nco_phase` / `.nco_phase_increment` rather than as a handle."
     ),
     "TransferFunction": (
         "Rational H(z) = B(z)/A(z) with double-precision coefficients. "

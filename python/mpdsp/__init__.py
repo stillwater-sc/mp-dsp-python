@@ -133,6 +133,8 @@ try:
         NCO, CICDecimator, CICInterpolator,
         HalfBandFilter, PolyphaseDecimator, PolyphaseInterpolator,
         design_halfband, polyphase_decompose,
+        # Acquisition — digital down-converter (Phase 4 / #87)
+        DDC,
         # Instrument — oscilloscope-style measurements (gap-analysis Phase 2 / #101)
         peak_to_peak, instrument_mean, instrument_rms,
         rise_time, fall_time, period, frequency,

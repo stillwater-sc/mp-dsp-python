@@ -1,7 +1,8 @@
-"""Tests for the high-rate data-acquisition bindings (Phase 3 / Issue #86).
+"""Tests for the high-rate data-acquisition bindings (Issues #86, #87).
 
 Covers NCO, CICDecimator/Interpolator, HalfBandFilter, PolyphaseDecimator/
-Interpolator, and the design helpers design_halfband and polyphase_decompose.
+Interpolator, the design helpers design_halfband and polyphase_decompose,
+and the DDC digital down-converter.
 
 These are smoke + invariant tests rather than full numerical-accuracy
 sweeps — the depth lives in the upstream C++ test suite. Here we verify
@@ -246,3 +247,171 @@ class TestPolyphaseInterpolator:
     def test_factor_zero_raises(self):
         with pytest.raises((ValueError, RuntimeError)):
             mpdsp.PolyphaseInterpolator(taps=np.ones(8), factor=0)
+
+
+# =============================================================================
+# DDC (digital down-converter) — Issue #87
+# =============================================================================
+
+# Matches the upstream C++ test fixture (tests/test_ddc.cpp): a Hamming-windowed
+# lowpass at 0.45/R of the input rate, long enough that the transition band
+# doesn't leak the image back into the passband.
+_DDC_FS = 48000.0
+_DDC_IF = 6000.0
+_DDC_R = 4
+# Output samples to discard before measuring: the FIR group delay is
+# (num_taps-1)/2 input samples, which is ~32 output samples after decimation.
+_DDC_SKIP = 32
+
+
+def _ddc_taps(factor=_DDC_R, sample_rate=_DDC_FS):
+    num_taps = 64 * factor + 1
+    return mpdsp.fir_lowpass(
+        num_taps=num_taps,
+        sample_rate=sample_rate,
+        cutoff=(0.45 / factor) * sample_rate,
+        window="hamming",
+    ).coefficients()
+
+
+def _tone(freq, length, sample_rate=_DDC_FS):
+    n = np.arange(length)
+    return np.cos(2.0 * np.pi * freq * n / sample_rate)
+
+
+class TestDDC:
+    @pytest.mark.parametrize("dtype", _DTYPES)
+    def test_construction_exposes_parameters(self, dtype):
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R, dtype=dtype)
+        assert ddc.center_frequency == pytest.approx(_DDC_IF)
+        assert ddc.sample_rate == pytest.approx(_DDC_FS)
+        assert ddc.decimation_factor == _DDC_R
+
+    def test_nonpositive_sample_rate_raises(self):
+        for bad in (0.0, -_DDC_FS):
+            with pytest.raises((ValueError, RuntimeError)):
+                mpdsp.DDC(_DDC_IF, bad, _ddc_taps(), _DDC_R)
+
+    def test_zero_decimation_factor_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), 0)
+
+    def test_empty_taps_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.DDC(_DDC_IF, _DDC_FS, np.array([]), _DDC_R)
+
+    def test_process_block_returns_real_imag_pair(self):
+        n_in = 4096
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        re, im = ddc.process_block(_tone(_DDC_IF, n_in))
+        assert re.dtype == np.float64 and im.dtype == np.float64
+        assert re.shape == im.shape
+        # One complex output per decimation_factor inputs, modulo startup phase.
+        assert abs(len(re) - n_in // _DDC_R) <= 1
+
+    def test_tone_at_center_translates_to_dc(self):
+        """A real tone at the tuned frequency lands at baseband DC.
+
+        Mean magnitude is ~0.5, not 1.0: a real cosine is two conjugate
+        half-amplitude complex exponentials, and the mixer keeps one of them.
+        """
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        re, im = ddc.process_block(_tone(_DDC_IF, 4096))
+        z = (re + 1j * im)[_DDC_SKIP:]
+
+        assert np.abs(z).mean() == pytest.approx(0.5, abs=0.05)
+
+        # DC must be the dominant bin of the down-converted output.
+        spectrum = np.abs(np.fft.fft(z[:512]))
+        assert np.argmax(spectrum) == 0
+
+    def test_offset_tone_translates_to_offset(self):
+        """A tone `offset` above the tuned frequency lands at `offset`."""
+        offset = 1000.0
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        re, im = ddc.process_block(_tone(_DDC_IF + offset, 4096))
+        z = (re + 1j * im)[_DDC_SKIP:]
+
+        n_fft = 512
+        output_rate = _DDC_FS / _DDC_R
+        bin_hz = output_rate / n_fft
+        peak_hz = np.argmax(np.abs(np.fft.fft(z[:n_fft]))) * bin_hz
+        # Within one FFT bin of the expected offset.
+        assert peak_hz == pytest.approx(offset, abs=bin_hz)
+
+    def test_streaming_matches_block(self):
+        """process() sample-by-sample reproduces process_block() exactly."""
+        x = _tone(_DDC_IF, 1024)
+        block = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        re, im = block.process_block(x)
+
+        stream = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        emitted = [value for sample in x
+                   for ready, value in [stream.process(sample)] if ready]
+
+        assert len(emitted) == len(re)
+        np.testing.assert_allclose(np.real(emitted), re, atol=1e-12)
+        np.testing.assert_allclose(np.imag(emitted), im, atol=1e-12)
+
+    def test_set_center_frequency_retunes(self):
+        new_if = 10000.0
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        ddc.set_center_frequency(new_if)
+        assert ddc.center_frequency == pytest.approx(new_if)
+
+        # The retuned DDC brings a tone at the new IF down to DC.
+        ddc.reset()
+        re, im = ddc.process_block(_tone(new_if, 4096))
+        z = (re + 1j * im)[_DDC_SKIP:]
+        assert np.abs(z).mean() == pytest.approx(0.5, abs=0.05)
+
+    def test_reset_restores_initial_output(self):
+        x = _tone(_DDC_IF, 1024)
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        re_first, im_first = ddc.process_block(x)
+        ddc.reset()
+        re_second, im_second = ddc.process_block(x)
+        np.testing.assert_allclose(re_first, re_second, atol=1e-12)
+        np.testing.assert_allclose(im_first, im_second, atol=1e-12)
+
+    def test_nco_phase_advances_and_resets(self):
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R)
+        # Phase is in normalized cycles, not radians: increment is f/fs and
+        # the accumulator wraps within [0, 1).
+        assert ddc.nco_phase_increment == pytest.approx(_DDC_IF / _DDC_FS)
+        assert ddc.nco_phase == pytest.approx(0.0)
+
+        # 65 samples at 0.125 cycles/sample lands mid-cycle rather than back
+        # at the origin, so a nonzero phase is a meaningful check.
+        ddc.process_block(_tone(_DDC_IF, 65))
+        assert 0.0 < ddc.nco_phase < 1.0
+
+        ddc.reset()
+        assert ddc.nco_phase == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("dtype", _DTYPES)
+    def test_down_conversion_holds_across_dtypes(self, dtype):
+        ddc = mpdsp.DDC(_DDC_IF, _DDC_FS, _ddc_taps(), _DDC_R, dtype=dtype)
+        re, im = ddc.process_block(_tone(_DDC_IF, 4096))
+        z = (re + 1j * im)[_DDC_SKIP:]
+        assert np.all(np.isfinite(z))
+        assert np.abs(z).mean() == pytest.approx(0.5, abs=0.05)
+
+    def test_reduced_precision_degrades_against_reference(self):
+        """posit<8,2> sample path is measurably worse than the double path.
+
+        Pins the mixed-precision dispatch as actually reaching the arithmetic:
+        if `dtype=` were silently ignored, the two SQNRs would be identical.
+        """
+        x = _tone(_DDC_IF, 4096)
+        taps = _ddc_taps()
+
+        ref_re, ref_im = mpdsp.DDC(
+            _DDC_IF, _DDC_FS, taps, _DDC_R, dtype="reference").process_block(x)
+        coarse_re, coarse_im = mpdsp.DDC(
+            _DDC_IF, _DDC_FS, taps, _DDC_R, dtype="posit_8_2").process_block(x)
+
+        assert np.all(np.isfinite(coarse_re)) and np.all(np.isfinite(coarse_im))
+        ref_sqnr = mpdsp.sqnr_db(ref_re[_DDC_SKIP:], ref_re[_DDC_SKIP:])
+        coarse_sqnr = mpdsp.sqnr_db(ref_re[_DDC_SKIP:], coarse_re[_DDC_SKIP:])
+        assert coarse_sqnr < ref_sqnr

@@ -7,6 +7,7 @@
 //   - HalfBandFilter              (halfband.hpp)
 //   - PolyphaseDecimator, PolyphaseInterpolator (filter/fir/polyphase.hpp,
 //                                  re-exported by acquisition/polyphase_decimator.hpp)
+//   - DDC                         (ddc.hpp, Issue #87)
 //   - design_halfband             (halfband.hpp free function)
 //   - polyphase_decompose         (filter/fir/polyphase.hpp free function)
 //
@@ -21,12 +22,14 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/complex.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 #include <sw/dsp/acquisition/nco.hpp>
 #include <sw/dsp/acquisition/cic.hpp>
+#include <sw/dsp/acquisition/ddc.hpp>
 #include <sw/dsp/acquisition/halfband.hpp>
 #include <sw/dsp/acquisition/polyphase_decimator.hpp>
 #include <sw/dsp/analysis/acquisition_precision.hpp>
@@ -369,6 +372,79 @@ private:
 	sw::dsp::PolyphaseInterpolator<T> pi_;
 };
 
+// ===========================================================================
+// DDC (digital down-converter): NCO -> mixer -> I/Q decimation
+// ===========================================================================
+//
+// The upstream DDC takes the decimator as a template parameter, accepting
+// anything that steps via process() / process_decimate() / push()+output().
+// This binding fixes it to PolyphaseDecimator, per the Phase 4 scope note
+// (#87): a Python-side decimator choice would multiply the instantiation
+// count across every ArithConfig for no immediate research payoff. Richer
+// composition is the job of DecimationChain (#88).
+//
+// The decimator prototype is built here from (taps, factor) rather than
+// accepting a PyPolyphaseDecimator: that class holds a type-erased
+// unique_ptr<IPolyphaseDecimatorImpl>, so there is no way to recover the
+// concrete PolyphaseDecimator<T> the DDC constructor needs to copy.
+
+struct IDDCImpl {
+	virtual ~IDDCImpl() = default;
+	virtual std::pair<bool, std::complex<double>> process(double in) = 0;
+	virtual nb::tuple process_block(np_f64_ro input) = 0;
+	virtual void set_center_frequency(double frequency) = 0;
+	virtual double center_frequency() const = 0;
+	virtual double sample_rate() const = 0;
+	virtual std::size_t decimation_factor() const = 0;
+	virtual double nco_phase() const = 0;
+	virtual double nco_phase_increment() const = 0;
+	virtual void reset() = 0;
+};
+
+template <typename T>
+class DDCImpl : public IDDCImpl {
+public:
+	DDCImpl(double center_frequency, double sample_rate,
+	        const mtl::vec::dense_vector<T>& taps, std::size_t factor)
+		: ddc_(static_cast<T>(center_frequency), static_cast<T>(sample_rate),
+		       sw::dsp::PolyphaseDecimator<T>(taps, factor)),
+		  factor_(factor) {}
+
+	std::pair<bool, std::complex<double>> process(double in) override {
+		auto [ready, z] = ddc_.process(static_cast<T>(in));
+		// complex_for_t<T> is std::complex<T> for float/double and
+		// sw::universal::complex<T> otherwise; both expose real()/imag().
+		return {ready, std::complex<double>(static_cast<double>(z.real()),
+		                                    static_cast<double>(z.imag()))};
+	}
+	nb::tuple process_block(np_f64_ro input) override {
+		auto in = numpy_to_vec_fresh<T>(input);
+		auto out = ddc_.process_block(in);
+		return complex_split_to_numpy(out);
+	}
+	void set_center_frequency(double frequency) override {
+		ddc_.set_center_frequency(static_cast<T>(frequency));
+	}
+	double center_frequency() const override {
+		return static_cast<double>(ddc_.center_frequency());
+	}
+	double sample_rate() const override {
+		return static_cast<double>(ddc_.sample_rate());
+	}
+	std::size_t decimation_factor() const override { return factor_; }
+	double nco_phase() const override {
+		return static_cast<double>(ddc_.nco().phase());
+	}
+	double nco_phase_increment() const override {
+		return static_cast<double>(ddc_.nco().phase_increment());
+	}
+	void reset() override { ddc_.reset(); }
+
+private:
+	sw::dsp::DDC<T> ddc_;
+	std::size_t     factor_;
+};
+
 } // anonymous namespace
 
 // ===========================================================================
@@ -524,6 +600,44 @@ public:
 
 private:
 	std::unique_ptr<IPolyphaseInterpolatorImpl> impl_;
+};
+
+class PyDDC {
+public:
+	PyDDC(double center_frequency, double sample_rate, np_f64_ro taps,
+	      std::size_t decimation_factor, const std::string& dtype) {
+		// Validate here rather than letting the NCO constructor throw: the
+		// upstream message names the NCO, which is confusing when the caller
+		// only ever mentioned a DDC.
+		if (!(sample_rate > 0.0))
+			throw std::invalid_argument("DDC: sample_rate must be positive");
+		if (decimation_factor == 0)
+			throw std::invalid_argument("DDC: decimation_factor must be > 0");
+		if (taps.shape(0) == 0)
+			throw std::invalid_argument("DDC: taps must be non-empty");
+		auto config = mpdsp::parse_config(dtype);
+		impl_ = dispatch_dtype_fn(config, "DDC",
+			[&]<typename T>() -> std::unique_ptr<IDDCImpl> {
+				auto t = numpy_to_vec_fresh<T>(taps);
+				return std::make_unique<DDCImpl<T>>(
+					center_frequency, sample_rate, t, decimation_factor);
+			});
+	}
+
+	std::pair<bool, std::complex<double>> process(double in) {
+		return impl_->process(in);
+	}
+	nb::tuple process_block(np_f64_ro input) { return impl_->process_block(input); }
+	void set_center_frequency(double f)      { impl_->set_center_frequency(f); }
+	double center_frequency() const          { return impl_->center_frequency(); }
+	double sample_rate() const               { return impl_->sample_rate(); }
+	std::size_t decimation_factor() const    { return impl_->decimation_factor(); }
+	double nco_phase() const                 { return impl_->nco_phase(); }
+	double nco_phase_increment() const       { return impl_->nco_phase_increment(); }
+	void reset()                             { impl_->reset(); }
+
+private:
+	std::unique_ptr<IDDCImpl> impl_;
 };
 
 // ===========================================================================
@@ -686,4 +800,48 @@ void bind_acquisition(nb::module_& m) {
 		.def("process_block", &PyPolyphaseInterpolator::process_block, nb::arg("input"))
 		.def_prop_ro("factor", &PyPolyphaseInterpolator::factor)
 		.def("reset", &PyPolyphaseInterpolator::reset);
+
+	// ---- DDC -----------------------------------------------------------
+	nb::class_<PyDDC>(m, "DDC",
+		"Digital Down-Converter: mixes a real input band down to complex "
+		"baseband with an NCO, then decimates the I and Q streams through "
+		"matched polyphase FIR decimators.\n\n"
+		"The decimator is fixed to PolyphaseDecimator and built from the "
+		"`taps` / `decimation_factor` arguments; two independent copies run "
+		"in lockstep on I and Q. Design `taps` as a lowpass with cutoff "
+		"below 0.5/decimation_factor (normalized to the input rate) to "
+		"suppress aliasing — `mpdsp.fir_lowpass` is the usual source.")
+		.def(nb::init<double, double, np_f64_ro, std::size_t, const std::string&>(),
+		     nb::arg("center_frequency"), nb::arg("sample_rate"),
+		     nb::arg("taps"), nb::arg("decimation_factor"),
+		     nb::arg("dtype") = "reference")
+		.def("process", &PyDDC::process, nb::arg("input"),
+		     "Feed one real input sample. Returns (emit, value) where `value` "
+		     "is the complex baseband sample, valid only when emit is True "
+		     "(once per decimation_factor inputs). On non-emit cycles the "
+		     "value is 0j.")
+		.def("process_block", &PyDDC::process_block, nb::arg("input"),
+		     "Down-convert a block of real samples. Returns a (real, imag) "
+		     "tuple of float64 arrays holding the ~len(input)/decimation_factor "
+		     "complex baseband samples produced during the block — matching "
+		     "the convention used by NCO.mix_down() and NCO.generate_block(). "
+		     "Combine with `real + 1j*imag` for a complex128 array.")
+		.def("set_center_frequency", &PyDDC::set_center_frequency,
+		     nb::arg("frequency"),
+		     "Retune the local oscillator. The decimator state is left "
+		     "untouched; call reset() first for a clean retune.")
+		.def_prop_ro("center_frequency", &PyDDC::center_frequency)
+		.def_prop_ro("sample_rate", &PyDDC::sample_rate)
+		.def_prop_ro("decimation_factor", &PyDDC::decimation_factor)
+		.def_prop_ro("nco_phase", &PyDDC::nco_phase,
+		     "Current phase of the internal NCO, in normalized cycles in "
+		     "[0, 1) — multiply by 2*pi for radians. Exposed as a read-only "
+		     "scalar rather than an NCO handle: the DDC owns its oscillator, "
+		     "and handing out a live reference through the type-erased impl "
+		     "would outlive-alias it.")
+		.def_prop_ro("nco_phase_increment", &PyDDC::nco_phase_increment,
+		     "Per-sample phase step of the internal NCO, in normalized "
+		     "cycles — equal to center_frequency / sample_rate.")
+		.def("reset", &PyDDC::reset,
+		     "Clear the NCO phase and both decimator delay lines.");
 }

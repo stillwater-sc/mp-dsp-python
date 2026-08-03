@@ -47,6 +47,7 @@ the note at the bottom.
   - [`HalfBandFilter`](#halfbandfilter)
   - [`PolyphaseDecimator`](#polyphasedecimator)
   - [`PolyphaseInterpolator`](#polyphaseinterpolator)
+  - [`DDC`](#ddc)
   - [`KalmanFilter`](#kalmanfilter)
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
@@ -616,6 +617,27 @@ L-factor polyphase FIR interpolator. Each input produces L outputs.
 | `.process` | `(self, input: float) -> ndarray[float64]` — Returns `factor` upsampled output samples. |
 | `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `factor × N` outputs. |
 | `.reset` | `(self) -> None` |
+
+### `DDC`
+
+Digital down-converter: mixes a real input band down to complex baseband with an NCO, then decimates the I and Q streams through matched polyphase FIR decimators running in lockstep. A real tone at `center_frequency` lands at baseband DC with magnitude 0.5 — a real cosine is two conjugate half-amplitude exponentials and the mixer keeps one.
+
+> NCO → mixer → I/Q polyphase decimation, at integer ratio `decimation_factor`.
+
+The decimator is fixed to `PolyphaseDecimator` and built from `taps` / `decimation_factor`; richer decimator composition is the job of `DecimationChain`. Design `taps` as a lowpass with cutoff below `0.5 / decimation_factor` (normalized to the input rate) to suppress aliasing — `fir_lowpass(...).coefficients()` is the usual source.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(center_frequency: float, sample_rate: float, taps: ndarray1d[ro], decimation_factor: int, dtype: str = 'reference')` — `sample_rate` must be `> 0`, `decimation_factor` `> 0`, `taps` non-empty. |
+| `.center_frequency` | `(self) -> float` |
+| `.sample_rate` | `(self) -> float` |
+| `.decimation_factor` | `(self) -> int` |
+| `.nco_phase` | `(self) -> float` — Internal oscillator phase in normalized cycles `[0, 1)`. |
+| `.nco_phase_increment` | `(self) -> float` — `center_frequency / sample_rate`. |
+| `.process` | `(self, input: float) -> tuple[bool, complex]` — Returns `(emit, value)`; `value` is valid only when `emit` is `True`, once per `decimation_factor` inputs. |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> tuple[ndarray[float64], ndarray[float64]]` — `(real, imag)` of the ~`N / decimation_factor` complex baseband samples. Combine with `real + 1j*imag`. |
+| `.set_center_frequency` | `(self, frequency: float) -> None` — Retunes the oscillator; decimator state is left untouched. |
+| `.reset` | `(self) -> None` — Clears the NCO phase and both decimator delay lines. |
 
 ### `KalmanFilter`
 
