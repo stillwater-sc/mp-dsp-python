@@ -620,6 +620,9 @@ to_double_vec(const mtl::vec::dense_vector<T>& v) {
 // so Welch's PSD can build windows the same way FIR design does.
 using mpdsp::bindings::make_window_T;
 
+// Used by both the RBJ biquad designers and the FIR designers below.
+using mpdsp::bindings::dispatch_dtype_fn;
+
 // Common FIR parameter validation shared by the design functions below.
 static void check_num_taps(int n, const char* name) {
 	if (n < 1) {
@@ -740,6 +743,46 @@ static PyIIRFilter make_from_rbj(SetupArgs... args) {
 	PyIIRFilter filt;
 	filt.cascade.set_num_stages(1);
 	filt.cascade.stage(0) = design.cascade().stage(0);
+	return filt;
+}
+
+// ---------------------------------------------------------------------------
+// Coefficient-precision dispatch for the RBJ designers (Issue #94).
+//
+// Strategy (a) of the two the issue weighed: run the design math in T, then
+// narrow the finished biquad back to double for the Cascade<double,
+// kMaxStages> that PyIIRFilter stores. Every downstream method — process(),
+// poles(), frequency_response(), stability_margin(), pole_displacement() —
+// keeps operating on the one cascade shape it already assumes, so this is a
+// change to the designers alone.
+//
+// Narrowing to double is lossless here and not a fudge: an RBJ biquad
+// designed in T yields coefficients that are by construction T-representable,
+// and every T in the dispatch table is narrower than double, so double stores
+// them exactly. What coeff_dtype actually varies is the *arithmetic* used to
+// get there — the w0 scaling, cos/sin, the alpha divide, and the a0
+// normalization — which is where coefficient error in a biquad design is
+// born.
+//
+// The counterpart to this is IIRFilter.pole_displacement(dtype), which
+// quantizes an already-designed double cascade. The two answer different
+// questions: pole_displacement asks "what does storing these coefficients in
+// T cost?", coeff_dtype asks "what does computing them in T cost?".
+// ---------------------------------------------------------------------------
+
+template <typename DesignT, typename... SetupArgs>
+static PyIIRFilter rbj_design_in(SetupArgs... args) {
+	DesignT design;
+	design.setup(args...);
+	const auto& src = design.cascade().stage(0);
+	PyIIRFilter filt;
+	filt.cascade.set_num_stages(1);
+	auto& dst = filt.cascade.stage(0);
+	dst.b0 = static_cast<double>(src.b0);
+	dst.b1 = static_cast<double>(src.b1);
+	dst.b2 = static_cast<double>(src.b2);
+	dst.a1 = static_cast<double>(src.a1);
+	dst.a2 = static_cast<double>(src.a2);
 	return filt;
 }
 
@@ -963,6 +1006,14 @@ double PyIIRFilter::pole_displacement(const std::string& dtype) const {
 // ---------------------------------------------------------------------------
 // Module registration.
 // ---------------------------------------------------------------------------
+
+// Shared tail for the RBJ designer docstrings — see the RBJ section below.
+#define RBJ_COEFF_DTYPE_DOC \
+	"coeff_dtype selects the arithmetic used to compute the biquad " \
+	"coefficients (w0, cos/sin, alpha, and the a0 normalization); the " \
+	"result is stored in double either way. Note that sensor_8bit / " \
+	"sensor_6bit dispatch their compute path to double, so they design " \
+	"identically to reference."
 
 void bind_filters(nb::module_& m) {
 	nb::class_<PyIIRFilter>(m, "IIRFilter",
@@ -1339,80 +1390,125 @@ void bind_filters(nb::module_& m) {
 	// =======================================================================
 	// RBJ Audio EQ Cookbook — single biquad per variant, no 'order' parameter.
 	// =======================================================================
+	//
+	// Every designer takes coeff_dtype= (#94): the biquad's coefficient math
+	// runs in that type, and the finished coefficients are stored as double.
+	// See rbj_design_in() for why that storage narrowing is lossless.
+	// RBJ_COEFF_DTYPE_DOC is a macro rather than a constant because nanobind
+	// docstrings must be const char* — adjacent string-literal concatenation
+	// is what lets the shared tail be appended at compile time.
+	static constexpr const char* A_COEFF_DTYPE = "coeff_dtype";
 
 	m.def("rbj_lowpass",
-		[](double sr, double cutoff, double q) {
+		[](double sr, double cutoff, double q, const std::string& coeff_dtype) {
 			const char* n = "rbj_lowpass";
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
 			check_positive(q, n, "q");
-			return make_from_rbj<rbj::LowPass<>>(sr, cutoff, q);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::LowPass<T>>(sr, cutoff, q);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("q") = 0.7071,
-		"RBJ biquad lowpass. q ~ 0.7071 gives a Butterworth-like response.");
+		   nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad lowpass. q ~ 0.7071 gives a Butterworth-like response. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	m.def("rbj_highpass",
-		[](double sr, double cutoff, double q) {
+		[](double sr, double cutoff, double q, const std::string& coeff_dtype) {
 			const char* n = "rbj_highpass";
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
 			check_positive(q, n, "q");
-			return make_from_rbj<rbj::HighPass<>>(sr, cutoff, q);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::HighPass<T>>(sr, cutoff, q);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("q") = 0.7071,
-		"RBJ biquad highpass.");
+		   nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad highpass. " RBJ_COEFF_DTYPE_DOC);
 
 	m.def("rbj_bandpass",
-		[](double sr, double center_freq, double bandwidth) {
+		[](double sr, double center_freq, double bandwidth,
+		   const std::string& coeff_dtype) {
 			const char* n = "rbj_bandpass";
 			check_sample_rate(sr, n);
 			check_frequency(center_freq, sr, n, "center_freq");
 			check_positive(bandwidth, n, "bandwidth");
-			return make_from_rbj<rbj::BandPass<>>(sr, center_freq, bandwidth);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::BandPass<T>>(sr, center_freq, bandwidth);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("bandwidth") = 1.0,
-		"RBJ biquad bandpass. bandwidth is in octaves.");
+		   nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad bandpass. bandwidth is in octaves. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	m.def("rbj_bandstop",
-		[](double sr, double center_freq, double bandwidth) {
+		[](double sr, double center_freq, double bandwidth,
+		   const std::string& coeff_dtype) {
 			const char* n = "rbj_bandstop";
 			check_sample_rate(sr, n);
 			check_frequency(center_freq, sr, n, "center_freq");
 			check_positive(bandwidth, n, "bandwidth");
-			return make_from_rbj<rbj::BandStop<>>(sr, center_freq, bandwidth);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::BandStop<T>>(sr, center_freq, bandwidth);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("bandwidth") = 1.0,
-		"RBJ biquad bandstop (notch). bandwidth is in octaves.");
+		   nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad bandstop (notch). bandwidth is in octaves. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	m.def("rbj_allpass",
-		[](double sr, double center_freq, double q) {
+		[](double sr, double center_freq, double q,
+		   const std::string& coeff_dtype) {
 			const char* n = "rbj_allpass";
 			check_sample_rate(sr, n);
 			check_frequency(center_freq, sr, n, "center_freq");
 			check_positive(q, n, "q");
-			return make_from_rbj<rbj::AllPass<>>(sr, center_freq, q);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::AllPass<T>>(sr, center_freq, q);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CTR), nb::arg("q") = 0.7071,
-		"RBJ biquad allpass — unit magnitude, phase shift only.");
+		   nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad allpass — unit magnitude, phase shift only. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	// Shelf filters: gain_db is intentionally not validated — any real value
 	// is meaningful (0 dB is a legal unity shelf, negative values cut).
 	m.def("rbj_lowshelf",
-		[](double sr, double cutoff, double gain_db, double slope) {
+		[](double sr, double cutoff, double gain_db, double slope,
+		   const std::string& coeff_dtype) {
 			const char* n = "rbj_lowshelf";
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
 			check_positive(slope, n, "slope");
-			return make_from_rbj<rbj::LowShelf<>>(sr, cutoff, gain_db, slope);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::LowShelf<T>>(sr, cutoff, gain_db, slope);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("gain_db"),
-		   nb::arg("slope") = 1.0,
-		"RBJ biquad low shelf. gain_db is the low-frequency shelf gain.");
+		   nb::arg("slope") = 1.0, nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad low shelf. gain_db is the low-frequency shelf gain. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	m.def("rbj_highshelf",
-		[](double sr, double cutoff, double gain_db, double slope) {
+		[](double sr, double cutoff, double gain_db, double slope,
+		   const std::string& coeff_dtype) {
 			const char* n = "rbj_highshelf";
 			check_sample_rate(sr, n);
 			check_frequency(cutoff, sr, n, "cutoff");
 			check_positive(slope, n, "slope");
-			return make_from_rbj<rbj::HighShelf<>>(sr, cutoff, gain_db, slope);
+			auto config = mpdsp::parse_config(coeff_dtype);
+			return dispatch_dtype_fn(config, n, [&]<typename T>() {
+				return rbj_design_in<rbj::HighShelf<T>>(sr, cutoff, gain_db, slope);
+			});
 		}, nb::arg(A_SR), nb::arg(A_CUT), nb::arg("gain_db"),
-		   nb::arg("slope") = 1.0,
-		"RBJ biquad high shelf. gain_db is the high-frequency shelf gain.");
+		   nb::arg("slope") = 1.0, nb::arg(A_COEFF_DTYPE) = "reference",
+		"RBJ biquad high shelf. gain_db is the high-frequency shelf gain. "
+		RBJ_COEFF_DTYPE_DOC);
 
 	// =======================================================================
 	// FIR filters.
@@ -1450,8 +1546,6 @@ void bind_filters(nb::module_& m) {
 			return f;
 		}, nb::arg("coefficients"),
 		"Construct an FIR filter from explicit tap coefficients.");
-
-	using mpdsp::bindings::dispatch_dtype_fn;
 
 	m.def("fir_lowpass",
 		[](int num_taps, double sr, double cutoff,
@@ -1775,3 +1869,5 @@ void bind_filters(nb::module_& m) {
 		.def_prop_ro("dtype",
 		     [](const PyOverlapSaveConvolver& self) { return self.dtype(); });
 }
+
+#undef RBJ_COEFF_DTYPE_DOC

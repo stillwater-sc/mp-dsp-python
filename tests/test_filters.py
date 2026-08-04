@@ -429,6 +429,122 @@ class TestRBJ:
 
 
 # ---------------------------------------------------------------------------
+# RBJ coefficient-precision dispatch (Issue #94).
+#
+# coeff_dtype selects the arithmetic used to *compute* the biquad
+# coefficients; the result is always stored in double. That is the dual of
+# IIRFilter.pole_displacement(dtype), which quantizes coefficients that were
+# already computed in double.
+# ---------------------------------------------------------------------------
+
+# One entry per RBJ designer, each a callable taking only coeff_dtype kwargs.
+# All seven upstream variants are covered; there is no rbj_peaking, because
+# upstream sw::dsp::rbj has no Peaking class.
+_RBJ_DESIGNERS = {
+    "rbj_lowpass": lambda **kw: mpdsp.rbj_lowpass(
+        sample_rate=SAMPLE_RATE, cutoff=1000.0, q=0.7071, **kw),
+    "rbj_highpass": lambda **kw: mpdsp.rbj_highpass(
+        sample_rate=SAMPLE_RATE, cutoff=1000.0, q=0.7071, **kw),
+    "rbj_bandpass": lambda **kw: mpdsp.rbj_bandpass(
+        sample_rate=SAMPLE_RATE, center_freq=1000.0, bandwidth=1.0, **kw),
+    "rbj_bandstop": lambda **kw: mpdsp.rbj_bandstop(
+        sample_rate=SAMPLE_RATE, center_freq=1000.0, bandwidth=1.0, **kw),
+    "rbj_allpass": lambda **kw: mpdsp.rbj_allpass(
+        sample_rate=SAMPLE_RATE, center_freq=1000.0, q=0.7071, **kw),
+    "rbj_lowshelf": lambda **kw: mpdsp.rbj_lowshelf(
+        sample_rate=SAMPLE_RATE, cutoff=1000.0, gain_db=6.0, slope=1.0, **kw),
+    "rbj_highshelf": lambda **kw: mpdsp.rbj_highshelf(
+        sample_rate=SAMPLE_RATE, cutoff=1000.0, gain_db=6.0, slope=1.0, **kw),
+}
+
+_RBJ_NAMES = sorted(_RBJ_DESIGNERS)
+
+# reference plus two mixed-precision representatives, one wide and one narrow.
+_RBJ_COEFF_DTYPES = ["reference", "posit_32_2", "half"]
+
+
+class TestRBJCoeffDtype:
+    def test_every_designer_is_covered(self):
+        """Guard against a new RBJ designer landing untested."""
+        exported = {n for n in dir(mpdsp)
+                    if n.startswith("rbj_") and callable(getattr(mpdsp, n))}
+        assert exported == set(_RBJ_NAMES)
+
+    @pytest.mark.parametrize("name", _RBJ_NAMES)
+    def test_default_matches_explicit_reference_bit_for_bit(self, name):
+        """Omitting coeff_dtype must be identical to passing 'reference'."""
+        design = _RBJ_DESIGNERS[name]
+        default = design().coefficients()
+        explicit = design(coeff_dtype="reference").coefficients()
+        assert default == explicit
+
+    @pytest.mark.parametrize("name", _RBJ_NAMES)
+    @pytest.mark.parametrize("dtype", _RBJ_COEFF_DTYPES)
+    def test_coefficients_are_finite_and_single_stage(self, name, dtype):
+        filt = _RBJ_DESIGNERS[name](coeff_dtype=dtype)
+        assert filt.num_stages() == 1
+        coeffs = filt.coefficients()[0]
+        assert len(coeffs) == 5
+        assert all(np.isfinite(c) for c in coeffs)
+
+    @pytest.mark.parametrize("name", _RBJ_NAMES)
+    @pytest.mark.parametrize("dtype", ["posit_32_2", "cf24"])
+    def test_wide_dtype_tracks_reference_response(self, name, dtype):
+        """A wide coefficient type reproduces the reference response closely.
+
+        Compared as linear magnitude over the whole band, not in dB at the
+        design frequency: rbj_bandstop is a notch, so its reference response
+        there is a true null (~-315 dB) and any perturbation of the null
+        location makes a dB ratio meaningless. Linear magnitude stays
+        well-conditioned everywhere, including at the null.
+
+        Measured worst case across all seven designers is 2.2e-08 for
+        posit<32,2> and 9.5e-06 for cfloat<24,5>, so 1e-4 has real headroom
+        while still excluding `half` (6.6e-03) and posit<8,2> (5.6e-01).
+        """
+        # frequency_response takes normalized frequencies (cycles/sample).
+        freqs = np.linspace(0.0, 0.49, 128)
+        ref = np.abs(_RBJ_DESIGNERS[name](
+            coeff_dtype="reference").frequency_response(freqs))
+        got = np.abs(_RBJ_DESIGNERS[name](
+            coeff_dtype=dtype).frequency_response(freqs))
+        assert np.max(np.abs(ref - got)) < 1e-4
+
+    @pytest.mark.parametrize("name", _RBJ_NAMES)
+    def test_narrow_dtype_perturbs_coefficients(self, name):
+        """posit<8,2> visibly moves the coefficients.
+
+        If coeff_dtype were being accepted and ignored, this would produce a
+        bit-identical design and the test would fail. Observed drift across
+        the seven designers is 0.13-0.31 absolute.
+        """
+        ref = _RBJ_DESIGNERS[name](coeff_dtype="reference").coefficients()[0]
+        coarse = _RBJ_DESIGNERS[name](coeff_dtype="posit_8_2").coefficients()[0]
+        drift = max(abs(a - b) for a, b in zip(ref, coarse))
+        assert drift > 1e-3
+
+    @pytest.mark.parametrize("name", _RBJ_NAMES)
+    def test_unknown_dtype_raises(self, name):
+        with pytest.raises((ValueError, RuntimeError)):
+            _RBJ_DESIGNERS[name](coeff_dtype="not_a_dtype")
+
+    def test_designed_filter_still_processes_and_analyzes(self):
+        """The returned object is an ordinary IIRFilter regardless of dtype.
+
+        The coefficients are narrowed back to double for storage, so every
+        downstream method keeps working on the single cascade shape.
+        """
+        filt = _RBJ_DESIGNERS["rbj_lowpass"](coeff_dtype="posit_32_2")
+        out = filt.process(mpdsp.sine(256, frequency=500.0,
+                                      sample_rate=SAMPLE_RATE))
+        assert out.shape == (256,)
+        assert np.all(np.isfinite(out))
+        _assert_stable(filt)
+        assert np.isfinite(filt.stability_margin())
+        assert np.isfinite(filt.condition_number())
+
+
+# ---------------------------------------------------------------------------
 # Cross-family smoke tests — frequency_response and process work the same
 # way on every kind of filter exposed by this module.
 # ---------------------------------------------------------------------------

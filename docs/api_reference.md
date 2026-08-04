@@ -204,15 +204,19 @@ Each function designs the filter in double precision and returns an `IIRFilter` 
 
 Robert Bristow-Johnson audio-EQ biquads. Always 2nd-order (no `order` parameter). Include shelf and allpass topologies not present in the classical families. Parameterized by `q` (quality factor) or `bandwidth` (for BP/BS); shelves take `gain_db`.
 
+Every designer takes `coeff_dtype=` (default `'reference'`), which selects the arithmetic used to **compute** the coefficients — the `w0` scaling, `cos`/`sin`, the `alpha` divide, and the `a0` normalization. The finished coefficients are stored in `double` either way, losslessly: a biquad designed in `T` yields `T`-representable values, and every `T` in the dispatch table is narrower than `double`. This is the dual of `IIRFilter.pole_displacement(dtype)`, which quantizes coefficients that were already computed in `double` — `coeff_dtype` asks what computing them in `T` costs, `pole_displacement` asks what storing them in `T` costs.
+
+`sensor_8bit` / `sensor_6bit` route their compute path to `double`, so they design identically to `reference`. There is no `rbj_peaking`: upstream `sw::dsp::rbj` has no Peaking class.
+
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `rbj_lowpass` | `(sample_rate: float, cutoff: float, q: float = 0.7071) -> mpdsp._core.IIRFilter` | RBJ biquad lowpass. q ~ 0.7071 gives a Butterworth-like response. |
-| `rbj_highpass` | `(sample_rate: float, cutoff: float, q: float = 0.7071) -> mpdsp._core.IIRFilter` | RBJ biquad highpass. |
-| `rbj_bandpass` | `(sample_rate: float, center_freq: float, bandwidth: float = 1.0) -> mpdsp._core.IIRFilter` | RBJ biquad bandpass. bandwidth is in octaves. |
-| `rbj_bandstop` | `(sample_rate: float, center_freq: float, bandwidth: float = 1.0) -> mpdsp._core.IIRFilter` | RBJ biquad bandstop (notch). bandwidth is in octaves. |
-| `rbj_allpass` | `(sample_rate: float, center_freq: float, q: float = 0.7071) -> mpdsp._core.IIRFilter` | RBJ biquad allpass — unit magnitude, phase shift only. |
-| `rbj_lowshelf` | `(sample_rate: float, cutoff: float, gain_db: float, slope: float = 1.0) -> mpdsp._core.IIRFilter` | RBJ biquad low shelf. gain_db is the low-frequency shelf gain. |
-| `rbj_highshelf` | `(sample_rate: float, cutoff: float, gain_db: float, slope: float = 1.0) -> mpdsp._core.IIRFilter` | RBJ biquad high shelf. gain_db is the high-frequency shelf gain. |
+| `rbj_lowpass` | `(sample_rate: float, cutoff: float, q: float = 0.7071, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad lowpass. q ~ 0.7071 gives a Butterworth-like response. |
+| `rbj_highpass` | `(sample_rate: float, cutoff: float, q: float = 0.7071, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad highpass. |
+| `rbj_bandpass` | `(sample_rate: float, center_freq: float, bandwidth: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad bandpass. bandwidth is in octaves. |
+| `rbj_bandstop` | `(sample_rate: float, center_freq: float, bandwidth: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad bandstop (notch). bandwidth is in octaves. |
+| `rbj_allpass` | `(sample_rate: float, center_freq: float, q: float = 0.7071, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad allpass — unit magnitude, phase shift only. |
+| `rbj_lowshelf` | `(sample_rate: float, cutoff: float, gain_db: float, slope: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad low shelf. gain_db is the low-frequency shelf gain. |
+| `rbj_highshelf` | `(sample_rate: float, cutoff: float, gain_db: float, slope: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.IIRFilter` | RBJ biquad high shelf. gain_db is the high-frequency shelf gain. |
 
 ## FIR filter design
 

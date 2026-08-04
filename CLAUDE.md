@@ -105,10 +105,16 @@ keeps the instantiation count at N configs rather than N³ scalar combinations.
 `_binding_helpers.hpp`.
 
 Semantics worth knowing before touching dispatch code:
-- **Coefficients are always designed in `double`.** Only state and sample scalars
-  vary. This is a numerical requirement for IIR design, not an implementation
-  shortcut. Algorithms with no design/runtime split (FFT, convolution, Kalman) use
-  the target type for all three.
+- **Coefficients are designed in `double` by default.** For the classical IIR
+  families this is unconditional — `dtype=` on those selects the processing path
+  only, and that's a numerical requirement, not an implementation shortcut. The
+  `rbj_*` biquads and the FIR/Remez designers additionally take `coeff_dtype=`,
+  which runs the *design* math in `T` and narrows the result back to `double` for
+  storage (lossless — a `T`-designed coefficient is `T`-representable, and every
+  `T` in the table is narrower than `double`). That knob exists to quantify what
+  design-time precision costs; its dual is `IIRFilter.pole_displacement(dtype)`,
+  which quantizes an already-designed cascade. Algorithms with no design/runtime
+  split (FFT, convolution, Kalman) use the target type for all three.
 - **`sensor_8bit` / `sensor_6bit` dispatch to `double` state.** Their 8/6-bit
   character surfaces only through the sample path (`adc` / projection dispatchers),
   by design.

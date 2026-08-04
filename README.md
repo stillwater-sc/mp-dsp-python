@@ -163,9 +163,22 @@ cells the ES dimension doesn't affect bit width, so every `posit_N_*` reports
 N; plotting a full sweep gives 3 points stacked vertically at each width
 showing ES's effect on SQNR.
 
-Coefficients are always designed in `double` — design-time precision is
-non-negotiable for IIR filters (see the
+Coefficients are designed in `double` by default — design-time precision is
+what keeps an IIR cascade well-conditioned (see the
 [educational guide](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/topics/mixed-precision-iir-filter-design.md)).
+The classical IIR families (Butterworth, Chebyshev, Bessel, Legendre,
+Elliptic) design in `double` unconditionally; `dtype=` on those filters
+selects the *processing* path only.
+
+The designers that do expose a `coeff_dtype=` knob — the seven `rbj_*`
+biquads and the FIR/Remez designers — offer it to **measure** what
+design-time precision costs, not to recommend spending it. The result is
+still stored in `double`, so the knob isolates the arithmetic used to
+compute the coefficients from the arithmetic used to hold them. Its dual is
+`IIRFilter.pole_displacement(dtype)`, which quantizes an already-designed
+cascade: `coeff_dtype` asks what computing in `T` costs, `pole_displacement`
+asks what storing in `T` costs.
+
 For algorithms that don't have a design/runtime split (FFT, convolution,
 Kalman), all three scalars use the target configuration.
 
