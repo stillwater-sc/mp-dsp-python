@@ -537,3 +537,175 @@ class TestIIRFilterFromCoefficients:
             biquads.append(b)
         filt = mpdsp.IIRFilter.from_coefficients(biquads)
         assert filt.num_stages() == 8
+
+
+# =============================================================================
+# Analog prototypes — s-plane pole/zero constellations (Issue #115)
+#
+# These are the pre-bilinear view that a designed IIRFilter's response hides:
+# the digital response is frequency-warped toward Nyquist, while the analog
+# prototype extends linearly in omega.
+# =============================================================================
+
+_ALL_PROTOTYPES = {
+    "butterworth": lambda: mpdsp.butterworth_prototype(4, 1.0),
+    "chebyshev1": lambda: mpdsp.chebyshev1_prototype(4, 1.0, 1.0),
+    "chebyshev2": lambda: mpdsp.chebyshev2_prototype(4, 1.0, 40.0),
+    "bessel": lambda: mpdsp.bessel_prototype(4, 1.0),
+    "elliptic": lambda: mpdsp.elliptic_prototype(4, 1.0, 1.0, 0.9),
+}
+
+# Families whose transfer function is all-pole: no finite s-plane zeros.
+_ALL_POLE = ["butterworth", "chebyshev1", "bessel"]
+# Families that place finite zeros on the jw axis to make stopband nulls.
+_WITH_ZEROS = ["chebyshev2", "elliptic"]
+
+
+class TestAnalogPrototypes:
+    @pytest.mark.parametrize("name", sorted(_ALL_PROTOTYPES))
+    def test_order_and_stability(self, name):
+        plot = _ALL_PROTOTYPES[name]()
+        assert plot.design == name
+        assert plot.order == 4
+        assert plot.kind == "lowpass"
+        assert len(plot.s_poles) == 4
+        # A realizable analog prototype is strictly left-half-plane.
+        assert all(p.real < 0.0 for p in plot.s_poles)
+        # z-plane view is empty until apply_bilinear.
+        assert list(plot.z_poles) == []
+        assert list(plot.z_zeros) == []
+
+    @pytest.mark.parametrize("name", _ALL_POLE)
+    def test_all_pole_families_have_no_finite_zeros(self, name):
+        assert list(_ALL_PROTOTYPES[name]().s_zeros) == []
+
+    @pytest.mark.parametrize("name", _WITH_ZEROS)
+    def test_zero_families_place_zeros_on_the_jw_axis(self, name):
+        """Chebyshev II and elliptic get their stopband nulls from finite
+        zeros sitting exactly on the imaginary axis."""
+        zeros = np.asarray(_ALL_PROTOTYPES[name]().s_zeros)
+        assert len(zeros) > 0
+        np.testing.assert_allclose(zeros.real, 0.0, atol=1e-12)
+        # And genuinely away from the origin — these are stopband nulls.
+        assert np.min(np.abs(zeros.imag)) > 1.0
+
+    def test_butterworth_poles_lie_on_a_circle(self):
+        """Butterworth's signature: poles equidistant from the origin at
+        radius 2*pi*cutoff_hz."""
+        plot = mpdsp.butterworth_prototype(4, 1.0)
+        radii = np.abs(np.asarray(plot.s_poles))
+        np.testing.assert_allclose(radii, 2.0 * np.pi, rtol=1e-9)
+
+    def test_chebyshev1_poles_lie_on_an_ellipse(self):
+        """Chebyshev I's signature: the circle is squashed along the real
+        axis, which is what buys the steeper rolloff and costs passband
+        flatness. Butterworth's semi-axis ratio is 1.0; Chebyshev I at 1 dB
+        ripple measures ~0.34."""
+        cheby = np.asarray(mpdsp.chebyshev1_prototype(4, 1.0, 1.0).s_poles)
+        butter = np.asarray(mpdsp.butterworth_prototype(4, 1.0).s_poles)
+
+        def axis_ratio(poles):
+            return np.abs(poles.real).max() / np.abs(poles.imag).max()
+
+        assert axis_ratio(butter) == pytest.approx(1.0, abs=1e-9)
+        assert axis_ratio(cheby) < 0.5
+
+    def test_design_parameters_are_carried_through(self):
+        assert mpdsp.chebyshev1_prototype(4, 1.0, 1.5).ripple_db == \
+            pytest.approx(1.5)
+        assert mpdsp.chebyshev2_prototype(4, 1.0, 60.0).stopband_db == \
+            pytest.approx(60.0)
+
+    def test_cutoff_scales_the_constellation(self):
+        small = np.abs(np.asarray(mpdsp.butterworth_prototype(4, 1.0).s_poles))
+        large = np.abs(np.asarray(mpdsp.butterworth_prototype(4, 10.0).s_poles))
+        np.testing.assert_allclose(large, 10.0 * small, rtol=1e-9)
+
+    @pytest.mark.parametrize("name", sorted(_ALL_PROTOTYPES))
+    def test_repr_is_informative(self, name):
+        text = repr(_ALL_PROTOTYPES[name]())
+        assert "PoleZeroPlot" in text and name in text
+
+    def test_invalid_order_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.butterworth_prototype(0, 1.0)
+
+    def test_invalid_ripple_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.chebyshev1_prototype(4, 1.0, 0.0)
+
+    def test_invalid_stopband_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.chebyshev2_prototype(4, 1.0, 0.0)
+
+    def test_elliptic_order_cap_raises(self):
+        # Upstream caps elliptic at order 12.
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.elliptic_prototype(13, 1.0, 1.0, 0.9)
+
+
+class TestPrototypeTransforms:
+    def test_lp_to_hp_preserves_order_and_moves_zeros_to_origin(self):
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        hp = mpdsp.lp_to_hp(lp, 1.0)
+        assert hp.kind == "highpass"
+        assert len(hp.s_poles) == len(lp.s_poles)
+        # A highpass gets one zero at the origin per pole.
+        assert len(hp.s_zeros) == 4
+        np.testing.assert_allclose(np.abs(np.asarray(hp.s_zeros)), 0.0,
+                                   atol=1e-12)
+        assert all(p.real < 0.0 for p in hp.s_poles)
+
+    @pytest.mark.parametrize("transform,kind", [
+        (mpdsp.lp_to_bp, "bandpass"),
+        (mpdsp.lp_to_bs, "bandstop"),
+    ])
+    def test_band_transforms_double_the_order(self, transform, kind):
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        out = transform(lp, 300.0, 3000.0)
+        assert out.kind == kind
+        # Each lowpass pole splits into a conjugate pair about the band center.
+        assert len(out.s_poles) == 2 * len(lp.s_poles)
+        assert out.low_hz == pytest.approx(300.0)
+        assert out.high_hz == pytest.approx(3000.0)
+
+    @pytest.mark.parametrize("transform", [mpdsp.lp_to_bp, mpdsp.lp_to_bs])
+    def test_band_transforms_reject_inverted_edges(self, transform):
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        for low, high in [(3000.0, 300.0), (0.0, 300.0), (300.0, 300.0)]:
+            with pytest.raises((ValueError, RuntimeError)):
+                transform(lp, low, high)
+
+    def test_transforms_return_a_new_plot(self):
+        """Upstream mutates in place; the binding copies first.
+
+        Python callers get value semantics, so a prototype can feed several
+        transforms without being consumed by the first.
+        """
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        hp = mpdsp.lp_to_hp(lp, 1.0)
+        bp = mpdsp.lp_to_bp(lp, 300.0, 3000.0)
+
+        assert lp.kind == "lowpass"
+        assert len(lp.s_poles) == 4
+        assert list(lp.s_zeros) == []
+        assert hp.kind == "highpass"
+        assert bp.kind == "bandpass"
+
+    def test_apply_bilinear_maps_stable_poles_inside_unit_circle(self):
+        lp = mpdsp.butterworth_prototype(4, 1000.0)
+        digital = mpdsp.apply_bilinear(lp, 48000.0)
+        assert digital.sample_rate_hz == pytest.approx(48000.0)
+        assert len(digital.z_poles) == len(lp.s_poles)
+        assert all(abs(p) < 1.0 for p in digital.z_poles)
+        # Source untouched — same value semantics as the transforms.
+        assert list(lp.z_poles) == []
+        assert lp.sample_rate_hz == pytest.approx(0.0)
+
+    def test_transform_then_bilinear_chains(self):
+        plot = mpdsp.apply_bilinear(
+            mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0), 300.0, 3000.0),
+            48000.0)
+        assert plot.kind == "bandpass"
+        assert len(plot.z_poles) == 8
+        assert all(abs(p) < 1.0 for p in plot.z_poles)

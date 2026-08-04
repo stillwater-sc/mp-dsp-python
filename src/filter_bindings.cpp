@@ -34,6 +34,7 @@
 #include <sw/dsp/filter/iir/elliptic.hpp>
 #include <sw/dsp/filter/iir/legendre.hpp>
 #include <sw/dsp/filter/iir/rbj.hpp>
+#include <sw/dsp/transfer_function/bode.hpp>
 #include <sw/dsp/windows/windows.hpp>
 
 #include "types.hpp"
@@ -643,6 +644,196 @@ np_f64 PyFIRFilter::process(np_f64_ro signal, const std::string& dtype) const {
 }
 
 namespace {
+
+// std::vector<double> -> owning float64 ndarray. BodeResult carries three of
+// them; the mtl-based vec_to_numpy in _binding_helpers.hpp takes a
+// dense_vector, so this is the std::vector counterpart.
+static np_f64 to_np(const std::vector<double>& v) {
+	double* out = nullptr;
+	auto arr = mpdsp::bindings::make_f64_array(v.size(), out);
+	for (std::size_t i = 0; i < v.size(); ++i) out[i] = v[i];
+	return arr;
+}
+
+// ---------------------------------------------------------------------------
+// Bode-sweep adapters (Issue #115).
+//
+// Upstream sweep_bode drives an LTI block with a settled sine at each
+// frequency and correlates the output, so it needs a *stateful* block
+// exposing sample_scalar, reset(), and per-sample process(). Neither
+// PyIIRFilter nor PyFIRFilter is that: both are stateless holders that
+// build their state fresh inside process_typed / fir_process_typed.
+//
+// These adapters supply the missing shape while routing through exactly the
+// same quantize_sample_in / quantize_sample_out path that process() uses, so
+// a swept measurement reports the response the filter actually realizes at
+// that dtype — including the integer sample-path scaling that a plain cast
+// would flatten to zero.
+//
+// sample_scalar is deliberately `double`: upstream casts its cosine drive to
+// sample_scalar before handing it over, and letting that cast be the
+// quantization step would bypass the scale-quantize-unscale that integer
+// sample types need. Quantizing inside process() instead keeps one code path.
+// ---------------------------------------------------------------------------
+
+template <typename StateScalar, typename SampleScalar>
+class BodeIIRBlock {
+public:
+	using sample_scalar = double;
+
+	explicit BodeIIRBlock(const CascadeD& cascade) : cascade_(cascade) {}
+
+	void reset() { state_ = {}; }
+
+	double process(double x) {
+		SampleScalar xs = quantize_sample_in<SampleScalar>(x);
+		SampleScalar y = cascade_.template process<
+			sw::dsp::DirectFormI<StateScalar>, SampleScalar>(xs, state_);
+		return quantize_sample_out<SampleScalar>(y);
+	}
+
+private:
+	const CascadeD& cascade_;
+	std::array<sw::dsp::DirectFormI<StateScalar>, kMaxStages> state_{};
+};
+
+template <typename StateScalar, typename SampleScalar>
+class BodeFIRBlock {
+public:
+	using sample_scalar = double;
+
+	explicit BodeFIRBlock(const mtl::vec::dense_vector<double>& taps_d)
+		: taps_(taps_d.size()) {
+		for (std::size_t i = 0; i < taps_d.size(); ++i)
+			taps_[i] = static_cast<StateScalar>(taps_d[i]);
+		filt_ = sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar>(taps_);
+	}
+
+	void reset() {
+		filt_ = sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar>(taps_);
+	}
+
+	double process(double x) {
+		SampleScalar xs = quantize_sample_in<SampleScalar>(x);
+		return quantize_sample_out<SampleScalar>(filt_.process(xs));
+	}
+
+private:
+	mtl::vec::dense_vector<StateScalar> taps_;
+	sw::dsp::FIRFilter<StateScalar, StateScalar, SampleScalar> filt_{
+		mtl::vec::dense_vector<StateScalar>(1)};
+};
+
+struct BodeParams {
+	double      sample_rate_hz;
+	double      freq_min_hz;
+	double      freq_max_hz;
+	std::size_t num_points;
+	std::size_t settle_samples;
+	double      target_cycles;
+	std::size_t max_measure_samples;
+};
+
+template <class Block>
+static sw::dsp::transfer_function::BodeResult
+run_bode(Block& block, const BodeParams& p) {
+	return sw::dsp::transfer_function::sweep_bode(
+		block, p.sample_rate_hz, p.freq_min_hz, p.freq_max_hz,
+		p.num_points, p.settle_samples, p.target_cycles,
+		p.max_measure_samples);
+}
+
+// Same (StateScalar, SampleScalar) pairing as process_dispatch, so a swept
+// Bode measurement and a process() call at the same dtype exercise identical
+// arithmetic.
+static sw::dsp::transfer_function::BodeResult
+bode_iir_dispatch(const CascadeD& src, const BodeParams& p,
+                  mpdsp::ArithConfig config) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
+	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
+	switch (config) {
+	case ArithConfig::reference: { BodeIIRBlock<double, double> b(src); return run_bode(b, p); }
+	case ArithConfig::gpu_baseline: { BodeIIRBlock<float, float> b(src); return run_bode(b, p); }
+	case ArithConfig::ml_hw: { BodeIIRBlock<float, half_> b(src); return run_bode(b, p); }
+	case ArithConfig::cf24_config: { BodeIIRBlock<cf24, cf24> b(src); return run_bode(b, p); }
+	case ArithConfig::half_config: { BodeIIRBlock<half_, half_> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_full: { BodeIIRBlock<p32, p16> b(src); return run_bode(b, p); }
+	case ArithConfig::sensor_8bit: { BodeIIRBlock<double, int8_sample_t> b(src); return run_bode(b, p); }
+	case ArithConfig::sensor_6bit: { BodeIIRBlock<double, int6_sample_t> b(src); return run_bode(b, p); }
+	case ArithConfig::fpga_fixed: { BodeIIRBlock<fx3224_t, fx1612_t> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_0: { BodeIIRBlock<p8_0, p8_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_1: { BodeIIRBlock<p8_1, p8_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_2: { BodeIIRBlock<p8_2, p8_2> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_0: { BodeIIRBlock<p16_0, p16_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_1: { BodeIIRBlock<p16_1, p16_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_2: { BodeIIRBlock<p16_2, p16_2> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_0: { BodeIIRBlock<p32_0, p32_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_1: { BodeIIRBlock<p32_1, p32_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_2: { BodeIIRBlock<p32_2, p32_2> b(src); return run_bode(b, p); }
+	}
+	throw std::invalid_argument("sweep_bode: unsupported ArithConfig");
+}
+
+// Same pairing as fir_process_dispatch.
+static sw::dsp::transfer_function::BodeResult
+bode_fir_dispatch(const mtl::vec::dense_vector<double>& src,
+                  const BodeParams& p, mpdsp::ArithConfig config) {
+	using mpdsp::ArithConfig;
+	using mpdsp::cf24;
+	using mpdsp::fx1612_t;
+	using mpdsp::fx3224_t;
+	using mpdsp::half_;
+	using mpdsp::int6_sample_t;
+	using mpdsp::int8_sample_t;
+	using mpdsp::p16;
+	using mpdsp::p32;
+	using mpdsp::p8_0;
+	using mpdsp::p8_1;
+	using mpdsp::p8_2;
+	using mpdsp::p16_0;
+	using mpdsp::p16_1;
+	using mpdsp::p16_2;
+	using mpdsp::p32_0;
+	using mpdsp::p32_1;
+	using mpdsp::p32_2;
+	switch (config) {
+	case ArithConfig::reference: { BodeFIRBlock<double, double> b(src); return run_bode(b, p); }
+	case ArithConfig::gpu_baseline: { BodeFIRBlock<float, float> b(src); return run_bode(b, p); }
+	case ArithConfig::ml_hw: { BodeFIRBlock<float, half_> b(src); return run_bode(b, p); }
+	case ArithConfig::cf24_config: { BodeFIRBlock<cf24, cf24> b(src); return run_bode(b, p); }
+	case ArithConfig::half_config: { BodeFIRBlock<half_, half_> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_full: { BodeFIRBlock<p32, p16> b(src); return run_bode(b, p); }
+	case ArithConfig::sensor_8bit: { BodeFIRBlock<double, int8_sample_t> b(src); return run_bode(b, p); }
+	case ArithConfig::sensor_6bit: { BodeFIRBlock<double, int6_sample_t> b(src); return run_bode(b, p); }
+	case ArithConfig::fpga_fixed: { BodeFIRBlock<fx3224_t, fx1612_t> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_0: { BodeFIRBlock<p8_0, p8_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_1: { BodeFIRBlock<p8_1, p8_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_8_2: { BodeFIRBlock<p8_2, p8_2> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_0: { BodeFIRBlock<p16_0, p16_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_1: { BodeFIRBlock<p16_1, p16_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_16_2: { BodeFIRBlock<p16_2, p16_2> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_0: { BodeFIRBlock<p32_0, p32_0> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_1: { BodeFIRBlock<p32_1, p32_1> b(src); return run_bode(b, p); }
+	case ArithConfig::posit_32_2: { BodeFIRBlock<p32_2, p32_2> b(src); return run_bode(b, p); }
+	}
+	throw std::invalid_argument("sweep_bode: unsupported ArithConfig");
+}
 
 // ---------------------------------------------------------------------------
 // Coefficient quantization for pole-displacement analysis.
@@ -1868,6 +2059,100 @@ void bind_filters(nb::module_& m) {
 		.def_prop_ro("filter_length", &PyOverlapSaveConvolver::filter_length)
 		.def_prop_ro("dtype",
 		     [](const PyOverlapSaveConvolver& self) { return self.dtype(); });
+
+	// ---- Bode sweep (#115) ---------------------------------------------
+	//
+	// An *empirical* frequency response: the filter is driven with a settled
+	// sine at each frequency and the output correlated against cos/sin. That
+	// is the point of it existing alongside frequency_response(), which
+	// evaluates H(z) analytically from the coefficients. The analytic form
+	// cannot see quantization in the sample path; this can. Overlay the two
+	// to read off what a given dtype costs.
+	{
+		namespace tf = sw::dsp::transfer_function;
+		using BR = tf::BodeResult;
+
+		nb::class_<BR>(m, "BodeResult",
+			"Result of a swept Bode measurement: one entry per frequency.")
+			.def_prop_ro("freqs_hz", [](const BR& r) {
+				return to_np(r.freqs_hz);
+			}, nb::rv_policy::take_ownership,
+			   "Log-spaced sweep frequencies, in Hz.")
+			.def_prop_ro("magnitudes_db", [](const BR& r) {
+				return to_np(r.magnitudes_dB);
+			}, nb::rv_policy::take_ownership,
+			   "Measured |H| in dB. Floored at -300 dB.")
+			.def_prop_ro("phases_rad", [](const BR& r) {
+				return to_np(r.phases_rad);
+			}, nb::rv_policy::take_ownership,
+			   "Measured phase in radians, wrapped to (-pi, pi].")
+			.def("__len__", [](const BR& r) { return r.freqs_hz.size(); })
+			.def("__repr__", [](const BR& r) {
+				return "BodeResult(" + std::to_string(r.freqs_hz.size())
+				     + " points)";
+			});
+
+		auto params = [](double sr, double fmin, double fmax,
+		                 std::size_t npts, std::size_t settle,
+		                 double cycles, std::size_t max_meas) {
+			return BodeParams{sr, fmin, fmax, npts, settle, cycles, max_meas};
+		};
+
+		const char* doc =
+			"Measure the frequency response by driving the filter with a "
+			"settled sine at each of `num_points` log-spaced frequencies "
+			"and correlating the output against cos/sin (Hann-windowed).\n\n"
+			"Unlike frequency_response(), which evaluates H(z) analytically "
+			"from the coefficients, this runs actual samples through the "
+			"filter at the requested dtype — so it registers quantization "
+			"in the sample path that the analytic form cannot see. "
+			"Overlaying the two is how you read off the cost of a dtype.\n\n"
+			"Requires 0 < freq_min_hz < freq_max_hz < sample_rate/2 and "
+			"num_points >= 2. The filter is reset before each frequency, so "
+			"the caller's object is left with the last sweep's state; this "
+			"does not disturb coefficients. Measurement length adapts to "
+			"`target_cycles` periods per frequency, floored at 512 samples "
+			"and capped at `max_measure_samples` — the cap trades "
+			"low-frequency accuracy for runtime.";
+
+		m.def("sweep_bode",
+			[&params](const PyIIRFilter& filt, double sr, double fmin,
+			   double fmax, std::size_t npts, std::size_t settle,
+			   double cycles, std::size_t max_meas,
+			   const std::string& dtype) {
+				auto config = mpdsp::parse_config(dtype);
+				return bode_iir_dispatch(
+					filt.cascade,
+					params(sr, fmin, fmax, npts, settle, cycles, max_meas),
+					config);
+			},
+			nb::arg("filt"), nb::arg(A_SR), nb::arg("freq_min_hz"),
+			nb::arg("freq_max_hz"), nb::arg("num_points") = 200,
+			nb::arg("settle_samples") = 512,
+			nb::arg("target_cycles") = 32.0,
+			nb::arg("max_measure_samples") = 32768,
+			nb::arg("dtype") = "reference",
+			doc);
+
+		m.def("sweep_bode",
+			[&params](const PyFIRFilter& filt, double sr, double fmin,
+			   double fmax, std::size_t npts, std::size_t settle,
+			   double cycles, std::size_t max_meas,
+			   const std::string& dtype) {
+				auto config = mpdsp::parse_config(dtype);
+				return bode_fir_dispatch(
+					filt.taps,
+					params(sr, fmin, fmax, npts, settle, cycles, max_meas),
+					config);
+			},
+			nb::arg("filt"), nb::arg(A_SR), nb::arg("freq_min_hz"),
+			nb::arg("freq_max_hz"), nb::arg("num_points") = 200,
+			nb::arg("settle_samples") = 512,
+			nb::arg("target_cycles") = 32.0,
+			nb::arg("max_measure_samples") = 32768,
+			nb::arg("dtype") = "reference",
+			doc);
+	}
 }
 
 #undef RBJ_COEFF_DTYPE_DOC

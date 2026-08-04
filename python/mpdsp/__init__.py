@@ -119,6 +119,13 @@ try:
         ComplexPair, PoleZeroPair, BiquadCoefficients,
         # Types — spectral-analysis free functions over transfer functions
         ztransform, freqz, group_delay, laplace_freqs,
+        # Types — analog prototypes: s-plane pole/zero constellations (#115)
+        PoleZeroPlot,
+        butterworth_prototype, chebyshev1_prototype, chebyshev2_prototype,
+        bessel_prototype, elliptic_prototype,
+        lp_to_hp, lp_to_bp, lp_to_bs, apply_bilinear,
+        # Filters — empirical swept Bode measurement (#115)
+        BodeResult, sweep_bode,
         # Analysis — free-function primitives (method-form lives on IIRFilter)
         coefficient_sensitivity, biquad_condition_number,
         # Analysis — acquisition-pipeline precision primitives (gap-analysis Phase 5 / #112)

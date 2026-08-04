@@ -1225,3 +1225,149 @@ class TestOverlapDtypeDispatch:
         y = os.process_block(np.ones(32))
         assert y.shape == (32,)
         assert np.all(np.isfinite(y))
+
+
+# ---------------------------------------------------------------------------
+# Swept Bode measurement (Issue #115).
+#
+# sweep_bode drives the filter with a settled sine at each frequency and
+# correlates the output. That makes it the empirical counterpart to
+# frequency_response(), which evaluates H(z) analytically from coefficients:
+# the analytic form cannot see sample-path quantization, this can.
+# ---------------------------------------------------------------------------
+
+_BODE_FS = 8000.0
+
+
+def _bode_iir():
+    return mpdsp.butterworth_lowpass(order=4, sample_rate=_BODE_FS,
+                                     cutoff=1000.0)
+
+
+def _bode_fir():
+    return mpdsp.fir_lowpass(num_taps=41, sample_rate=_BODE_FS,
+                             cutoff=1000.0, window="hamming")
+
+
+class TestSweepBode:
+    @pytest.mark.parametrize("make", [_bode_iir, _bode_fir])
+    def test_shapes_and_ordering(self, make):
+        result = mpdsp.sweep_bode(make(), _BODE_FS, 50.0, 3500.0,
+                                  num_points=32)
+        assert len(result) == 32
+        for arr in (result.freqs_hz, result.magnitudes_db, result.phases_rad):
+            assert arr.shape == (32,)
+            assert arr.dtype == np.float64
+            assert np.all(np.isfinite(arr))
+        # Log-spaced and strictly increasing across the requested range.
+        assert np.all(np.diff(result.freqs_hz) > 0)
+        assert result.freqs_hz[0] == pytest.approx(50.0)
+        assert result.freqs_hz[-1] == pytest.approx(3500.0)
+        # Phase is the principal value.
+        assert np.all(np.abs(result.phases_rad) <= np.pi + 1e-12)
+
+    def test_reference_sweep_matches_analytic_response(self):
+        """At `reference` the measured response reproduces H(z).
+
+        This is the calibration check: if the sweep's settle/correlate
+        machinery were misconfigured, the two would diverge even in double.
+        """
+        filt = _bode_iir()
+        result = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3000.0,
+                                  num_points=48)
+        analytic = 20.0 * np.log10(np.abs(
+            filt.frequency_response(result.freqs_hz / _BODE_FS)))
+        assert np.max(np.abs(result.magnitudes_db - analytic)) < 0.5
+
+    def test_fir_reference_sweep_matches_analytic_response(self):
+        filt = _bode_fir()
+        result = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3000.0,
+                                  num_points=48)
+        analytic = 20.0 * np.log10(np.maximum(np.abs(
+            filt.frequency_response(result.freqs_hz / _BODE_FS)), 1e-30))
+        # FIR stopband nulls are deep and move under measurement noise, so
+        # compare only where the analytic response is well above the floor.
+        passband = analytic > -40.0
+        assert passband.sum() > 10
+        assert np.max(np.abs(
+            result.magnitudes_db[passband] - analytic[passband])) < 0.5
+
+    def test_lowpass_shape_is_measured(self):
+        result = mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3500.0,
+                                  num_points=48)
+        # Unity passband at the low end, well attenuated past the cutoff.
+        assert result.magnitudes_db[0] == pytest.approx(0.0, abs=0.5)
+        assert result.magnitudes_db[-1] < -30.0
+        # Monotone rolloff for an all-pole lowpass.
+        assert np.all(np.diff(result.magnitudes_db) < 1e-6)
+
+    def test_coarse_dtype_deviates_from_reference(self):
+        """The whole point of an empirical sweep: it registers quantization
+        that the analytic response is blind to.
+
+        `frequency_response()` returns the same curve for every dtype because
+        it reads the (double) coefficients; a swept measurement at posit<8,2>
+        differs from reference by tens of dB.
+        """
+        filt = _bode_iir()
+        ref = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3500.0, num_points=32)
+        coarse = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3500.0,
+                                  num_points=32, dtype="posit_8_2")
+        np.testing.assert_allclose(coarse.freqs_hz, ref.freqs_hz, rtol=1e-12)
+        assert np.max(np.abs(
+            coarse.magnitudes_db - ref.magnitudes_db)) > 1.0
+
+    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline",
+                                       "posit_full", "sensor_8bit"])
+    def test_dtype_dispatch_produces_finite_results(self, dtype):
+        # sensor_8bit exercises the integer sample path, where a plain cast
+        # (instead of the scale-quantize-unscale process() uses) would
+        # collapse the |x| < 1 drive signal to zero and floor the whole
+        # sweep at -300 dB.
+        result = mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 100.0, 3000.0,
+                                  num_points=16, dtype=dtype)
+        assert np.all(np.isfinite(result.magnitudes_db))
+        assert result.magnitudes_db[0] > -60.0
+
+    def test_repeatable(self):
+        a = mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3000.0,
+                             num_points=16)
+        b = mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3000.0,
+                             num_points=16)
+        np.testing.assert_allclose(a.magnitudes_db, b.magnitudes_db,
+                                   atol=1e-12)
+
+    def test_reusing_one_filter_gives_the_same_sweep(self):
+        """sweep_bode resets the block per frequency, so a filter can be
+        swept repeatedly without carrying state across calls."""
+        filt = _bode_iir()
+        first = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3000.0, num_points=16)
+        second = mpdsp.sweep_bode(filt, _BODE_FS, 50.0, 3000.0, num_points=16)
+        np.testing.assert_allclose(first.magnitudes_db, second.magnitudes_db,
+                                   atol=1e-12)
+
+    def test_too_few_points_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3000.0,
+                             num_points=1)
+
+    def test_freq_max_at_or_above_nyquist_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, _BODE_FS / 2.0)
+
+    def test_inverted_band_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 3000.0, 50.0)
+
+    def test_non_positive_freq_min_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 0.0, 3000.0)
+
+    def test_non_positive_sample_rate_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), 0.0, 50.0, 3000.0)
+
+    def test_unknown_dtype_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3000.0,
+                             dtype="not_a_dtype")

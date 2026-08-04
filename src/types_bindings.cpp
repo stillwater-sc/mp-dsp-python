@@ -10,6 +10,15 @@
 // surfaces, a future patch can widen the class along the same dispatcher
 // pattern used by the filter / conditioning / estimation classes.
 //
+// The analog-prototype surface (PoleZeroPlot + the *_prototype factories +
+// the LP->HP/BP/BS transforms + apply_bilinear, Issue #115) is bound here
+// too: it is plain-double throughout, with no ArithConfig dispatch, and it
+// composes with the ContinuousTransferFunction / laplace_freqs pair already
+// living in this file. The companion Bode sweep lives in filter_bindings.cpp
+// instead, because it has to drive a PyIIRFilter / PyFIRFilter through the
+// same quantization path process() uses, and those types are file-local
+// there.
+//
 // project_onto / projection_error dispatch over the dtype string — every
 // arithmetic config in types.hpp works as the narrower target because
 // double is always the source (wider). See `projection.hpp`'s
@@ -19,6 +28,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/complex.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 #include <nanobind/operators.h>
 
 #include <complex>
@@ -32,6 +42,7 @@
 #include <sw/dsp/types/biquad_coefficients.hpp>
 #include <sw/dsp/types/complex_pair.hpp>
 #include <sw/dsp/types/pole_zero_pair.hpp>
+#include <sw/dsp/transfer_function/pole_zero.hpp>
 #include <sw/dsp/types/projection.hpp>
 #include <sw/dsp/types/transfer_function.hpp>
 
@@ -309,6 +320,9 @@ project_dispatch(const mtl::vec::dense_vector<double>& src,
 }  // namespace
 
 void bind_types(nb::module_& m) {
+	namespace tf = sw::dsp::transfer_function;
+	using PZP = tf::PoleZeroPlot;
+
 	// -- TransferFunction --------------------------------------------------
 
 	nb::class_<PyTransferFunction>(m, "TransferFunction",
@@ -560,7 +574,138 @@ void bind_types(nb::module_& m) {
 		     "of both pole and zero pairs are zero).")
 		.def("is_nan", &PZ::is_nan);
 
-	nb::class_<BQ>(m, "BiquadCoefficients",
+// ---- Analog prototypes: s-plane pole/zero extraction (#115) ----------
+	//
+	// Upstream mutates a PoleZeroPlot in place (lp_to_hp(plot, f) etc.).
+	// These bindings copy-then-transform and return the new plot, so a
+	// Python PoleZeroPlot behaves as an immutable value like the rest of
+	// the types module. Chaining reads left to right:
+	//
+	//     plot = mpdsp.apply_bilinear(
+	//                mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0),
+	//                               300.0, 3000.0),
+	//                48000.0)
+	nb::class_<PZP>(m, "PoleZeroPlot",
+		"Analog (s-plane) prototype pole/zero constellation, optionally "
+		"carrying its bilinear-transformed z-plane counterpart.\n\n"
+		"Produced by the `*_prototype` factories, reshaped by `lp_to_hp` / "
+		"`lp_to_bp` / `lp_to_bs`, and mapped to discrete time by "
+		"`apply_bilinear`. `z_poles` / `z_zeros` are empty until "
+		"`apply_bilinear` has been applied.\n\n"
+		"This is the pre-bilinear view the digital frequency response "
+		"hides: the analog prototype extends linearly in omega, while a "
+		"designed IIRFilter's response is warped toward Nyquist.")
+		.def_prop_ro("design", [](const PZP& p) { return p.design; },
+		     "Family name — 'butterworth', 'chebyshev1', ...")
+		.def_prop_ro("order", [](const PZP& p) { return p.order; })
+		.def_prop_ro("kind", [](const PZP& p) { return p.kind; },
+		     "'lowpass', 'highpass', 'bandpass', or 'bandstop'.")
+		.def_prop_ro("s_poles", [](const PZP& p) { return p.s_poles; },
+		     "Continuous-time poles, as a list of complex.")
+		.def_prop_ro("s_zeros", [](const PZP& p) { return p.s_zeros; },
+		     "Continuous-time zeros. All-pole families return an empty "
+		     "list; elliptic and Chebyshev II carry finite jw-axis zeros.")
+		.def_prop_ro("z_poles", [](const PZP& p) { return p.z_poles; },
+		     "Discrete-time poles. Empty until apply_bilinear.")
+		.def_prop_ro("z_zeros", [](const PZP& p) { return p.z_zeros; },
+		     "Discrete-time zeros. Empty until apply_bilinear.")
+		.def_prop_ro("cutoff_hz", [](const PZP& p) { return p.cutoff_hz; })
+		.def_prop_ro("low_hz", [](const PZP& p) { return p.low_hz; },
+		     "Lower band edge; set by lp_to_bp / lp_to_bs.")
+		.def_prop_ro("high_hz", [](const PZP& p) { return p.high_hz; },
+		     "Upper band edge; set by lp_to_bp / lp_to_bs.")
+		.def_prop_ro("sample_rate_hz",
+		     [](const PZP& p) { return p.sample_rate_hz; },
+		     "0.0 until apply_bilinear.")
+		.def_prop_ro("ripple_db", [](const PZP& p) { return p.ripple_dB; },
+		     "Passband ripple, for the families that use one.")
+		.def_prop_ro("stopband_db",
+		     [](const PZP& p) { return p.stopband_dB; },
+		     "Stopband attenuation, for the families that use one.")
+		.def("__repr__", [](const PZP& p) {
+			return "PoleZeroPlot(design='" + p.design + "', order="
+			     + std::to_string(p.order) + ", kind='" + p.kind
+			     + "', s_poles=" + std::to_string(p.s_poles.size())
+			     + ", s_zeros=" + std::to_string(p.s_zeros.size())
+			     + ", z_poles=" + std::to_string(p.z_poles.size())
+			     + ", z_zeros=" + std::to_string(p.z_zeros.size()) + ")";
+		});
+
+	m.def("butterworth_prototype", &tf::butterworth_prototype,
+		nb::arg("order"), nb::arg("cutoff_hz") = 1.0,
+		"Butterworth analog prototype: `order` poles evenly spaced on the "
+		"left half of a circle of radius 2*pi*cutoff_hz. All-pole — "
+		"s_zeros is empty.");
+
+	m.def("chebyshev1_prototype", &tf::chebyshev1_prototype,
+		nb::arg("order"), nb::arg("cutoff_hz") = 1.0,
+		nb::arg("ripple_db") = 1.0,
+		"Chebyshev I analog prototype: poles on an ellipse, giving "
+		"equiripple passband at the cost of a less flat response. "
+		"ripple_db must be > 0. All-pole.");
+
+	m.def("chebyshev2_prototype", &tf::chebyshev2_prototype,
+		nb::arg("order"), nb::arg("cutoff_hz") = 1.0,
+		nb::arg("stopband_db") = 40.0,
+		"Chebyshev II (inverse Chebyshev) analog prototype: flat "
+		"passband, equiripple stopband. Carries finite s_zeros on the "
+		"jw axis, which is what produces the stopband nulls. "
+		"stopband_db must be > 0.");
+
+	m.def("bessel_prototype", &tf::bessel_prototype,
+		nb::arg("order"), nb::arg("cutoff_hz") = 1.0,
+		"Bessel analog prototype: maximally flat group delay. All-pole. "
+		"The flat-delay signature is an omega-space property, which is "
+		"why it reads clearly here and only approximately in a bilinear-"
+		"warped digital response.");
+
+	m.def("elliptic_prototype", &tf::elliptic_prototype,
+		nb::arg("order"), nb::arg("cutoff_hz") = 1.0,
+		nb::arg("ripple_db") = 1.0, nb::arg("selectivity_k") = 0.9,
+		"Elliptic (Cauer) analog prototype: equiripple in both bands, "
+		"the steepest transition for a given order. Carries finite "
+		"s_zeros. selectivity_k in (0, 1) sets the modulus of the "
+		"elliptic functions — higher is more selective. order <= 12.");
+
+	m.def("lp_to_hp",
+		[](PZP plot, double cutoff_hz) {
+			tf::lp_to_hp(plot, cutoff_hz);
+			return plot;
+		}, nb::arg("plot"), nb::arg("cutoff_hz"),
+		"Lowpass -> highpass frequency transformation. Returns a new "
+		"plot; the input is left unchanged. Pole count is preserved and "
+		"zeros move to the origin.");
+
+	m.def("lp_to_bp",
+		[](PZP plot, double low_hz, double high_hz) {
+			tf::lp_to_bp(plot, low_hz, high_hz);
+			return plot;
+		}, nb::arg("plot"), nb::arg("low_hz"), nb::arg("high_hz"),
+		"Lowpass -> bandpass frequency transformation. Returns a new "
+		"plot; the input is left unchanged. Each prototype pole splits "
+		"into two, so the resulting order is doubled. Requires "
+		"0 < low_hz < high_hz.");
+
+	m.def("lp_to_bs",
+		[](PZP plot, double low_hz, double high_hz) {
+			tf::lp_to_bs(plot, low_hz, high_hz);
+			return plot;
+		}, nb::arg("plot"), nb::arg("low_hz"), nb::arg("high_hz"),
+		"Lowpass -> bandstop frequency transformation. Returns a new "
+		"plot; the input is left unchanged. Order doubles, as with "
+		"lp_to_bp. Requires 0 < low_hz < high_hz.");
+
+	m.def("apply_bilinear",
+		[](PZP plot, double sample_rate_hz) {
+			tf::apply_bilinear(plot, sample_rate_hz);
+			return plot;
+		}, nb::arg("plot"), nb::arg("sample_rate_hz"),
+		"Map the s-plane constellation to the z-plane via the bilinear "
+		"transform, populating z_poles / z_zeros and sample_rate_hz. "
+		"Returns a new plot; the input is left unchanged. Every stable "
+		"analog pole (Re < 0) maps inside the unit circle.");
+
+		nb::class_<BQ>(m, "BiquadCoefficients",
 			"Coefficients for a second-order (biquad) IIR section:\n"
 			"  H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)\n\n"
 			"Note the a0-normalized convention: a0 is implicitly 1; only "

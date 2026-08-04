@@ -19,6 +19,7 @@ the note at the bottom.
 - [IIR filter design — classical families](#iir-filter-design--classical-families)
 - [IIR filter design — RBJ biquads](#iir-filter-design--rbj-biquads)
 - [FIR filter design](#fir-filter-design)
+- [Analog prototypes — s-plane pole/zero constellations](#analog-prototypes--s-plane-polezero-constellations)
 - [Acquisition — high-rate ADC → baseband pipeline](#acquisition--high-rate-adc--baseband-pipeline)
 - [Image — generators](#image--generators)
 - [Image — processing](#image--processing)
@@ -49,6 +50,8 @@ the note at the bottom.
   - [`PolyphaseInterpolator`](#polyphaseinterpolator)
   - [`DDC`](#ddc)
   - [`DecimationChain`](#decimationchain)
+  - [`PoleZeroPlot`](#polezeroplot)
+  - [`BodeResult`](#boderesult)
   - [`KalmanFilter`](#kalmanfilter)
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
@@ -229,6 +232,33 @@ Window-method designs returning an `FIRFilter`. `fir_filter` constructs directly
 | `fir_bandpass` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandpass filter. |
 | `fir_bandstop` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandstop (notch) filter via spectral inversion. |
 | `fir_filter` | `(coefficients: ndarray1d[ro]) -> mpdsp._core.FIRFilter` | Construct an FIR filter from explicit tap coefficients. |
+
+## Analog prototypes — s-plane pole/zero constellations
+
+The pre-bilinear view a designed `IIRFilter` hides. Every classical IIR family is designed as an analog prototype in the s-plane and then bilinear-transformed to a digital cascade; the digital response bakes in the resulting frequency warp, while these functions expose the prototype itself. Useful for teaching bilinear warping (plot both and compare) and for reading a family's signature without warp artifacts — Bessel's flat group delay, for instance, is an omega-space property that the digital form only approximates near DC.
+
+Plain `double` throughout: no `dtype=` dispatch, because a prototype is a constellation of exact pole/zero locations rather than a datapath.
+
+The transforms return a **new** `PoleZeroPlot` rather than mutating in place (upstream mutates), so a prototype can feed several transforms without being consumed. Chaining reads left to right:
+
+```python
+plot = mpdsp.apply_bilinear(
+    mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0), 300.0, 3000.0),
+    48000.0)
+```
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `butterworth_prototype` | `(order: int, cutoff_hz: float = 1.0) -> PoleZeroPlot` | Poles evenly spaced on the left half of a circle of radius `2*pi*cutoff_hz`. All-pole. |
+| `chebyshev1_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0) -> PoleZeroPlot` | Poles on an ellipse — equiripple passband, steeper rolloff than Butterworth. All-pole. `ripple_db > 0`. |
+| `chebyshev2_prototype` | `(order: int, cutoff_hz: float = 1.0, stopband_db: float = 40.0) -> PoleZeroPlot` | Flat passband, equiripple stopband. Carries finite `s_zeros` on the jw axis, which is what makes the stopband nulls. `stopband_db > 0`. |
+| `bessel_prototype` | `(order: int, cutoff_hz: float = 1.0) -> PoleZeroPlot` | Maximally flat group delay. All-pole. |
+| `elliptic_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0, selectivity_k: float = 0.9) -> PoleZeroPlot` | Equiripple in both bands; steepest transition per order. Carries finite `s_zeros`. `selectivity_k` in `(0, 1)`; `order <= 12`. |
+| `lp_to_hp` | `(plot: PoleZeroPlot, cutoff_hz: float) -> PoleZeroPlot` | Lowpass → highpass. Pole count preserved; zeros move to the origin. |
+| `lp_to_bp` | `(plot: PoleZeroPlot, low_hz: float, high_hz: float) -> PoleZeroPlot` | Lowpass → bandpass. Each pole splits in two, so the order doubles. Requires `0 < low_hz < high_hz`. |
+| `lp_to_bs` | `(plot: PoleZeroPlot, low_hz: float, high_hz: float) -> PoleZeroPlot` | Lowpass → bandstop. Order doubles. Requires `0 < low_hz < high_hz`. |
+| `apply_bilinear` | `(plot: PoleZeroPlot, sample_rate_hz: float) -> PoleZeroPlot` | Map s-plane to z-plane, populating `z_poles` / `z_zeros` / `sample_rate_hz`. Every stable analog pole (`Re < 0`) lands inside the unit circle. |
+| `sweep_bode` | `(filt: IIRFilter | FIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> BodeResult` | **Empirical** frequency response: drives the filter with a settled sine at each of `num_points` log-spaced frequencies and correlates the output. Unlike `frequency_response()`, which evaluates `H(z)` analytically from the (double) coefficients, this runs samples through at the requested `dtype` — so it registers sample-path quantization the analytic form is blind to. Requires `0 < freq_min_hz < freq_max_hz < sample_rate/2` and `num_points >= 2`. |
 
 ## Acquisition — high-rate ADC → baseband pipeline
 
@@ -678,6 +708,39 @@ At most **6 stages** — each additional arity is a separate template instantiat
 | `.process` | `(self, input: float) -> tuple[bool, float]` — `emit` is `True` only when the final stage emits, once per `total_decimation` inputs. |
 | `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — The ~`N / total_decimation` samples emitted by the final stage. |
 | `.reset` | `(self) -> None` — Resets every stage. |
+
+### `PoleZeroPlot`
+
+Analog (s-plane) prototype pole/zero constellation, optionally carrying its bilinear-transformed z-plane counterpart. Produced by the `*_prototype` factories, reshaped by `lp_to_hp` / `lp_to_bp` / `lp_to_bs`, mapped to discrete time by `apply_bilinear`.
+
+> Immutable value type — the transforms return new plots rather than mutating.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.design` | `(self) -> str` — Family name: `'butterworth'`, `'chebyshev1'`, … |
+| `.order` | `(self) -> int` |
+| `.kind` | `(self) -> str` — `'lowpass'`, `'highpass'`, `'bandpass'`, `'bandstop'`. |
+| `.s_poles` | `(self) -> list[complex]` — Continuous-time poles. Strictly left-half-plane for a realizable prototype. |
+| `.s_zeros` | `(self) -> list[complex]` — Continuous-time zeros. Empty for the all-pole families (Butterworth, Chebyshev I, Bessel); on the jw axis for Chebyshev II and elliptic. |
+| `.z_poles` | `(self) -> list[complex]` — Discrete-time poles. Empty until `apply_bilinear`. |
+| `.z_zeros` | `(self) -> list[complex]` — Discrete-time zeros. Empty until `apply_bilinear`. |
+| `.cutoff_hz` | `(self) -> float` |
+| `.low_hz` / `.high_hz` | `(self) -> float` — Band edges; set by `lp_to_bp` / `lp_to_bs`. |
+| `.sample_rate_hz` | `(self) -> float` — `0.0` until `apply_bilinear`. |
+| `.ripple_db` / `.stopband_db` | `(self) -> float` — Carried by the families that use them. |
+
+### `BodeResult`
+
+Result of a swept Bode measurement — one entry per frequency. Returned by `sweep_bode`.
+
+> Three parallel float64 arrays; `len(result)` gives the point count.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.freqs_hz` | `(self) -> ndarray[float64]` — Log-spaced sweep frequencies. |
+| `.magnitudes_db` | `(self) -> ndarray[float64]` — Measured `|H|` in dB, floored at −300. |
+| `.phases_rad` | `(self) -> ndarray[float64]` — Measured phase in radians, wrapped to `(-pi, pi]`. |
+| `__len__` | `(self) -> int` |
 
 ### `KalmanFilter`
 

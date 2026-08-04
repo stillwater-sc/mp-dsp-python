@@ -157,6 +157,11 @@ CATEGORIES = [
         "fir_lowpass", "fir_highpass", "fir_bandpass", "fir_bandstop",
         "fir_filter",
     ]),
+    ("Analog prototypes — s-plane pole/zero constellations", [
+        "butterworth_prototype", "chebyshev1_prototype",
+        "chebyshev2_prototype", "bessel_prototype", "elliptic_prototype",
+        "lp_to_hp", "lp_to_bp", "lp_to_bs", "apply_bilinear", "sweep_bode",
+    ]),
     ("Acquisition — high-rate ADC → baseband pipeline", [
         "design_halfband", "polyphase_decompose",
         "design_cic_compensator",
@@ -221,6 +226,7 @@ CLASSES = [
     "NCO", "CICDecimator", "CICInterpolator", "HalfBandFilter",
     "PolyphaseDecimator", "PolyphaseInterpolator", "DDC",
     "DecimationChain",
+    "PoleZeroPlot", "BodeResult",
     "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
     "TransferFunction", "ContinuousTransferFunction",
 ]
