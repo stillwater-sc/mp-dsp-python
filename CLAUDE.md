@@ -140,9 +140,13 @@ Other conventions:
   typedefs makes nanobind transparently copy non-contiguous inputs.
 - Python-facing names that would shadow NumPy get prefixed — `instrument_mean`,
   `instrument_rms`.
-- `docs/api_reference.md` is generated: `python scripts/build_api_ref.py` against an
-  editable install. New bindings must be added to that script's `CATEGORIES` /
-  `CLASSES` tables.
+- `docs/api_reference.md` is **generated output — never hand-edit it**. Run
+  `python scripts/build_api_ref.py` against an editable install and commit the
+  result. New bindings must be added to that script's `CATEGORIES` / `CLASSES`
+  tables; the run fails if any public `mpdsp` name is in no table. Prose belongs
+  in the script's `INTROS` / `CLASS_INTROS`, per-binding descriptions in the C++
+  docstrings. `tests/test_scripts.py::TestBuildApiRef` enforces that the script
+  runs and that the committed document matches its output.
 
 ### Test conventions
 

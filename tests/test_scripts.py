@@ -185,3 +185,89 @@ def test_plot_pole_zero_new_cli_flags(csv_dir):
             for ext in ("png", "pdf"):
                 assert os.path.exists(os.path.join(outdir, f"{stem}.{ext}")), (
                     f"Missing {stem}.{ext}")
+
+
+# ---------------------------------------------------------------------------
+# build_api_ref.py (Issue #116)
+#
+# This script rotted silently for months: it did not parse on Python < 3.12
+# (a backslash inside an f-string expression, legal only from PEP 701), and
+# its CATEGORIES/CLASSES tables fell 61 names behind the bindings while the
+# committed docs/api_reference.md was hand-edited around it. These tests
+# make both failure modes loud.
+# ---------------------------------------------------------------------------
+
+_API_REF_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "build_api_ref.py"
+
+
+class TestBuildApiRef:
+    def test_script_parses_on_this_interpreter(self):
+        """Syntax-only check, so it fails on 3.9-3.11 too rather than only
+        where the generator happens to be run."""
+        import ast
+        ast.parse(_API_REF_SCRIPT.read_text(), filename=str(_API_REF_SCRIPT))
+
+    def test_every_public_name_is_in_a_table(self):
+        """No public `mpdsp` name may be missing from CATEGORIES/CLASSES.
+
+        A binding that lands without a table entry is silently omitted from
+        the generated document, which still looks complete — that is exactly
+        how the tables fell 61 names behind.
+        """
+        pytest.importorskip("mpdsp")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_build_api_ref", _API_REF_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        missing = module.check_coverage()
+        assert missing == [], (
+            f"{len(missing)} public mpdsp name(s) are in no CATEGORIES or "
+            f"CLASSES entry: {missing}. Add each to the right category "
+            f"(or CLASSES for a stateful class), or to "
+            f"UNDOCUMENTED_BY_DESIGN if it is not public API."
+        )
+
+    def test_generates_without_error(self, tmp_path):
+        """End-to-end run. Executed in a temp cwd so the committed
+        docs/api_reference.md is never rewritten as a test side effect."""
+        pytest.importorskip("mpdsp")
+        (tmp_path / "docs").mkdir()
+        result = subprocess.run(
+            [sys.executable, str(_API_REF_SCRIPT)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, (
+            f"build_api_ref.py failed:\n{result.stdout}\n{result.stderr}")
+
+        generated = (tmp_path / "docs" / "api_reference.md").read_text()
+        assert generated.startswith("# ")
+        # Sanity: the document actually covers the surface, not just a stub.
+        for expected in ("## Signal generators", "## Classes",
+                         "### `IIRFilter`", "`butterworth_lowpass`"):
+            assert expected in generated, f"missing {expected!r}"
+
+    def test_committed_doc_is_up_to_date(self, tmp_path):
+        """The checked-in doc must match what the generator produces.
+
+        Guards the other half of the original failure: hand-editing
+        docs/api_reference.md instead of the generator, which makes a later
+        regeneration silently destructive.
+        """
+        pytest.importorskip("mpdsp")
+        (tmp_path / "docs").mkdir()
+        result = subprocess.run(
+            [sys.executable, str(_API_REF_SCRIPT)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stderr
+
+        generated = (tmp_path / "docs" / "api_reference.md").read_text()
+        committed = (_API_REF_SCRIPT.parents[1]
+                     / "docs" / "api_reference.md").read_text()
+        assert generated == committed, (
+            "docs/api_reference.md is out of date with the generator. "
+            "Run `python scripts/build_api_ref.py` and commit the result. "
+            "If the change is prose, edit INTROS / CLASS_INTROS in "
+            "scripts/build_api_ref.py rather than the document."
+        )

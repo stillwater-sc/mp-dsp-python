@@ -12,7 +12,20 @@ Run from the repo root against an editable install of mpdsp:
 When adding a new binding, add its name to the right `CATEGORIES`
 entry (or `CLASSES` for a stateful class) and, if the category is
 new, write a short intro in `INTROS` / `CLASS_INTROS` explaining the
-precision invariants or dispatch model for that subsystem.
+precision invariants or dispatch model for that subsystem. The run
+fails if any public `mpdsp` name is in no table, so this cannot be
+forgotten silently — see `check_coverage`.
+
+`docs/api_reference.md` is generated output: never hand-edit it. Prose
+belongs in `INTROS` / `CLASS_INTROS` here, and per-binding descriptions
+belong in the C++ docstrings, which regenerate automatically.
+`tests/test_scripts.py::TestBuildApiRef` enforces both halves — that
+this script runs, and that the committed document matches what it
+produces.
+
+Python 3.9+ only: no PEP 701 f-string features (a backslash inside an
+f-string expression is a syntax error before 3.12, and this project's
+CI covers 3.9 through 3.12).
 """
 
 from __future__ import annotations
@@ -72,8 +85,33 @@ def sig_and_blurb(name: str, obj) -> tuple[str, str]:
         paras = [p.strip() for p in doc.split("\n\n") if p.strip()]
         blurb = paras[0].replace("\n", " ") if paras else ""
 
-    blurb = " ".join(blurb.split())
+    blurb = _trim_shared_tails(" ".join(blurb.split()))
     return sig, blurb
+
+
+# Docstring tails shared verbatim across a whole family of bindings, which a
+# category intro already explains in full. Keeping them in the C++ docstrings
+# means help(mpdsp.rbj_lowpass) stays self-contained; repeating them in every
+# table row would turn a scannable table into a wall of duplicated text. They
+# are stripped here and here only.
+#
+# A tail that stops matching (because the C++ text was reworded) degrades
+# gracefully — the row just gets verbose again — so this cannot silently drop
+# real content.
+TRIM_SUFFIXES = [
+    "coeff_dtype selects the arithmetic used to compute the biquad "
+    "coefficients (w0, cos/sin, alpha, and the a0 normalization); the "
+    "result is stored in double either way. Note that sensor_8bit / "
+    "sensor_6bit dispatch their compute path to double, so they design "
+    "identically to reference.",
+]
+
+
+def _trim_shared_tails(text: str) -> str:
+    for suffix in TRIM_SUFFIXES:
+        if text.endswith(suffix):
+            return text[: -len(suffix)].rstrip()
+    return text
 
 
 def _truncate_at_word(text: str, limit: int) -> str:
@@ -122,17 +160,21 @@ def class_methods(cls) -> list[tuple[str, str, str]]:
 CATEGORIES = [
     ("Signal generators", [
         "sine", "cosine", "chirp", "square", "triangle", "sawtooth",
-        "impulse", "step", "white_noise", "gaussian_noise", "pink_noise",
+        "impulse", "step", "ramp", "multitone",
+        "white_noise", "gaussian_noise", "pink_noise",
+        "upsample", "downsample",
     ]),
     ("Window functions", [
         "hamming", "hanning", "blackman", "kaiser", "rectangular", "flat_top",
+        "tukey", "gaussian", "dolph_chebyshev", "bartlett_hann",
     ]),
     ("Quantization", [
         "adc", "dac", "sqnr_db", "measure_sqnr_db",
         "max_absolute_error", "max_relative_error",
     ]),
     ("Spectral analysis", [
-        "fft", "ifft", "fft_magnitude_db", "psd", "periodogram", "spectrogram",
+        "fft", "ifft", "fft_magnitude_db", "psd", "periodogram", "welch",
+        "spectrogram",
     ]),
     ("IIR filter design — classical families", [
         "butterworth_lowpass", "butterworth_highpass",
@@ -156,6 +198,22 @@ CATEGORIES = [
     ("FIR filter design", [
         "fir_lowpass", "fir_highpass", "fir_bandpass", "fir_bandstop",
         "fir_filter",
+        "remez", "remez_lowpass", "remez_bandpass",
+        "filtfilt",
+    ]),
+    ("Instrument — oscilloscope-style measurement", [
+        "peak_to_peak", "instrument_mean", "instrument_rms",
+        "rise_time", "fall_time", "period", "frequency",
+    ]),
+    ("Spectrum analyzer — detectors, peaks, markers", [
+        "detect", "detect_peak", "detect_negative_peak", "detect_sample",
+        "detect_average", "detect_rms",
+        "find_peaks", "harmonic_markers", "make_delta_marker",
+    ]),
+    ("Numerical utilities — polynomial, quadratic, elliptic", [
+        "evaluate_polynomial", "multiply_polynomials",
+        "solve_quadratic", "solve_quadratic_1", "solve_quadratic_2",
+        "elliptic_K",
     ]),
     ("Analog prototypes — s-plane pole/zero constellations", [
         "butterworth_prototype", "chebyshev1_prototype",
@@ -201,6 +259,7 @@ CATEGORIES = [
     ]),
     ("Numerical analysis — free-function primitives (bound)", [
         "coefficient_sensitivity", "biquad_condition_number",
+        "enob_from_snr_db", "snr_db", "write_acquisition_csv",
     ]),
     ("Mixed-precision helpers", [
         "available_dtypes", "bits_of", "compare_filters",
@@ -227,7 +286,17 @@ CLASSES = [
     "PolyphaseDecimator", "PolyphaseInterpolator", "DDC",
     "DecimationChain",
     "PoleZeroPlot", "BodeResult",
-    "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
+    "KalmanFilter", "ExtendedKalmanFilter", "UnscentedKalmanFilter",
+    "LMSFilter", "NLMSFilter", "RLSFilter",
+    "RationalResampler",
+    "OverlapAddConvolver", "OverlapSaveConvolver",
+    "PeakDetectDecimator", "TriggerRingBuffer",
+    "RealtimeSpectrum", "RBWFilter", "VBWFilter", "SweptLO",
+    "CalibrationProfile", "FrontEndCorrector", "TraceAverager",
+    "WaterfallBuffer", "Marker", "DeltaMarker",
+    "RootFinder",
+    "CICBitGrowthReport", "AcquisitionPrecisionRow",
+    "ComplexPair", "PoleZeroPair", "BiquadCoefficients",
     "TransferFunction", "ContinuousTransferFunction",
 ]
 
@@ -235,6 +304,73 @@ CLASSES = [
 # --- Category prose intros ---
 
 INTROS = {
+    "Instrument — oscilloscope-style measurement": (
+        "Stateless measurements over a captured buffer, in the idiom a "
+        "bench scope presents. `mean` and `rms` carry an `instrument_` "
+        "prefix so they do not shadow `numpy.mean` / `numpy.rms` when the "
+        "module is star-imported."
+    ),
+    "Spectrum analyzer — detectors, peaks, markers": (
+        "Detector reducers collapse each FFT bin group to one displayed "
+        "point the way a swept analyzer does — `detect(mode)` dispatches on "
+        "a string, the `detect_*` variants are the direct forms. The peak "
+        "and marker helpers operate on an already-computed trace."
+    ),
+    "Numerical utilities — polynomial, quadratic, elliptic": (
+        "Building blocks for advanced filter design: Horner evaluation, "
+        "polynomial multiplication (convolution), a quadratic solver "
+        "returning complex roots, and the complete elliptic integral K "
+        "used by Cauer design."
+    ),
+    "Analog prototypes — s-plane pole/zero constellations": (
+        "The pre-bilinear view a designed `IIRFilter` hides. Every "
+        "classical IIR family is designed as an analog prototype in the "
+        "s-plane and then bilinear-transformed to a digital cascade; the "
+        "digital response bakes in the resulting frequency warp, while "
+        "these functions expose the prototype itself. Useful for teaching "
+        "bilinear warping (plot both and compare) and for reading a "
+        "family's signature without warp artifacts — Bessel's flat group "
+        "delay, for instance, is an omega-space property that the digital "
+        "form only approximates near DC.\n\n"
+        "Plain `double` throughout: no `dtype=` dispatch, because a "
+        "prototype is a constellation of exact pole/zero locations rather "
+        "than a datapath.\n\n"
+        "The transforms return a **new** `PoleZeroPlot` rather than "
+        "mutating in place (upstream mutates), so a prototype can feed "
+        "several transforms without being consumed. Chaining reads left to "
+        "right:\n\n"
+        "```python\n"
+        "plot = mpdsp.apply_bilinear(\n"
+        "    mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0), 300.0, 3000.0),\n"
+        "    48000.0)\n"
+        "```"
+    ),
+    "Acquisition — high-rate ADC → baseband pipeline": (
+        "Multirate primitives for the high-rate data-acquisition pipeline "
+        "(CIC → half-band → polyphase FIR → baseband). The class entries "
+        "live in the [Classes](#classes) section; the free-function design "
+        "helpers are listed here."
+    ),
+    "IIR filter design — RBJ biquads": (
+        "Robert Bristow-Johnson audio-EQ biquads. Always 2nd-order (no "
+        "`order` parameter). Include shelf and allpass topologies not "
+        "present in the classical families. Parameterized by `q` (quality "
+        "factor) or `bandwidth` (for BP/BS); shelves take `gain_db`.\n\n"
+        "Every designer takes `coeff_dtype=` (default `'reference'`), which "
+        "selects the arithmetic used to **compute** the coefficients — the "
+        "`w0` scaling, `cos`/`sin`, the `alpha` divide, and the `a0` "
+        "normalization. The finished coefficients are stored in `double` "
+        "either way, losslessly: a biquad designed in `T` yields "
+        "`T`-representable values, and every `T` in the dispatch table is "
+        "narrower than `double`. This is the dual of "
+        "`IIRFilter.pole_displacement(dtype)`, which quantizes coefficients "
+        "that were already computed in `double` — `coeff_dtype` asks what "
+        "computing them in `T` costs, `pole_displacement` asks what storing "
+        "them in `T` costs.\n\n"
+        "`sensor_8bit` / `sensor_6bit` route their compute path to "
+        "`double`, so they design identically to `reference`. There is no "
+        "`rbj_peaking`: upstream `sw::dsp::rbj` has no Peaking class."
+    ),
     "Signal generators": (
         "Return a 1D float64 NumPy array. All generators except the noise "
         "family accept deterministic parameters; `white_noise`, "
@@ -271,12 +407,6 @@ INTROS = {
         "dispatches through the target arithmetic. Chebyshev I, Chebyshev "
         "II, and Elliptic take additional passband-ripple / stopband-"
         "attenuation parameters."
-    ),
-    "IIR filter design — RBJ biquads": (
-        "Robert Bristow-Johnson audio-EQ biquads. Always 2nd-order (no "
-        "`order` parameter). Include shelf and allpass topologies not "
-        "present in the classical families. Parameterized by `q` "
-        "(quality factor) or `bandwidth` (for BP/BS); shelves take `gain_db`."
     ),
     "FIR filter design": (
         "Window-method designs returning an `FIRFilter`. `fir_filter` "
@@ -370,6 +500,90 @@ INTROS = {
 
 
 CLASS_INTROS = {
+    "NCO": (
+        "Numerically Controlled Oscillator. Generates complex sinusoids "
+        "(I/Q) for digital mixing in the acquisition pipeline. "
+        "Phase-accumulator precision determines spurious-free dynamic range "
+        "(SFDR ~ 6.02 * W dB for a W-bit accumulator). Phase is in "
+        "normalized cycles in [0, 1), not radians."
+    ),
+    "CICDecimator": (
+        "Cascaded Integrator-Comb decimation filter. Multiplier-free; the "
+        "canonical first decimation stage after a high-rate ADC. Bit growth "
+        "is `M * ceil(log2(R * D))`."
+    ),
+    "CICInterpolator": (
+        "Cascaded Integrator-Comb interpolation filter — the dual of "
+        "`CICDecimator`. Multiplier-free upsampling."
+    ),
+    "HalfBandFilter": (
+        "Half-band FIR filter. `process_decimate` / "
+        "`process_block_decimate` exploit the alternating-zero tap "
+        "structure to skip ~half the multiplies — typically ~4x faster than "
+        "naive filter-then-decimate at 2:1."
+    ),
+    "PolyphaseDecimator": (
+        "M-factor polyphase FIR decimator. Decomposes the prototype into M "
+        "sub-filters; each advances once per output sample, so the "
+        "multiplier cost is ~N/output instead of ~N*M for naive "
+        "filter-then-downsample."
+    ),
+    "PolyphaseInterpolator": (
+        "L-factor polyphase FIR interpolator. Each input produces L outputs."
+    ),
+    "DDC": (
+        "Digital down-converter: mixes a real input band down to complex "
+        "baseband with an NCO, then decimates the I and Q streams through "
+        "matched polyphase FIR decimators running in lockstep. A real tone "
+        "at `center_frequency` lands at baseband DC with magnitude 0.5 — a "
+        "real cosine is two conjugate half-amplitude exponentials and the "
+        "mixer keeps one.\n\n"
+        "The decimator is fixed to `PolyphaseDecimator` and built from "
+        "`taps` / `decimation_factor`; richer decimator composition is the "
+        "job of `DecimationChain`. Design `taps` as a lowpass with cutoff "
+        "below `0.5 / decimation_factor` (normalized to the input rate) to "
+        "suppress aliasing — `fir_lowpass(...).coefficients()` is the usual "
+        "source. `process_block` returns a `(real, imag)` tuple, matching "
+        "`NCO.mix_down`."
+    ),
+    "DecimationChain": (
+        "Multi-stage decimation cascade — `ADC -> CIC -> half-band -> ... "
+        "-> baseband`. Large decimation ratios are cheapest as a cascade of "
+        "small ones, since each stage runs at the progressively lower rate "
+        "its predecessor emits.\n\n"
+        "`stages` is a list of `CICDecimator` / `HalfBandFilter` / "
+        "`PolyphaseDecimator` instances used as **prototypes**: the chain "
+        "reads their design parameters and rebuilds equivalent stages at "
+        "the chain's own dtype. Prototypes are neither mutated nor aliased, "
+        "and their individual dtypes are ignored — upstream threads a "
+        "single sample type between stages, so the chain's `dtype` governs "
+        "throughout. `PolyphaseInterpolator` is rejected: it upsamples.\n\n"
+        "Recommended compositions, input order mattering (bulk reduction "
+        "first, sharpest filter last): `[CIC]` alone for multiplier-free "
+        "bulk reduction, paired with `design_cic_compensator` downstream to "
+        "undo passband droop; `[CIC, HalfBand]` as the common two-stage "
+        "front end; `[CIC, HalfBand, Polyphase]` to add a shaped FIR at the "
+        "lowest rate where taps are cheapest; `[CIC, HalfBand, HalfBand, "
+        "Polyphase]` for a deep SDR cascade.\n\n"
+        "At most **6 stages** — each additional arity is a separate "
+        "template instantiation per dtype, so the cap is a compile-time "
+        "budget rather than an algorithmic limit."
+    ),
+    "PoleZeroPlot": (
+        "Analog (s-plane) prototype pole/zero constellation, optionally "
+        "carrying its bilinear-transformed z-plane counterpart. Produced by "
+        "the `*_prototype` factories, reshaped by `lp_to_hp` / `lp_to_bp` / "
+        "`lp_to_bs`, mapped to discrete time by `apply_bilinear`. "
+        "`z_poles` / `z_zeros` are empty until `apply_bilinear` has been "
+        "applied.\n\n"
+        "An immutable value type here: the transforms return new plots "
+        "rather than mutating, so one prototype can feed several."
+    ),
+    "BodeResult": (
+        "Result of a swept Bode measurement — one entry per frequency, as "
+        "three parallel float64 arrays. Returned by `sweep_bode`. "
+        "`len(result)` gives the point count."
+    ),
     "IIRFilter": (
         "Returned by every `*_lowpass` / `*_highpass` / `*_bandpass` / "
         "`*_bandstop` / `rbj_*` designer. Coefficients are always designed "
@@ -436,22 +650,6 @@ CLASS_INTROS = {
         "(negated) onto the next input. First-order shaping is a high-"
         "pass on the noise floor — most useful upstream of a lowpass "
         "reconstruction that rejects the shifted noise."
-    ),
-    "DDC": (
-        "Digital down-converter: NCO mixing followed by matched polyphase "
-        "decimation of the I and Q streams. The decimator is fixed to "
-        "`PolyphaseDecimator` and built from the `taps` / `decimation_factor` "
-        "arguments. `process_block` returns a `(real, imag)` tuple, matching "
-        "`NCO.mix_down`; the internal oscillator is exposed read-only through "
-        "`.nco_phase` / `.nco_phase_increment` rather than as a handle."
-    ),
-    "DecimationChain": (
-        "Multi-stage decimation cascade. `stages` is a list of "
-        "`CICDecimator` / `HalfBandFilter` / `PolyphaseDecimator` instances "
-        "used as prototypes — the chain reads their design parameters and "
-        "rebuilds equivalent stages at its own dtype, since upstream threads "
-        "a single sample type between stages. Capped at 6 stages; each arity "
-        "is a separate template instantiation per dtype."
     ),
     "TransferFunction": (
         "Rational H(z) = B(z)/A(z) with double-precision coefficients. "
@@ -563,7 +761,11 @@ def render_class(name: str) -> str:
         else:
             cell = first if first else "*(property)*"
             cell = _truncate_at_word(cell, 280)
-        lines.append(f"| `.{mname}` | {cell.replace('|', '\\|')} |")
+        # Escaped outside the f-string: a backslash inside an f-string
+        # expression is a syntax error before Python 3.12 (PEP 701), and this
+        # project supports 3.9+.
+        escaped = cell.replace("|", "\\|")
+        lines.append(f"| `.{mname}` | {escaped} |")
     return "\n".join(lines)
 
 
@@ -594,6 +796,29 @@ def render_attributes_section() -> str:
             desc += f" Current: `\"{val}\"`."
         rows.append(f"| `mpdsp.{name}` | `{t}` | {desc} |")
     return "\n".join(rows)
+
+
+# Names that are deliberately not in the tables: import-time flags and the
+# submodules themselves, none of which are part of the documented API.
+UNDOCUMENTED_BY_DESIGN = {
+    "HAS_CORE", "HAS_PLOT",
+    "io", "plotting", "filters", "analysis", "estimation", "image",
+}
+
+
+def check_coverage() -> list[str]:
+    """Return public `mpdsp` names that no table mentions.
+
+    The failure mode this guards against is the one that let this script rot
+    for months: a binding lands, nobody adds it to CATEGORIES/CLASSES, and the
+    generated doc silently omits it while looking complete.
+    """
+    listed = set()
+    for _title, names in CATEGORIES:
+        listed.update(names)
+    listed.update(CLASSES)
+    public = {n for n in dir(mpdsp) if not n.startswith("_")}
+    return sorted(public - listed - UNDOCUMENTED_BY_DESIGN)
 
 
 def main():
@@ -714,6 +939,16 @@ extension.
         fh.write(out)
     print(f"wrote docs/api_reference.md ({len(out)} bytes, "
            f"{out.count(chr(10))} lines)")
+
+    missing = check_coverage()
+    if missing:
+        raise SystemExit(
+            "error: {} public mpdsp name(s) are in no CATEGORIES or CLASSES "
+            "entry, so they were omitted from the generated document:\n"
+            "  {}\n"
+            "Add each to the right category (or CLASSES for a stateful "
+            "class), or to UNDOCUMENTED_BY_DESIGN if it genuinely is not "
+            "public API.".format(len(missing), "\n  ".join(missing)))
 
 
 if __name__ == "__main__":

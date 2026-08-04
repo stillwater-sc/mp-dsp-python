@@ -1,8 +1,8 @@
 # `mpdsp` API reference
 
 Complete enumeration of every public name in the `mpdsp` package, grouped
-by subsystem. Generated from `0.5.0.post3` (upstream `sw::dsp
-0.5.0`) via `inspect` and the nanobind-attached
+by subsystem. Generated from `0.8.0.dev0` (upstream `sw::dsp
+0.8.0`) via `inspect` and the nanobind-attached
 `__doc__` strings. Keep this in sync by re-running the generator — see
 the note at the bottom.
 
@@ -19,6 +19,9 @@ the note at the bottom.
 - [IIR filter design — classical families](#iir-filter-design--classical-families)
 - [IIR filter design — RBJ biquads](#iir-filter-design--rbj-biquads)
 - [FIR filter design](#fir-filter-design)
+- [Instrument — oscilloscope-style measurement](#instrument--oscilloscope-style-measurement)
+- [Spectrum analyzer — detectors, peaks, markers](#spectrum-analyzer--detectors-peaks-markers)
+- [Numerical utilities — polynomial, quadratic, elliptic](#numerical-utilities--polynomial-quadratic-elliptic)
 - [Analog prototypes — s-plane pole/zero constellations](#analog-prototypes--s-plane-polezero-constellations)
 - [Acquisition — high-rate ADC → baseband pipeline](#acquisition--high-rate-adc--baseband-pipeline)
 - [Image — generators](#image--generators)
@@ -53,9 +56,32 @@ the note at the bottom.
   - [`PoleZeroPlot`](#polezeroplot)
   - [`BodeResult`](#boderesult)
   - [`KalmanFilter`](#kalmanfilter)
+  - [`ExtendedKalmanFilter`](#extendedkalmanfilter)
+  - [`UnscentedKalmanFilter`](#unscentedkalmanfilter)
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
   - [`RLSFilter`](#rlsfilter)
+  - [`RationalResampler`](#rationalresampler)
+  - [`OverlapAddConvolver`](#overlapaddconvolver)
+  - [`OverlapSaveConvolver`](#overlapsaveconvolver)
+  - [`PeakDetectDecimator`](#peakdetectdecimator)
+  - [`TriggerRingBuffer`](#triggerringbuffer)
+  - [`RealtimeSpectrum`](#realtimespectrum)
+  - [`RBWFilter`](#rbwfilter)
+  - [`VBWFilter`](#vbwfilter)
+  - [`SweptLO`](#sweptlo)
+  - [`CalibrationProfile`](#calibrationprofile)
+  - [`FrontEndCorrector`](#frontendcorrector)
+  - [`TraceAverager`](#traceaverager)
+  - [`WaterfallBuffer`](#waterfallbuffer)
+  - [`Marker`](#marker)
+  - [`DeltaMarker`](#deltamarker)
+  - [`RootFinder`](#rootfinder)
+  - [`CICBitGrowthReport`](#cicbitgrowthreport)
+  - [`AcquisitionPrecisionRow`](#acquisitionprecisionrow)
+  - [`ComplexPair`](#complexpair)
+  - [`PoleZeroPair`](#polezeropair)
+  - [`BiquadCoefficients`](#biquadcoefficients)
   - [`TransferFunction`](#transferfunction)
   - [`ContinuousTransferFunction`](#continuoustransferfunction)
 
@@ -108,8 +134,8 @@ precision-cost frontier.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.5.0.post3"`. |
-| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.5.0"`. |
+| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.8.0.dev0"`. |
+| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.8.0"`. |
 | `mpdsp.__dsp_version_info__` | `tuple` | `(major, minor, patch)` tuple of ints for `__dsp_version__`. |
 | `mpdsp.HAS_CORE` | `bool` | `True` when the nanobind extension imported cleanly. `False` in unbuilt source checkouts, and (pre-0.4.1.post1) indicated a packaging bug before we hardened the import. |
 | `mpdsp.HAS_PLOT` | `bool` | `True` when matplotlib is importable — gates the `plot_*` helpers. |
@@ -129,9 +155,13 @@ Return a 1D float64 NumPy array. All generators except the noise family accept d
 | `sawtooth` | `(length: int, frequency: float, sample_rate: float, amplitude: float = 1.0) -> ndarray` | Generate a sawtooth wave. |
 | `impulse` | `(length: int, position: int = 0) -> ndarray` | Generate an impulse (single 1.0 at position, rest 0). |
 | `step` | `(length: int, position: int = 0) -> ndarray` | Generate a unit step (0 before position, 1 from position onward). |
+| `ramp` | `(length: int, slope: float = 1.0) -> ndarray` | Linear ramp: x[n] = slope * n, starting at 0. Add an offset in NumPy if you need to shift the starting value. |
+| `multitone` | `(length: int, frequencies: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], sample_rate: float, amplitude: float = 1.0) -> ndarray` | Generate a sum of sinusoids at the given frequencies (Hz). All tones share the same amplitude, scaled so the summed peak amplitude matches the `amplitude` argument (per-tone contribution is amplitude / len(frequencies)). Useful for filter passband/stopband demos and two-tone IMD tests. |
 | `white_noise` | `(length: int, amplitude: float = 1.0, seed: int = 0) -> ndarray` | Generate white noise (uniform in [-amplitude, amplitude]). |
 | `gaussian_noise` | `(length: int, stddev: float = 1.0, seed: int = 0) -> ndarray` | Generate Gaussian white noise (mean=0, normal distribution with given stddev). |
 | `pink_noise` | `(length: int, amplitude: float = 1.0, seed: int = 0) -> ndarray` | Generate pink noise (1/f spectrum, Voss-McCartney algorithm). |
+| `upsample` | `(input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], factor: int) -> ndarray` | Upsample by an integer factor via zero insertion. Output length is input.size() * factor. This is zero-insertion only — apply a lowpass interpolator (e.g. FIR, halfband, polyphase) afterwards to remove the imaging spectral replicas. |
+| `downsample` | `(input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], factor: int) -> ndarray` | Downsample by an integer factor by keeping every factor-th sample. Output length is input.size() // factor. This is a naive decimator — apply a lowpass anti-aliasing filter beforehand to avoid aliasing. |
 
 ## Window functions
 
@@ -139,12 +169,16 @@ Return a length-N float64 NumPy array. Apply by element-wise multiplication agai
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `hamming` | `(N: int) -> ndarray` | Hamming window of length N. |
-| `hanning` | `(N: int) -> ndarray` | Hanning (Hann) window of length N. |
-| `blackman` | `(N: int) -> ndarray` | Blackman window of length N. |
-| `kaiser` | `(N: int, beta: float = 5.0) -> ndarray` | Kaiser window of length N with shape parameter beta. |
-| `rectangular` | `(N: int) -> ndarray` | Rectangular (boxcar) window of length N. |
-| `flat_top` | `(N: int) -> ndarray` | Flat-top window of length N. |
+| `hamming` | `(N: int, dtype: str = 'reference') -> ndarray` | Hamming window of length N. dtype controls the internal compute precision; result is always NumPy float64. |
+| `hanning` | `(N: int, dtype: str = 'reference') -> ndarray` | Hanning (Hann) window of length N. |
+| `blackman` | `(N: int, dtype: str = 'reference') -> ndarray` | Blackman window of length N. |
+| `kaiser` | `(N: int, beta: float = 5.0, dtype: str = 'reference') -> ndarray` | Kaiser window of length N with shape parameter beta. |
+| `rectangular` | `(N: int, dtype: str = 'reference') -> ndarray` | Rectangular (boxcar) window of length N. |
+| `flat_top` | `(N: int, dtype: str = 'reference') -> ndarray` | Flat-top window of length N. |
+| `tukey` | `(N: int, alpha: float = 0.5, dtype: str = 'reference') -> ndarray` | Tukey (cosine-tapered) window of length N. alpha in [0, 1] controls the fraction of the window that is cosine-tapered (0 = rectangular, 1 = Hann). |
+| `gaussian` | `(N: int, sigma: float = 0.4, dtype: str = 'reference') -> ndarray` | Gaussian window of length N. sigma is expressed relative to N/2 (scipy convention): smaller sigma gives a narrower, more peaked window. |
+| `dolph_chebyshev` | `(N: int, attenuation_db: float = 100.0, dtype: str = 'reference') -> ndarray` | Dolph-Chebyshev window of length N with equiripple sidelobes at the given attenuation (dB, positive value). Common in radar/sonar; attenuation_db must be > 0. |
+| `bartlett_hann` | `(N: int, dtype: str = 'reference') -> ndarray` | Bartlett-Hann window of length N — hybrid of Bartlett (triangular) and Hann (raised-cosine). |
 
 ## Quantization
 
@@ -170,6 +204,7 @@ All five primitives accept a `dtype=` parameter selecting the internal arithmeti
 | `fft_magnitude_db` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Compute FFT magnitude spectrum in dB. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
 | `psd` | `(signal: ndarray1d[ro], sample_rate: float, dtype: str = 'reference') -> tuple` | Compute PSD with frequency axis. Returns (freqs_hz, power) tuple. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
 | `periodogram` | `(signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Compute periodogram power spectral density estimate. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
+| `welch` | `(signal: ndarray1d[ro], sample_rate: float, segment_size: int, overlap: int = -1, window: str = 'hamming', dtype: str = 'reference') -> tuple` | Welch's method: segmented, windowed, averaged periodogram PSD estimate. |
 | `spectrogram` | `(signal: ndarray1d[ro], sample_rate: float, window_size: int = 1024, hop_size: int = 256, dtype: str = 'reference') -> tuple` | Compute spectrogram. Returns (times, freqs, magnitude_db) tuple. magnitude_db is a 2D array [n_frames x n_freqs]. `dtype` selects the internal arithmetic (see `mpdsp.available_dtypes()`). |
 
 ## IIR filter design — classical families
@@ -227,11 +262,58 @@ Window-method designs returning an `FIRFilter`. `fir_filter` constructs directly
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `fir_lowpass` | `(num_taps: int, sample_rate: float, cutoff: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR lowpass filter via the window method. |
-| `fir_highpass` | `(num_taps: int, sample_rate: float, cutoff: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR highpass filter via spectral inversion of a lowpass. |
-| `fir_bandpass` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandpass filter. |
-| `fir_bandstop` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6) -> mpdsp._core.FIRFilter` | Design an FIR bandstop (notch) filter via spectral inversion. |
+| `fir_lowpass` | `(num_taps: int, sample_rate: float, cutoff: float, window: str = 'hamming', kaiser_beta: float = 8.6, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Design an FIR lowpass filter via the window method. coeff_dtype controls the precision of the design-time math; the resulting taps are stored as float64 in the returned filter. |
+| `fir_highpass` | `(num_taps: int, sample_rate: float, cutoff: float, window: str = 'hamming', kaiser_beta: float = 8.6, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Design an FIR highpass filter via spectral inversion of a lowpass. |
+| `fir_bandpass` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Design an FIR bandpass filter. |
+| `fir_bandstop` | `(num_taps: int, sample_rate: float, f_low: float, f_high: float, window: str = 'hamming', kaiser_beta: float = 8.6, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Design an FIR bandstop (notch) filter via spectral inversion. |
 | `fir_filter` | `(coefficients: ndarray1d[ro]) -> mpdsp._core.FIRFilter` | Construct an FIR filter from explicit tap coefficients. |
+| `remez` | `(num_taps: int, bands: ndarray1d[ro], desired: ndarray1d[ro], weights: ndarray1d[ro], type: str = 'bandpass', max_iterations: int = 40, grid_density: int = 16, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | General Parks-McClellan equiripple FIR design. bands is a flat list of band edges in normalized frequency [0, 0.5], length 2N for N bands; desired has one value per band edge; weights has one per band. type is 'bandpass' (default; symmetric taps), 'differentiator', or 'hilbert' (both antisymmetric). |
+| `remez_lowpass` | `(num_taps: int, sample_rate: float, passband_edge_hz: float, stopband_edge_hz: float, passband_weight: float = 1.0, stopband_weight: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Equiripple lowpass FIR via Parks-McClellan (Remez exchange). passband_edge_hz and stopband_edge_hz define the transition band; weights control the passband-vs-stopband trade-off (larger stopband weight -> deeper stopband). |
+| `remez_bandpass` | `(num_taps: int, sample_rate: float, stop1_hz: float, pass1_hz: float, pass2_hz: float, stop2_hz: float, stopband_weight: float = 1.0, passband_weight: float = 1.0, coeff_dtype: str = 'reference') -> mpdsp._core.FIRFilter` | Equiripple bandpass FIR via Parks-McClellan. Requires stop1 < pass1 < pass2 < stop2, all in Hz. Symmetric stopband weights on both sides. |
+| `filtfilt` | `(iir_filter: mpdsp._core.IIRFilter, signal: ndarray1d[ro], dtype: str = 'reference') -> ndarray` | Zero-phase IIR filtering via forward-backward biquad cascade processing. |
+
+## Instrument — oscilloscope-style measurement
+
+Stateless measurements over a captured buffer, in the idiom a bench scope presents. `mean` and `rms` carry an `instrument_` prefix so they do not shadow `numpy.mean` / `numpy.rms` when the module is star-imported.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `peak_to_peak` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Peak-to-peak amplitude of the segment: max(signal) - min(signal). For a unit-amplitude sine returns 2.0. |
+| `instrument_mean` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Arithmetic mean (DC level) of the segment. Sum is accumulated in double regardless of dtype. Prefixed to avoid shadowing numpy.mean when users do `from mpdsp import *`. |
+| `instrument_rms` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Root-mean-square of the segment. For a unit-amplitude sine returns 1/sqrt(2). Sum-of-squares is accumulated in double. |
+| `rise_time` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], low_pct: float = 0.1, high_pct: float = 0.9, dtype: str = 'reference') -> float` | Rise time in SAMPLES between low_pct and high_pct of the segment's peak-to-peak range, on the first rising transition. Returns NaN if no transition spans both thresholds. Divide by sample_rate for seconds. Sub-sample crossings via linear interpolation. |
+| `fall_time` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], low_pct: float = 0.1, high_pct: float = 0.9, dtype: str = 'reference') -> float` | Fall time in SAMPLES: mirror of rise_time for the first falling transition from high_pct down to low_pct. Returns NaN if no such transition. Divide by sample_rate for seconds. |
+| `period` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], threshold: float = 0.0, dtype: str = 'reference') -> float` | Period in SAMPLES: average distance between consecutive rising threshold-crossings. Threshold defaults to 0 (zero-crossing, appropriate for AC-coupled signals). Returns NaN if fewer than two rising crossings occur. |
+| `frequency` | `(signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], sample_rate: float, threshold: float = 0.0, dtype: str = 'reference') -> float` | Fundamental frequency in Hz: sample_rate / period_samples. Returns NaN if the period cannot be measured (see `period`). |
+
+## Spectrum analyzer — detectors, peaks, markers
+
+Detector reducers collapse each FFT bin group to one displayed point the way a swept analyzer does — `detect(mode)` dispatches on a string, the `detect_*` variants are the direct forms. The peak and marker helpers operate on an already-computed trace.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `detect` | `(mode: str, bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Runtime-dispatch detector. mode is one of: 'peak', 'sample', 'average', 'rms', 'negative_peak'. For a compile-time-known mode prefer the named detect_* functions (one less string parse and switch branch). |
+| `detect_peak` | `(bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Peak detector: max(bin). The standard scope/analyzer 'peak' mode. |
+| `detect_negative_peak` | `(bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Negative-peak detector: min(bin). Finds the deepest notch or the noise floor. |
+| `detect_sample` | `(bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Sample detector: returns the FIRST sample in the bin. Conceptually a 'no-detector' mode — picks one representative time instant per bin, matching the CISPR/Keysight sample-detector convention. |
+| `detect_average` | `(bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | Average detector: arithmetic mean of the bin samples (linear). Sum accumulated in double regardless of dtype. |
+| `detect_rms` | `(bin: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], dtype: str = 'reference') -> float` | RMS (energy) detector: sqrt(mean(bin**2)). For a unit-amplitude sine returns 1/sqrt(2). |
+| `find_peaks` | `(trace: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], bin_freq_step_hz: float, top_n: int, min_separation_bins: int = 3, dtype: str = 'reference') -> list[mpdsp._core.Marker]` | Find the top-N strongest peaks in a trace with a minimum-separation greedy selection. Returns a list of Marker objects in descending amplitude order. Sub-bin frequency position is recovered via parabolic interpolation across the three bins around each peak; edge bins skip interpolation. |
+| `harmonic_markers` | `(trace: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], bin_freq_step_hz: float, fundamental_hz: float, harmonics: int, dtype: str = 'reference') -> list[mpdsp._core.Marker]` | Markers at bins nearest k * fundamental_hz for k = 2..harmonics+1. Returns a list of Marker objects; harmonics past the trace's frequency range are silently omitted. Combine with find_peaks() and a small neighborhood search to peak-snap each harmonic. |
+| `make_delta_marker` | `(a: mpdsp._core.Marker, b: mpdsp._core.Marker) -> mpdsp._core.DeltaMarker` | Compute a DeltaMarker from two Markers: delta_freq_hz and delta_amplitude are b - a. |
+
+## Numerical utilities — polynomial, quadratic, elliptic
+
+Building blocks for advanced filter design: Horner evaluation, polynomial multiplication (convolution), a quadratic solver returning complex roots, and the complete elliptic integral K used by Cauer design.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `evaluate_polynomial` | `(coeffs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], x: float) -> float` | evaluate_polynomial(coeffs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], x: complex) -> complex |
+| `multiply_polynomials` | `(a: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], b: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> ndarray` | Multiply two polynomials — coefficient-vector convolution. Result has degree = deg(a) + deg(b). Either input empty gives an empty result. Equivalent to numpy.convolve(a, b, mode='full') for the coefficient-in-ascending-order convention. |
+| `solve_quadratic` | `(a: float, b: float, c: float) -> tuple[complex, complex]` | Return both roots of a*x^2 + b*x + c = 0 as a tuple of complex numbers. Real roots are returned with zero imaginary part. |
+| `solve_quadratic_1` | `(a: float, b: float, c: float) -> complex` | Root with the positive discriminant sign: (-b + sqrt(b^2 - 4ac)) / (2a). |
+| `solve_quadratic_2` | `(a: float, b: float, c: float) -> complex` | Root with the negative discriminant sign: (-b - sqrt(b^2 - 4ac)) / (2a). |
+| `elliptic_K` | `(k: float) -> float` | Complete elliptic integral of the first kind K(k) via the arithmetic-geometric mean (AGM) iteration. Modulus k must be in [0, 1). Peak error less than 2e-16. Used by Elliptic (Cauer) filter design. |
 
 ## Analog prototypes — s-plane pole/zero constellations
 
@@ -249,26 +331,26 @@ plot = mpdsp.apply_bilinear(
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `butterworth_prototype` | `(order: int, cutoff_hz: float = 1.0) -> PoleZeroPlot` | Poles evenly spaced on the left half of a circle of radius `2*pi*cutoff_hz`. All-pole. |
-| `chebyshev1_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0) -> PoleZeroPlot` | Poles on an ellipse — equiripple passband, steeper rolloff than Butterworth. All-pole. `ripple_db > 0`. |
-| `chebyshev2_prototype` | `(order: int, cutoff_hz: float = 1.0, stopband_db: float = 40.0) -> PoleZeroPlot` | Flat passband, equiripple stopband. Carries finite `s_zeros` on the jw axis, which is what makes the stopband nulls. `stopband_db > 0`. |
-| `bessel_prototype` | `(order: int, cutoff_hz: float = 1.0) -> PoleZeroPlot` | Maximally flat group delay. All-pole. |
-| `elliptic_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0, selectivity_k: float = 0.9) -> PoleZeroPlot` | Equiripple in both bands; steepest transition per order. Carries finite `s_zeros`. `selectivity_k` in `(0, 1)`; `order <= 12`. |
-| `lp_to_hp` | `(plot: PoleZeroPlot, cutoff_hz: float) -> PoleZeroPlot` | Lowpass → highpass. Pole count preserved; zeros move to the origin. |
-| `lp_to_bp` | `(plot: PoleZeroPlot, low_hz: float, high_hz: float) -> PoleZeroPlot` | Lowpass → bandpass. Each pole splits in two, so the order doubles. Requires `0 < low_hz < high_hz`. |
-| `lp_to_bs` | `(plot: PoleZeroPlot, low_hz: float, high_hz: float) -> PoleZeroPlot` | Lowpass → bandstop. Order doubles. Requires `0 < low_hz < high_hz`. |
-| `apply_bilinear` | `(plot: PoleZeroPlot, sample_rate_hz: float) -> PoleZeroPlot` | Map s-plane to z-plane, populating `z_poles` / `z_zeros` / `sample_rate_hz`. Every stable analog pole (`Re < 0`) lands inside the unit circle. |
-| `sweep_bode` | `(filt: IIRFilter | FIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> BodeResult` | **Empirical** frequency response: drives the filter with a settled sine at each of `num_points` log-spaced frequencies and correlates the output. Unlike `frequency_response()`, which evaluates `H(z)` analytically from the (double) coefficients, this runs samples through at the requested `dtype` — so it registers sample-path quantization the analytic form is blind to. Requires `0 < freq_min_hz < freq_max_hz < sample_rate/2` and `num_points >= 2`. |
+| `butterworth_prototype` | `(order: int, cutoff_hz: float = 1.0) -> mpdsp._core.PoleZeroPlot` | Butterworth analog prototype: `order` poles evenly spaced on the left half of a circle of radius 2*pi*cutoff_hz. All-pole — s_zeros is empty. |
+| `chebyshev1_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0) -> mpdsp._core.PoleZeroPlot` | Chebyshev I analog prototype: poles on an ellipse, giving equiripple passband at the cost of a less flat response. ripple_db must be > 0. All-pole. |
+| `chebyshev2_prototype` | `(order: int, cutoff_hz: float = 1.0, stopband_db: float = 40.0) -> mpdsp._core.PoleZeroPlot` | Chebyshev II (inverse Chebyshev) analog prototype: flat passband, equiripple stopband. Carries finite s_zeros on the jw axis, which is what produces the stopband nulls. stopband_db must be > 0. |
+| `bessel_prototype` | `(order: int, cutoff_hz: float = 1.0) -> mpdsp._core.PoleZeroPlot` | Bessel analog prototype: maximally flat group delay. All-pole. The flat-delay signature is an omega-space property, which is why it reads clearly here and only approximately in a bilinear-warped digital response. |
+| `elliptic_prototype` | `(order: int, cutoff_hz: float = 1.0, ripple_db: float = 1.0, selectivity_k: float = 0.9) -> mpdsp._core.PoleZeroPlot` | Elliptic (Cauer) analog prototype: equiripple in both bands, the steepest transition for a given order. Carries finite s_zeros. selectivity_k in (0, 1) sets the modulus of the elliptic functions — higher is more selective. order <= 12. |
+| `lp_to_hp` | `(plot: mpdsp._core.PoleZeroPlot, cutoff_hz: float) -> mpdsp._core.PoleZeroPlot` | Lowpass -> highpass frequency transformation. Returns a new plot; the input is left unchanged. Pole count is preserved and zeros move to the origin. |
+| `lp_to_bp` | `(plot: mpdsp._core.PoleZeroPlot, low_hz: float, high_hz: float) -> mpdsp._core.PoleZeroPlot` | Lowpass -> bandpass frequency transformation. Returns a new plot; the input is left unchanged. Each prototype pole splits into two, so the resulting order is doubled. Requires 0 < low_hz < high_hz. |
+| `lp_to_bs` | `(plot: mpdsp._core.PoleZeroPlot, low_hz: float, high_hz: float) -> mpdsp._core.PoleZeroPlot` | Lowpass -> bandstop frequency transformation. Returns a new plot; the input is left unchanged. Order doubles, as with lp_to_bp. Requires 0 < low_hz < high_hz. |
+| `apply_bilinear` | `(plot: mpdsp._core.PoleZeroPlot, sample_rate_hz: float) -> mpdsp._core.PoleZeroPlot` | Map the s-plane constellation to the z-plane via the bilinear transform, populating z_poles / z_zeros and sample_rate_hz. Returns a new plot; the input is left unchanged. Every stable analog pole (Re < 0) maps inside the unit circle. |
+| `sweep_bode` | `(filt: mpdsp._core.IIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> mpdsp._core.BodeResult` | sweep_bode(filt: mpdsp._core.FIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> mpdsp._core.BodeResult |
 
 ## Acquisition — high-rate ADC → baseband pipeline
 
-Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-band → polyphase FIR → baseband). The class entries live in the [Classes](#classes) section; the two free-function design helpers are listed here.
+Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-band → polyphase FIR → baseband). The class entries live in the [Classes](#classes) section; the free-function design helpers are listed here.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray[float64]` | Equiripple half-band lowpass design via Remez exchange. `num_taps` must be of the form `4K+3`. The result has the half-band structure (`h[center] = 0.5`, `h[center ± 2k] = 0` for `k ≥ 1`). |
-| `polyphase_decompose` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference') -> list[ndarray[float64]]` | Decompose an FIR prototype into `factor` polyphase sub-filters of length `ceil(N/factor)`. Returns one sub-tap array per phase. |
-| `design_cic_compensator` | `(num_taps: int, cic_stages: int, cic_ratio: int, passband: float, differential_delay: int = 1, dtype: str = 'reference') -> ndarray[float64]` | Design an FIR that inverts a CIC decimator's passband droop, to be run at the CIC output rate. `passband` is normalized to that output rate and must lie in `(0, 0.5)`. Frequency-sampling design, Hamming-windowed, normalized to unit DC gain. |
+| `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray` | Design an equiripple half-band lowpass filter via Remez exchange. num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). Returns NumPy float64 taps; dtype controls internal design precision. |
+| `polyphase_decompose` | `(taps: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], factor: int, dtype: str = 'reference') -> list[ndarray]` | Decompose an FIR prototype into `factor` polyphase sub-filters. Returns a list of NumPy float64 arrays of length ceil(N/factor). |
+| `design_cic_compensator` | `(num_taps: int, cic_stages: int, cic_ratio: int, passband: float, differential_delay: int = 1, dtype: str = 'reference') -> ndarray` | Design an FIR that inverts a CIC decimator's passband droop, to be run at the CIC's output rate. Frequency-sampling design: samples 1/\|H_cic(f)\| across [0, passband], rolls off smoothly to Nyquist, IDFTs, applies a Hamming window, and normalizes to unit DC gain. |
 
 ## Image — generators
 
@@ -384,6 +466,9 @@ Coefficient-level analysis that doesn't require a constructed IIRFilter — usef
 |------|-----------|-------------|
 | `coefficient_sensitivity` | `(b0: float, b1: float, b2: float, a1: float, a2: float, epsilon: float = 1e-08) -> tuple` | Coefficient sensitivity of a biquad, as a (dp_da1, dp_da2) tuple of doubles. |
 | `biquad_condition_number` | `(b0: float, b1: float, b2: float, a1: float, a2: float, num_freqs: int = 512) -> float` | Condition number of a single biquad section. |
+| `enob_from_snr_db` | `(snr_db: float) -> float` | Effective number of bits from SNR (dB) using the standard formula ENOB = (SNR_dB - 1.76) / 6.02. Assumes a sinusoidal full-scale input with quantization-noise-dominated error. |
+| `snr_db` | `(reference: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], test: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> float` | Signal-to-noise ratio in dB of `test` against `reference`. Both must be 1D NumPy float64 arrays of equal length. Returns +300 dB (effectively infinite) for a bit-identical match. To assess narrow-precision effects, quantize inputs via mpdsp.adc(x, dtype=...) first, then compute snr_db on the results. |
+| `write_acquisition_csv` | `(path: str, rows: collections.abc.Sequence[mpdsp._core.AcquisitionPrecisionRow]) -> None` | Write a list of AcquisitionPrecisionRow to CSV at the given path. Header row is emitted first; column layout matches applications/precision_sweep/precision_sweep.csv for cross-tool compatibility with the existing plot_precision / plot_heatmap scripts. |
 
 ## Mixed-precision helpers
 
@@ -440,6 +525,7 @@ Returned by every `*_lowpass` / `*_highpass` / `*_bandpass` / `*_bandstop` / `rb
 | `.coefficients` | `(self) -> list[tuple[float, float, float, float, float]]` — List of (b0, b1, b2, a1, a2) tuples, one per stage. |
 | `.condition_number` | `(self, num_freqs: int = 256) -> float` — Worst-case relative change in \|H\| per coefficient perturbation across stages. Higher = more sensitive to coefficient quantization. |
 | `.frequency_response` | `(self, normalized_freqs: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=complex128]` — Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). Returns complex128. |
+| `.from_coefficients` | `(biquads: collections.abc.Sequence[mpdsp._core.BiquadCoefficients]) -> mpdsp._core.IIRFilter` — Construct an IIRFilter from a list of BiquadCoefficients. Length must be in [1, 8] (compile-time cascade bound). Each element populates one biquad section in order. Enables importing coefficients designed elsewhere (scipy, MATLAB, hand-designed cascades) into the mpdsp… |
 | `.num_stages` | `(self) -> int` — Number of active biquad sections. |
 | `.pole_displacement` | `(self, dtype: str) -> float` — Max pole displacement when coefficients are quantized through the target dtype (see available_dtypes). Returns 0 for 'reference'. |
 | `.poles` | `(self) -> list[complex]` — List of complex pole locations in the z-plane. |
@@ -557,190 +643,178 @@ Automatic gain control: drives the signal toward a target level using a configur
 
 ### `NCO`
 
-Numerically Controlled Oscillator. Generates complex sinusoids (I/Q) for digital mixing in the acquisition pipeline. Phase-accumulator precision determines spurious-free dynamic range (SFDR ≈ 6.02 × W dB for a W-bit accumulator).
+Numerically Controlled Oscillator. Generates complex sinusoids (I/Q) for digital mixing in the acquisition pipeline. Phase-accumulator precision determines spurious-free dynamic range (SFDR ~ 6.02 * W dB for a W-bit accumulator). Phase is in normalized cycles in [0, 1), not radians.
 
-> NCO with a normalized-phase accumulator (1.0 = one full cycle).
+> Numerically Controlled Oscillator. Generates complex sinusoids (I/Q) for digital mixing. Phase accumulator precision determines SFDR.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(frequency: float, sample_rate: float, dtype: str = 'reference')` |
-| `.phase` | `(self) -> float` — Current phase accumulator value in `[0, 1)`. |
-| `.phase_increment` | `(self) -> float` — Phase increment per sample (`frequency / sample_rate`). |
-| `.set_frequency` | `(self, frequency: float, sample_rate: float) -> None` |
-| `.set_phase_offset` | `(self, offset: float) -> None` — Phase offset in normalized units. |
-| `.generate_sample` | `(self) -> tuple[float, float]` — Generate one (real, imag) I/Q sample and advance phase. |
-| `.generate_real` | `(self) -> float` — Generate one real-valued (cos) sample. |
-| `.generate_block` | `(self, length: int) -> tuple[ndarray[float64], ndarray[float64]]` — `(real, imag)` block. |
-| `.generate_block_real` | `(self, length: int) -> ndarray[float64]` — Real-valued block (cos only). |
-| `.mix_down` | `(self, input: ndarray1d[ro]) -> tuple[ndarray[float64], ndarray[float64]]` — Multiply real input by conj(NCO output); returns the resulting complex baseband signal as `(real, imag)`. |
+| `.generate_block` | `(self, length: int) -> tuple` — Generate a block of complex samples. Returns (real, imag) tuple. |
+| `.generate_block_real` | `(self, length: int) -> numpy.ndarray[dtype=float64]` — Generate a block of real-valued samples (cos). |
+| `.generate_real` | `(self) -> float` — Generate one real-valued sample (cos only) and advance the phase. |
+| `.generate_sample` | `(self) -> tuple[float, float]` — Generate one (real, imag) I/Q sample and advance the phase. |
+| `.measure_sfdr_db` | `(self, fft_size: int, guard_bins: int = 2) -> float` — Measure spurious-free dynamic range: generate fft_size samples, FFT them (zero-padded to next power of 2), find the largest spur outside `guard_bins` around the tuned peak, and return 20*log10(peak / spur) in dB. **Mutates the NCO's phase** — call reset() before/after for a… |
+| `.mix_down` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple` — Multiply real input by conj(NCO output). Returns (real, imag) tuple of the resulting complex baseband signal. |
+| `.phase` | (self) -> float |
+| `.phase_increment` | (self) -> float |
 | `.reset` | `(self) -> None` |
+| `.set_frequency` | `(self, frequency: float, sample_rate: float) -> None` |
+| `.set_phase_offset` | `(self, offset: float) -> None` |
 
 ### `CICDecimator`
 
-Cascaded Integrator-Comb decimation filter. Multiplier-free; the canonical first decimation stage after a high-rate ADC. Bit growth is `M · ceil(log2(R · D))`.
+Cascaded Integrator-Comb decimation filter. Multiplier-free; the canonical first decimation stage after a high-rate ADC. Bit growth is `M * ceil(log2(R * D))`.
 
-> CIC decimation filter (M stages, ratio R, differential delay D).
+> Cascaded Integrator-Comb decimation filter. Multiplier-free; ideal for the first decimation stage after a high-rate ADC.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(decimation_ratio: int, num_stages: int, differential_delay: int = 1, dtype: str = 'reference')` |
-| `.decimation_ratio` | `(self) -> int` |
-| `.num_stages` | `(self) -> int` |
-| `.differential_delay` | `(self) -> int` |
-| `.push` | `(self, input: float) -> tuple[bool, float]` — Feed one input sample. `(emit, output)` — `emit` is True when the decimated output is valid this call. |
-| `.output` | `(self) -> float` — Most recent decimated output (valid after `push()` emits). |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Decimate a block. |
+| `.check_bit_growth` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> mpdsp._core.CICBitGrowthReport` — Run `input` through the CIC and record the peak absolute output. Returns a CICBitGrowthReport comparing observed vs. theoretical (Hogenauer M*ceil(log2(R*D))) bit growth. **Mutates the CIC state** (same as calling process_block); reset() before/after if you need a clean run. |
+| `.decimation_ratio` | (self) -> int |
+| `.differential_delay` | (self) -> int |
+| `.num_stages` | (self) -> int |
+| `.output` | Most recent decimated output (valid after push() emits). |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Decimate a block; returns the decimated outputs. |
+| `.push` | `(self, input: float) -> tuple[bool, float]` — Feed one input sample. Returns (emit, output) — emit is True when the decimated output is valid this call. |
 | `.reset` | `(self) -> None` |
 
 ### `CICInterpolator`
 
 Cascaded Integrator-Comb interpolation filter — the dual of `CICDecimator`. Multiplier-free upsampling.
 
-> CIC interpolation filter (M stages, ratio R, differential delay D).
+> Cascaded Integrator-Comb interpolation filter (the dual of CICDecimator). Multiplier-free upsampling.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(interpolation_ratio: int, num_stages: int, differential_delay: int = 1, dtype: str = 'reference')` |
-| `.interpolation_ratio` | `(self) -> int` |
-| `.num_stages` | `(self) -> int` |
-| `.differential_delay` | `(self) -> int` |
-| `.push` | `(self, input: float) -> None` — Feed one input sample (advances the interpolator state). |
+| `.differential_delay` | (self) -> int |
+| `.interpolation_ratio` | (self) -> int |
+| `.num_stages` | (self) -> int |
 | `.output` | `(self) -> float` |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `ratio × N` upsampled outputs. |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Interpolate a block; returns ratio*N output samples. |
+| `.push` | `(self, input: float) -> None` |
 | `.reset` | `(self) -> None` |
 
 ### `HalfBandFilter`
 
-Half-band FIR filter. `process_decimate` / `process_block_decimate` exploit the alternating-zero tap structure to skip ~half the multiplies — typically ~4× faster than naive filter-then-decimate at 2:1.
+Half-band FIR filter. `process_decimate` / `process_block_decimate` exploit the alternating-zero tap structure to skip ~half the multiplies — typically ~4x faster than naive filter-then-decimate at 2:1.
 
-> Half-band FIR with the H(w) + H(π-w) = 1 property enforced.
+> Half-band FIR filter. Use process_decimate() / process_block_decimate() for efficient 2x decimation that skips zero-valued tap multiplies.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(taps: ndarray1d[ro], dtype: str = 'reference')` — Taps must satisfy the half-band structure (validated at construction). Use `design_halfband` to obtain valid taps. |
-| `.num_taps` | `(self) -> int` |
-| `.num_nonzero_taps` | `(self) -> int` |
-| `.taps` | `(self) -> ndarray[float64]` — The design taps this filter was constructed with. Each read returns an independent copy. |
-| `.process` | `(self, input: float) -> float` — Full-rate: one input → one output. |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
-| `.process_decimate` | `(self, input: float) -> tuple[bool, float]` — 2:1 decimation; `emit` alternates True/False. |
-| `.process_block_decimate` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `floor(N/2)` outputs. |
+| `.num_nonzero_taps` | (self) -> int |
+| `.num_taps` | (self) -> int |
+| `.process` | `(self, input: float) -> float` — Full-rate process: one input -> one output. |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` |
+| `.process_block_decimate` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Decimate a block; returns floor(N/2) output samples. |
+| `.process_decimate` | `(self, input: float) -> tuple[bool, float]` — 2x decimation: feed one input, returns (emit, output) where emit alternates True/False. |
 | `.reset` | `(self) -> None` |
+| `.taps` | The design taps this filter was constructed with, as float64. |
 
 ### `PolyphaseDecimator`
 
-M-factor polyphase FIR decimator. Decomposes the prototype into M sub-filters; each advances once per output sample, so the multiplier cost is ~N/output instead of ~N×M for naive filter-then-downsample.
+M-factor polyphase FIR decimator. Decomposes the prototype into M sub-filters; each advances once per output sample, so the multiplier cost is ~N/output instead of ~N*M for naive filter-then-downsample.
 
-> Polyphase FIR decimator at integer ratio M.
+> M-factor polyphase FIR decimator. Decomposes the prototype into M sub-filters; each advances once per output sample, so the cost is ~N mults per output instead of ~N*M for naive filter+downsample.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference')` — `factor` must be `> 0`. |
-| `.factor` | `(self) -> int` |
-| `.taps` | `(self) -> ndarray[float64]` — The full-rate prototype taps, not the decomposed sub-filters (use `polyphase_decompose` for those). Each read returns an independent copy. |
-| `.process` | `(self, input: float) -> tuple[bool, float]` |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
+| `.factor` | (self) -> int |
+| `.process` | `(self, input: float) -> tuple[bool, float]` — Feed one input. Returns (emit, output). |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` |
 | `.reset` | `(self) -> None` |
+| `.taps` | The full-rate prototype taps this decimator was constructed with, as float64 (not the decomposed sub-filters — use polyphase_decompose for those). |
 
 ### `PolyphaseInterpolator`
 
 L-factor polyphase FIR interpolator. Each input produces L outputs.
 
-> Polyphase FIR interpolator at integer ratio L.
-
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference')` — `factor` must be `> 0`. |
-| `.factor` | `(self) -> int` |
-| `.process` | `(self, input: float) -> ndarray[float64]` — Returns `factor` upsampled output samples. |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — Returns `factor × N` outputs. |
+| `.factor` | (self) -> int |
+| `.process` | `(self, input: float) -> numpy.ndarray[dtype=float64]` — Feed one input, returns array of `factor` upsampled outputs. |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` |
 | `.reset` | `(self) -> None` |
 
 ### `DDC`
 
 Digital down-converter: mixes a real input band down to complex baseband with an NCO, then decimates the I and Q streams through matched polyphase FIR decimators running in lockstep. A real tone at `center_frequency` lands at baseband DC with magnitude 0.5 — a real cosine is two conjugate half-amplitude exponentials and the mixer keeps one.
 
-> NCO → mixer → I/Q polyphase decimation, at integer ratio `decimation_factor`.
+The decimator is fixed to `PolyphaseDecimator` and built from `taps` / `decimation_factor`; richer decimator composition is the job of `DecimationChain`. Design `taps` as a lowpass with cutoff below `0.5 / decimation_factor` (normalized to the input rate) to suppress aliasing — `fir_lowpass(...).coefficients()` is the usual source. `process_block` returns a `(real, imag)` tuple, matching `NCO.mix_down`.
 
-The decimator is fixed to `PolyphaseDecimator` and built from `taps` / `decimation_factor`; richer decimator composition is the job of `DecimationChain`. Design `taps` as a lowpass with cutoff below `0.5 / decimation_factor` (normalized to the input rate) to suppress aliasing — `fir_lowpass(...).coefficients()` is the usual source.
+> Digital Down-Converter: mixes a real input band down to complex baseband with an NCO, then decimates the I and Q streams through matched polyphase FIR decimators.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(center_frequency: float, sample_rate: float, taps: ndarray1d[ro], decimation_factor: int, dtype: str = 'reference')` — `sample_rate` must be `> 0`, `decimation_factor` `> 0`, `taps` non-empty. |
-| `.center_frequency` | `(self) -> float` |
-| `.sample_rate` | `(self) -> float` |
-| `.decimation_factor` | `(self) -> int` |
-| `.nco_phase` | `(self) -> float` — Internal oscillator phase in normalized cycles `[0, 1)`. |
-| `.nco_phase_increment` | `(self) -> float` — `center_frequency / sample_rate`. |
-| `.process` | `(self, input: float) -> tuple[bool, complex]` — Returns `(emit, value)`; `value` is valid only when `emit` is `True`, once per `decimation_factor` inputs. |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> tuple[ndarray[float64], ndarray[float64]]` — `(real, imag)` of the ~`N / decimation_factor` complex baseband samples. Combine with `real + 1j*imag`. |
-| `.set_center_frequency` | `(self, frequency: float) -> None` — Retunes the oscillator; decimator state is left untouched. |
-| `.reset` | `(self) -> None` — Clears the NCO phase and both decimator delay lines. |
+| `.center_frequency` | (self) -> float |
+| `.decimation_factor` | (self) -> int |
+| `.nco_phase` | Current phase of the internal NCO, in normalized cycles in [0, 1) — multiply by 2*pi for radians. Exposed as a read-only scalar rather than an NCO handle: the DDC owns its oscillator, and handing out a live reference through the type-erased impl would outlive-alias it. |
+| `.nco_phase_increment` | Per-sample phase step of the internal NCO, in normalized cycles — equal to center_frequency / sample_rate. |
+| `.process` | `(self, input: float) -> tuple[bool, complex]` — Feed one real input sample. Returns (emit, value) where `value` is the complex baseband sample, valid only when emit is True (once per decimation_factor inputs). On non-emit cycles the value is 0j. |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple` — Down-convert a block of real samples. Returns a (real, imag) tuple of float64 arrays holding the ~len(input)/decimation_factor complex baseband samples produced during the block — matching the convention used by NCO.mix_down() and NCO.generate_block(). Combine with `real +… |
+| `.reset` | `(self) -> None` — Clear the NCO phase and both decimator delay lines. |
+| `.sample_rate` | (self) -> float |
+| `.set_center_frequency` | `(self, frequency: float) -> None` — Retune the local oscillator. The decimator state is left untouched; call reset() first for a clean retune. |
 
 ### `DecimationChain`
 
-Multi-stage decimation cascade — `ADC → CIC → half-band → … → baseband`. Large decimation ratios are cheapest as a cascade of small ones, since each stage runs at the progressively lower rate its predecessor emits.
-
-> Composes CIC / half-band / polyphase stages; `process` emits once per `total_decimation` inputs.
+Multi-stage decimation cascade — `ADC -> CIC -> half-band -> ... -> baseband`. Large decimation ratios are cheapest as a cascade of small ones, since each stage runs at the progressively lower rate its predecessor emits.
 
 `stages` is a list of `CICDecimator` / `HalfBandFilter` / `PolyphaseDecimator` instances used as **prototypes**: the chain reads their design parameters and rebuilds equivalent stages at the chain's own dtype. Prototypes are neither mutated nor aliased, and their individual dtypes are ignored — upstream threads a single sample type between stages, so the chain's `dtype` governs throughout. `PolyphaseInterpolator` is rejected: it upsamples.
 
-Recommended compositions (input order matters — bulk reduction first, sharpest filter last):
-
-| Shape | When |
-|---|---|
-| `[CICDecimator]` | Bulk rate reduction alone, multiplier-free. Pair with `design_cic_compensator` downstream to undo passband droop. |
-| `[CICDecimator, HalfBandFilter]` | The common two-stage front end: CIC drops the bulk, half-band cleans up 2:1 cheaply. |
-| `[CICDecimator, HalfBandFilter, PolyphaseDecimator]` | Adds a final shaped FIR at the lowest rate, where taps are cheapest. |
-| `[CICDecimator, HalfBandFilter, HalfBandFilter, PolyphaseDecimator]` | Deep SDR cascade; each half-band halves the rate before the FIR. |
+Recommended compositions, input order mattering (bulk reduction first, sharpest filter last): `[CIC]` alone for multiplier-free bulk reduction, paired with `design_cic_compensator` downstream to undo passband droop; `[CIC, HalfBand]` as the common two-stage front end; `[CIC, HalfBand, Polyphase]` to add a shaped FIR at the lowest rate where taps are cheapest; `[CIC, HalfBand, HalfBand, Polyphase]` for a deep SDR cascade.
 
 At most **6 stages** — each additional arity is a separate template instantiation per dtype, so the cap is a compile-time budget rather than an algorithmic limit.
 
+> Multi-stage decimation cascade: ADC -> CIC -> half-band -> ... -> baseband. Large decimation ratios are cheapest as a cascade of small ones, each stage running at the (progressively lower) rate its predecessor emits.
+
 | Member | Signature / description |
 |--------|-------------------------|
-| `__init__` | `(input_rate: float, stages: Sequence, dtype: str = 'reference')` — `input_rate` must be `> 0`; 1–6 stages. |
-| `.input_rate` | `(self) -> float` |
-| `.output_rate` | `(self) -> float` — `input_rate / total_decimation`. |
-| `.total_decimation` | `(self) -> int` — Product of the per-stage ratios. |
-| `.num_stages` | `(self) -> int` |
-| `.stage_ratios` | `(self) -> list[int]` — Per-stage decimation ratios, input order. `HalfBandFilter` reports 2. |
-| `.stage_rates` | `(self) -> list[float]` — Rate at the *output* of each stage; the last element equals `output_rate`. |
-| `.process` | `(self, input: float) -> tuple[bool, float]` — `emit` is `True` only when the final stage emits, once per `total_decimation` inputs. |
-| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — The ~`N / total_decimation` samples emitted by the final stage. |
-| `.reset` | `(self) -> None` — Resets every stage. |
+| `.input_rate` | (self) -> float |
+| `.num_stages` | (self) -> int |
+| `.output_rate` | input_rate / total_decimation. |
+| `.process` | `(self, input: float) -> tuple[bool, float]` — Feed one input sample. Returns (emit, output); emit is True only on the cycle where the *final* stage produces a sample, i.e. once per total_decimation inputs. |
+| `.process_block` | `(self, input: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Decimate a block; returns the ~len(input)/total_decimation samples emitted by the final stage. |
+| `.reset` | `(self) -> None` — Reset every stage's internal state. |
+| `.stage_rates` | `(self) -> list[float]` — Sample rate at the *output* of each stage, in input order. The last element equals output_rate. |
+| `.stage_ratios` | `(self) -> list[int]` — Per-stage decimation ratios, in input order. HalfBandFilter reports 2 (it is structurally fixed at 2:1). |
+| `.total_decimation` | Product of the per-stage decimation ratios. |
 
 ### `PoleZeroPlot`
 
-Analog (s-plane) prototype pole/zero constellation, optionally carrying its bilinear-transformed z-plane counterpart. Produced by the `*_prototype` factories, reshaped by `lp_to_hp` / `lp_to_bp` / `lp_to_bs`, mapped to discrete time by `apply_bilinear`.
+Analog (s-plane) prototype pole/zero constellation, optionally carrying its bilinear-transformed z-plane counterpart. Produced by the `*_prototype` factories, reshaped by `lp_to_hp` / `lp_to_bp` / `lp_to_bs`, mapped to discrete time by `apply_bilinear`. `z_poles` / `z_zeros` are empty until `apply_bilinear` has been applied.
 
-> Immutable value type — the transforms return new plots rather than mutating.
+An immutable value type here: the transforms return new plots rather than mutating, so one prototype can feed several.
+
+> Analog (s-plane) prototype pole/zero constellation, optionally carrying its bilinear-transformed z-plane counterpart.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `.design` | `(self) -> str` — Family name: `'butterworth'`, `'chebyshev1'`, … |
-| `.order` | `(self) -> int` |
-| `.kind` | `(self) -> str` — `'lowpass'`, `'highpass'`, `'bandpass'`, `'bandstop'`. |
-| `.s_poles` | `(self) -> list[complex]` — Continuous-time poles. Strictly left-half-plane for a realizable prototype. |
-| `.s_zeros` | `(self) -> list[complex]` — Continuous-time zeros. Empty for the all-pole families (Butterworth, Chebyshev I, Bessel); on the jw axis for Chebyshev II and elliptic. |
-| `.z_poles` | `(self) -> list[complex]` — Discrete-time poles. Empty until `apply_bilinear`. |
-| `.z_zeros` | `(self) -> list[complex]` — Discrete-time zeros. Empty until `apply_bilinear`. |
-| `.cutoff_hz` | `(self) -> float` |
-| `.low_hz` / `.high_hz` | `(self) -> float` — Band edges; set by `lp_to_bp` / `lp_to_bs`. |
-| `.sample_rate_hz` | `(self) -> float` — `0.0` until `apply_bilinear`. |
-| `.ripple_db` / `.stopband_db` | `(self) -> float` — Carried by the families that use them. |
+| `.cutoff_hz` | (self) -> float |
+| `.design` | Family name — 'butterworth', 'chebyshev1', ... |
+| `.high_hz` | Upper band edge; set by lp_to_bp / lp_to_bs. |
+| `.kind` | 'lowpass', 'highpass', 'bandpass', or 'bandstop'. |
+| `.low_hz` | Lower band edge; set by lp_to_bp / lp_to_bs. |
+| `.order` | (self) -> int |
+| `.ripple_db` | Passband ripple, for the families that use one. |
+| `.s_poles` | Continuous-time poles, as a list of complex. |
+| `.s_zeros` | Continuous-time zeros. All-pole families return an empty list; elliptic and Chebyshev II carry finite jw-axis zeros. |
+| `.sample_rate_hz` | 0.0 until apply_bilinear. |
+| `.stopband_db` | Stopband attenuation, for the families that use one. |
+| `.z_poles` | Discrete-time poles. Empty until apply_bilinear. |
+| `.z_zeros` | Discrete-time zeros. Empty until apply_bilinear. |
 
 ### `BodeResult`
 
-Result of a swept Bode measurement — one entry per frequency. Returned by `sweep_bode`.
+Result of a swept Bode measurement — one entry per frequency, as three parallel float64 arrays. Returned by `sweep_bode`. `len(result)` gives the point count.
 
-> Three parallel float64 arrays; `len(result)` gives the point count.
+> Result of a swept Bode measurement: one entry per frequency.
 
 | Member | Signature / description |
 |--------|-------------------------|
-| `.freqs_hz` | `(self) -> ndarray[float64]` — Log-spaced sweep frequencies. |
-| `.magnitudes_db` | `(self) -> ndarray[float64]` — Measured `|H|` in dB, floored at −300. |
-| `.phases_rad` | `(self) -> ndarray[float64]` — Measured phase in radians, wrapped to `(-pi, pi]`. |
-| `__len__` | `(self) -> int` |
+| `.freqs_hz` | Log-spaced sweep frequencies, in Hz. |
+| `.magnitudes_db` | Measured \|H\| in dB. Floored at -300 dB. |
+| `.phases_rad` | Measured phase in radians, wrapped to (-pi, pi]. |
 
 ### `KalmanFilter`
 
@@ -763,6 +837,42 @@ Linear Kalman filter. State/measurement/control dimensions set at construction. 
 | `.state` | Current state estimate (length state_dim). |
 | `.state_dim` | (self) -> int |
 | `.update` | `(self, z: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> None` — Update step with a measurement vector of length meas_dim. |
+
+### `ExtendedKalmanFilter`
+
+> Nonlinear Kalman filter that linearizes the state-transition f(x) and observation h(x) via their Jacobians F(x), H(x) at each step. Users supply FOUR Python callbacks — f, F, h, H — that take a 1D NumPy state vector and return either a 1D vector (for f, h) or a 2D matrix (for F, H).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.P` | State-estimation covariance (state_dim x state_dim). Initialized to the identity; overwrite for informative priors. |
+| `.Q` | Process-noise covariance (state_dim x state_dim). |
+| `.R` | Measurement-noise covariance (meas_dim x meas_dim). |
+| `.dtype` | Arithmetic configuration selected at construction. |
+| `.meas_dim` | (self) -> int |
+| `.predict` | `(self) -> None` — Propagate the state through f and the covariance through F. Raises if the state function pair hasn't been set. |
+| `.set_observation_function` | `(self, h: collections.abc.Callable, H: collections.abc.Callable) -> None` — Register the nonlinear observation h(x) -> vector[meas_dim] and its Jacobian H(x) -> matrix[meas_dim, state_dim]. |
+| `.set_state_function` | `(self, f: collections.abc.Callable, F: collections.abc.Callable) -> None` — Register the nonlinear state transition f(x) -> vector[state_dim] and its Jacobian F(x) -> matrix[state_dim, state_dim]. Both must be Python callables returning float64 ndarrays. |
+| `.state` | Current state estimate (length state_dim). |
+| `.state_dim` | (self) -> int |
+| `.update` | `(self, z: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> None` — Apply a measurement of length meas_dim. Raises if the observation function pair hasn't been set. |
+
+### `UnscentedKalmanFilter`
+
+> Nonlinear Kalman filter that propagates a set of 2n+1 sigma points through the state-transition f(x) and observation h(x) functions, then reconstructs the predicted mean and covariance from the propagated points. Unlike the EKF, no Jacobians are required — users supply only two callbacks.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.P` | State-estimation covariance (state_dim x state_dim). |
+| `.Q` | Process-noise covariance (state_dim x state_dim). |
+| `.R` | Measurement-noise covariance (meas_dim x meas_dim). |
+| `.dtype` | Arithmetic configuration selected at construction. |
+| `.meas_dim` | (self) -> int |
+| `.predict` | `(self) -> None` — Sigma-point predict step. Raises if the state function hasn't been set. |
+| `.set_observation_function` | `(self, h: collections.abc.Callable) -> None` — Register the nonlinear observation h(x) -> vector[meas_dim]. |
+| `.set_state_function` | `(self, f: collections.abc.Callable) -> None` — Register the nonlinear state transition f(x) -> vector[state_dim]. Must be a Python callable returning a float64 ndarray. No Jacobian needed. |
+| `.state` | Current state estimate (length state_dim). |
+| `.state_dim` | (self) -> int |
+| `.update` | `(self, z: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> None` — Sigma-point update step with measurement of length meas_dim. Raises if the observation function hasn't been set. |
 
 ### `LMSFilter`
 
@@ -811,6 +921,301 @@ Recursive least-squares adaptive filter. Faster convergence than LMS/NLMS at the
 | `.process_block` | `(self, inputs: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], desireds: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple[numpy.ndarray[dtype=float64], numpy.ndarray[dtype=float64]]` — Process two equal-length NumPy float64 signals (input, desired) and return a (outputs, errors) tuple of float64 arrays. The per-sample loop releases the GIL. |
 | `.reset` | `(self) -> None` — Zero the weights, delay line, and reset P to delta*I. |
 | `.weights` | Current tap weights as a 1D NumPy float64 array (read-only copy). |
+
+### `RationalResampler`
+
+> Polyphase L/M rate conversion — the missing scipy-parity primitive (parallels scipy.signal.resample_poly). A Kaiser-windowed sinc lowpass at cutoff 0.5 / max(L, M) is designed at construction and decomposed into L polyphase sub-filters. (L, M) are reduced by their GCD upstream, so mpdsp.RationalResampler(6, 4) and mpdsp.RationalResampler(3, 2) give identical filters and identical output.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.decim_factor` | Decimation factor M (after GCD reduction). Read-only. |
+| `.dtype` | The arithmetic configuration selected at construction. |
+| `.interp_factor` | Interpolation factor L (after GCD reduction). Read-only. |
+| `.process` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Resample a 1D NumPy float64 signal. Returns a fresh output array; length is ~ len(signal) * L / M plus up to L extra depending on streaming state. |
+| `.ratio` | L / M as a float. Read-only. |
+| `.reset` | `(self) -> None` — Clear the delay line and time register. Coefficients are preserved. |
+
+### `OverlapAddConvolver`
+
+> Block-based fast FIR convolution via the overlap-add method. Feed exactly block_size samples per process_block() call; each call returns block_size output samples. Call flush() once after the final process_block() to retrieve the trailing M-1 convolution tail (needed to recover the complete linear convolution).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.block_size` | (self) -> int |
+| `.dtype` | (self) -> str |
+| `.fft_size` | (self) -> int |
+| `.filter_length` | (self) -> int |
+| `.flush` | `(self) -> numpy.ndarray[dtype=float64]` — Emit the trailing M-1 convolution tail. Call once after the final process_block(); returns an empty array if no tail remains. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=float64]` — Process exactly block_size samples; return block_size samples. |
+| `.reset` | `(self) -> None` — Clear the internal tail state. Coefficients and sizes are preserved. |
+
+### `OverlapSaveConvolver`
+
+> Block-based fast FIR convolution via the overlap-save method. Feed exactly block_size samples per process_block() call; each call returns block_size output samples. No flush() needed — overlap-save keeps its history in a running buffer and never emits a tail past the last block.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.block_size` | (self) -> int |
+| `.dtype` | (self) -> str |
+| `.fft_size` | (self) -> int |
+| `.filter_length` | (self) -> int |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=float64]` — Process exactly block_size samples; return block_size samples. |
+| `.reset` | `(self) -> None` — Clear the internal history. Coefficients and sizes are preserved. |
+
+### `PeakDetectDecimator`
+
+> Scope-style decimator that emits one (min, max) pair per R input samples. Unlike a generic averaging decimator, a glitch shorter than the decimation interval still shows up in the output because both extremes are preserved.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.decimation_factor` | Decimation factor R (samples per output pair). Read-only. |
+| `.dtype` | Sample-scalar dtype fixed at construction. Read-only. |
+| `.process` | `(self, sample: float) -> tuple[float, float] \| None` — Push one sample. Returns None while accumulating within a decimation window; returns (min, max) as a tuple of floats on the sample that completes the current window. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple` — Push a block of samples. Returns (mins, maxs) as a pair of NumPy arrays. Length of each output = (samples_in_window + len(signal)) // decimation_factor. Partial trailing windows carry over as internal state; call process() or another process_block() to keep going. |
+| `.process_block_max` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Same as process_block() but returns only the upper envelope (the maxs array). |
+| `.process_block_min` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Same as process_block() but returns only the lower envelope (the mins array). Convenience for callers building single-envelope views. |
+| `.reset` | `(self) -> None` — Drop any partial window in progress and re-arm the decimator. |
+| `.samples_in_window` | Number of samples pushed into the current incomplete window. Reaches decimation_factor - 1 just before the next output pair is emitted, then wraps back to 0. |
+
+### `TriggerRingBuffer`
+
+> Pre/post-trigger ring buffer for scope-style capture.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.capture_complete` | True once the post-trigger region has been filled (or immediately after push_trigger when post_trigger_samples is zero). Read-only. |
+| `.captured_segment` | `(self) -> numpy.ndarray[dtype=float64]` — Return the captured pre + trigger + post window as a NumPy float64 array. Returns an empty array if capture is not yet complete. The output is a fresh copy — safe to hold across rearm(). |
+| `.dtype` | Sample-scalar dtype fixed at construction. Read-only. |
+| `.post_trigger_capacity` | Configured post-trigger sample count. Read-only. |
+| `.pre_trigger_capacity` | Configured pre-trigger sample capacity. Read-only. |
+| `.push` | `(self, sample: float) -> None` — Feed one non-trigger sample. Rotates through the pre-trigger ring during PreFill/Armed; extends the capture during Capturing; silently dropped in Complete (rearm first). |
+| `.push_trigger` | `(self, sample: float) -> None` — Feed the sample that fires the trigger. Starts a capture using whatever pre-context has accumulated so far — if the pre-trigger ring isn't full yet, the resulting captured segment will be correspondingly shorter. Silently ignored if a capture is already in progress or complete. |
+| `.rearm` | `(self) -> None` — Discard the captured segment and resume waiting for the next trigger. The pre-trigger ring retains its content, so a trigger arriving immediately still gets full pre-context. |
+| `.reset` | `(self) -> None` — Wipe both the ring and any captured segment; return to a fresh PreFill state. |
+
+### `RealtimeSpectrum`
+
+> Streaming FFT engine that maintains a circular sample ring and produces an FFT every `hop_size` input samples once the initial `fft_size` samples have accumulated. Non-overlapping analysis uses hop_size == fft_size; the conventional 50%-overlap Hann analysis uses hop_size == fft_size // 2.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.fft_size` | Configured FFT length. Read-only. |
+| `.first_fft_ready` | True once at least one FFT has been produced (equivalent to `total_ffts > 0`). Read-only. |
+| `.hop_size` | Configured hop size. Read-only. |
+| `.latest_complex` | `(self) -> tuple` — Return the most recent FFT as (real, imag) — two NumPy float64 arrays of length fft_size. Both arrays are empty until `first_fft_ready` is True. |
+| `.latest_magnitude_db` | `(self) -> numpy.ndarray[dtype=float64]` — Return the most recent magnitude spectrum in dB with a -200 dB floor. Empty array until `first_fft_ready` is True. |
+| `.push` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> int` — Feed a block of samples. Returns the number of complete FFTs produced by this call (0 while still accumulating the initial fft_size samples, then one per hop_size samples). |
+| `.reset` | `(self) -> None` — Clear the sample ring and counters; configuration (fft_size, hop_size, window) is preserved. Use between independent stream segments. |
+| `.total_ffts` | Number of FFTs produced since construction or last reset(). Read-only. |
+
+### `RBWFilter`
+
+> Resolution-bandwidth filter for a spectrum analyzer: an N-stage synchronously-tuned cascade of RBJ-style bandpass biquads. Sits between the mixer and the detector; selects a narrow window around a center frequency. Higher order tightens the shape factor (60 dB / 3 dB bandwidth ratio) — order=5 gives ~10x shape factor, comparable to a Gaussian for analyzer use.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.bandwidth_hz` | Currently configured -3 dB bandwidth. Read-only. |
+| `.center_freq_hz` | Currently tuned center frequency. Read-only. |
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.order` | Number of biquad stages (fixed at construction). Read-only. |
+| `.process` | `(self, sample: float) -> float` — Filter one sample; returns the filtered scalar. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Filter a block of samples; returns a new NumPy array of the same length. |
+| `.reset` | `(self) -> None` — Clear biquad delay-line state; coefficients and order retained. |
+| `.retune` | `(self, center_freq_hz: float, bandwidth_hz: float) -> None` — Redesign coefficients around the new (center, bandwidth). State is preserved (bumpless). |
+| `.sample_rate_hz` | Streaming sample rate. Read-only. |
+| `.shape_factor` | Closed-form analytical 60 dB / 3 dB bandwidth ratio for the current order. Doesn't depend on tuning. Read-only. |
+
+### `VBWFilter`
+
+> Video-bandwidth filter: a single-pole leaky-integrator LPF that smooths detector output before the trace memory. Lower cutoff = more averaging = lower noise floor at the cost of slower response; higher cutoff = faster response but noisier trace. The standard analyzer noise-vs-speed knob.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.cutoff_hz` | Currently configured -3 dB cutoff. Read-only. |
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.process` | `(self, sample: float) -> float` — Filter one sample; returns the filtered scalar. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Filter a block of samples; returns a new NumPy array of the same length. |
+| `.reset` | `(self) -> None` — Clear the running state y_prev to zero; cutoff and sample rate are preserved. |
+| `.sample_rate_hz` | Streaming sample rate. Read-only. |
+| `.set_cutoff` | `(self, cutoff_hz: float) -> None` — Redesign alpha for the new cutoff. y_prev is preserved (bumpless). |
+
+### `SweptLO`
+
+> Phase-coherent chirp generator that walks a frequency schedule from f_start to f_stop over a configurable duration, then restarts. The phase accumulator is continuous across the sweep boundary — no glitch at restart. Linear and logarithmic schedules are supported.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.current_frequency_hz` | Instantaneous frequency in Hz, derived from the current phase increment. Read-only. |
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.f_start_hz` | (self) -> float |
+| `.f_stop_hz` | (self) -> float |
+| `.generate_block` | `(self, n: int) -> tuple` — Advance n samples; returns (cos_array, sin_array) as a tuple of NumPy float64 arrays. |
+| `.mode` | 'linear' or 'logarithmic'. Fixed at construction. Read-only. |
+| `.num_sweep_samples` | Samples per sweep = floor(sweep_duration_s * sample_rate_hz). Read-only. |
+| `.process` | `(self) -> tuple[float, float]` — Advance one sample; returns (cos, sin) as a tuple of floats. |
+| `.reset` | `(self) -> None` — Restart the sweep at f_start with phase = 0. Coefficients (delta_inc / ratio_inc) are preserved. |
+| `.sample_rate_hz` | (self) -> float |
+| `.sweep_complete` | True iff the MOST RECENT process() call wrapped a sweep boundary. One-shot per sweep — the next process() clears it. Read-only. |
+| `.sweep_duration_s` | (self) -> float |
+| `.total_sweeps` | Monotone count of sweep boundaries crossed since construction or the last reset(). Read-only. |
+
+### `CalibrationProfile`
+
+> Tabulated frequency-response correction for a spectrum-analyzer or scope front end. Stores (frequency_hz, gain_dB, phase_rad) triples; the interpolants linearly interpolate between tabulated points and clamp outside the calibrated band. Fed to FrontEndCorrector to design an inverse-response equalizer.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.freq_max` | (self) -> float |
+| `.freq_min` | (self) -> float |
+| `.from_csv` | `(path: str) -> mpdsp._core.CalibrationProfile` — Load a profile from CSV. Format: one row per frequency, columns freq_hz, gain_dB, phase_rad. Header row is optional; lines starting with '#' are treated as comments. |
+| `.gain_dB` | `(self, freq_hz: float) -> float` — Interpolated gain (dB) at the query frequency. Clamps to the endpoint values below freq_min / above freq_max. |
+| `.phase_rad` | `(self, freq_hz: float) -> float` — Interpolated phase (radians) at the query frequency. |
+| `.size` | (self) -> int |
+
+### `FrontEndCorrector`
+
+> Front-end equalizer for the analyzer input path: an FIR filter whose magnitude/phase response cancels a CalibrationProfile. Design uses frequency-sampling with a Hamming window; the inverse magnitude is clamped to `max_gain_dB` to avoid amplifying noise where the profile has deep nulls.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.num_taps` | Length of the designed FIR (fixed at construction). Read-only. |
+| `.process` | `(self, sample: float) -> float` — Filter one sample; returns the equalized scalar. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=float64]` — Filter a block of samples; returns a new NumPy array of the same length. |
+
+### `TraceAverager`
+
+> Cross-sweep trace averaging with five commercial-analyzer modes:   linear      — cumulative unweighted mean of all sweeps.   exponential — single-pole IIR y = alpha*x + (1-alpha)*y_prev.                 config is alpha in (0, 1].   max_hold    — element-wise max across all sweeps.   min_hold    — element-wise min across all sweeps.   max_hold_n  — element-wise max over the last N sweeps.                 config is the window N >= 1 (integer-valued).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.accept_sweep` | `(self, trace: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> None` — Push a new sweep. Length must equal trace_length. |
+| `.current_trace` | `(self) -> numpy.ndarray[dtype=float64]` — Return the current accumulated trace as a NumPy array. Value is meaningful only after at least one accept_sweep(). |
+| `.dtype` | Scalar dtype fixed at construction. Read-only. |
+| `.mode` | 'linear' / 'exponential' / 'max_hold' / 'min_hold' / 'max_hold_n'. Read-only. |
+| `.reset` | `(self) -> None` — Discard accumulated state; mode and config are preserved. |
+| `.sweeps_accumulated` | Number of sweeps accepted since construction or last reset(). Read-only. |
+| `.trace_length` | Fixed bin count per sweep. Read-only. |
+
+### `WaterfallBuffer`
+
+> Circular buffer storing the last num_frames FFT magnitude frames from a streaming spectrum processor. Each frame has num_bins samples. When the ring is full, push_frame overwrites the oldest frame.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.clear` | `(self) -> None` — Discard all stored frames; capacity preserved. |
+| `.dtype` | (self) -> str |
+| `.frame_at` | `(self, idx_from_oldest: int) -> numpy.ndarray[dtype=float64]` — Return the chronologically-indexed frame (0 = oldest, num_frames_filled - 1 = newest) as a NumPy 1D array. Fresh copy — safe to hold across further push_frame calls. |
+| `.last_frames` | `(self, count: int) -> numpy.ndarray[dtype=float64]` — Return the most recent `count` frames as a 2D NumPy array shape (available, num_bins), oldest first. count is clamped to num_frames_filled — fewer-than-requested frames are returned when the buffer hasn't filled yet. |
+| `.num_bins` | (self) -> int |
+| `.num_frames_capacity` | (self) -> int |
+| `.num_frames_filled` | (self) -> int |
+| `.push_frame` | `(self, magnitude: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> None` — Append one frame. Length must equal num_bins. |
+
+### `Marker`
+
+> A single marker on a spectrum trace: bin index, sub-bin-interpolated frequency (Hz), and amplitude. Returned by find_peaks() and harmonic_markers(); consumed by make_delta_marker().
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.amplitude` | (self) -> float |
+| `.bin_index` | (self) -> int |
+| `.frequency_hz` | (self) -> float |
+
+### `DeltaMarker`
+
+> Two-marker delta measurement. delta_freq_hz and delta_amplitude are `b` minus `a`, matching the convention of every commercial analyzer's delta-marker mode.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.a` | (self) -> mpdsp._core.Marker |
+| `.b` | (self) -> mpdsp._core.Marker |
+| `.delta_amplitude` | (self) -> float |
+| `.delta_freq_hz` | (self) -> float |
+
+### `RootFinder`
+
+> Complex polynomial root finder via Laguerre's method with deflation and optional polishing. Supports polynomials up to degree 32 (compile-time bound; passing a longer coefficient array raises).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.degree` | Current polynomial degree (0 before set_coefficients()). |
+| `.max_degree` | Compile-time bound on the polynomial degree (32). |
+| `.roots` | `(self) -> numpy.ndarray[dtype=complex128]` — Return the `degree` roots as a NumPy complex128 array. Requires solve() to have been called after set_coefficients(). |
+| `.set_coefficients` | `(self, coeffs: numpy.ndarray[dtype=complex128, shape=(*), order='C', writable=False]) -> None` — Set polynomial coefficients from a NumPy complex128 array. Length is degree+1; element i is the coefficient of x^i (ascending order). Degree is inferred from array length. Maximum degree is 32. |
+| `.solve` | `(self, polish: bool = True, sort: bool = True) -> None` — Find all roots of the polynomial set via set_coefficients(). polish=True (default) refines each root using the original (un-deflated) polynomial for accuracy. sort=True (default) orders roots by descending imaginary part. |
+
+### `CICBitGrowthReport`
+
+> Result of check_cic_bit_growth: theoretical vs. observed bit growth of a CIC decimator's output. `within_theory` is True when observed <= theoretical (the normal case for well-behaved inputs).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.headroom_bits` | theoretical - observed, both as floats (positive means headroom remaining). |
+| `.max_abs_output` | Raw measured peak of \|output\|. |
+| `.observed_bits` | ceil(log2(max \|output\|)) for the test input. |
+| `.theoretical_bits` | M * ceil(log2(R*D)) — Hogenauer's formula. |
+| `.within_theory` | True when observed <= theoretical. |
+
+### `AcquisitionPrecisionRow`
+
+> Schema-compatible Pareto-row record for the acquisition-pipeline precision sweeps. Written by write_acquisition_csv into the same column layout as applications/precision_sweep/precision_sweep.csv so the existing plot_precision and plot_heatmap scripts can read either file.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.cic_overflow_margin_bits` | Set to -1 when not applicable to the row's pipeline. |
+| `.coeff_type` | String repr of CoeffScalar (e.g. 'double', 'posit<32,2>'). |
+| `.config_name` | Human-readable configuration label. |
+| `.nco_sfdr_db` | Set to -1 when not applicable to the row's pipeline. |
+| `.output_enob` | (self) -> float |
+| `.output_snr_db` | (self) -> float |
+| `.pipeline` | Pipeline identifier: 'ddc' / 'decim_chain' / 'nco' / etc. |
+| `.sample_type` | (self) -> str |
+| `.state_type` | (self) -> str |
+| `.total_bits` | Sum of bit-widths across the three scalars. |
+
+### `ComplexPair`
+
+> A pair of complex numbers — the building block for pole/zero representations that map directly to second-order sections. Typically holds either a conjugate pair or a pair of real values.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.first` | (self) -> complex |
+| `.is_conjugate` | `(self) -> bool` — True if second == conj(first). |
+| `.is_matched_pair` | `(self) -> bool` — True if this is either a conjugate pair or a pair of real values where neither is zero. |
+| `.is_nan` | `(self) -> bool` — True if any real or imaginary component is NaN. |
+| `.is_real` | `(self) -> bool` — True if both entries have zero imaginary part. |
+| `.second` | (self) -> complex |
+
+### `PoleZeroPair`
+
+> Poles + zeros for a single second-order section (biquad). For a first-order section, the `.second` complex value in each ComplexPair is zero (see is_single_pole()).
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.is_nan` | `(self) -> bool` |
+| `.is_single_pole` | `(self) -> bool` — True if this represents a first-order section (second entries of both pole and zero pairs are zero). |
+| `.poles` | (self) -> mpdsp._core.ComplexPair |
+| `.zeros` | (self) -> mpdsp._core.ComplexPair |
+
+### `BiquadCoefficients`
+
+> Coefficients for a second-order (biquad) IIR section:   H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.a1` | (self) -> float |
+| `.a2` | (self) -> float |
+| `.apply_scale` | `(self, scale: float) -> None` — Multiply the numerator coefficients (b0, b1, b2) by a gain scale factor. |
+| `.b0` | (self) -> float |
+| `.b1` | (self) -> float |
+| `.b2` | (self) -> float |
+| `.response` | `(self, normalized_freq: float) -> complex` — Evaluate H(e^{j*2*pi*f}) at the normalized frequency f in [0, 0.5], where f = frequency / sample_rate. Returns complex. |
+| `.set_from_pole_zero_pair` | `(self, pz: mpdsp._core.PoleZeroPair) -> None` — Set from a PoleZeroPair. Dispatches to set_one_pole or set_two_pole based on pz.is_single_pole(). |
+| `.set_identity` | `(self) -> None` — Reset to the pass-through filter H(z) = 1 (b0=1, all others zero). |
+| `.set_one_pole` | `(self, pole: complex, zero: complex) -> None` — Set from a first-order section (single pole, single zero). |
+| `.set_two_pole` | `(self, pole1: complex, zero1: complex, pole2: complex, zero2: complex) -> None` — Set from a conjugate pair of poles and zeros (second-order section). |
 
 ### `TransferFunction`
 
