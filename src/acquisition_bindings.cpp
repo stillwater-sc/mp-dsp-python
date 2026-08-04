@@ -8,7 +8,9 @@
 //   - PolyphaseDecimator, PolyphaseInterpolator (filter/fir/polyphase.hpp,
 //                                  re-exported by acquisition/polyphase_decimator.hpp)
 //   - DDC                         (ddc.hpp, Issue #87)
+//   - DecimationChain             (decimation_chain.hpp, Issue #88)
 //   - design_halfband             (halfband.hpp free function)
+//   - design_cic_compensator      (decimation_chain.hpp free function, #88)
 //   - polyphase_decompose         (filter/fir/polyphase.hpp free function)
 //
 // Binding pattern follows conditioning_bindings.cpp: type-erased virtual
@@ -30,6 +32,7 @@
 #include <sw/dsp/acquisition/nco.hpp>
 #include <sw/dsp/acquisition/cic.hpp>
 #include <sw/dsp/acquisition/ddc.hpp>
+#include <sw/dsp/acquisition/decimation_chain.hpp>
 #include <sw/dsp/acquisition/halfband.hpp>
 #include <sw/dsp/acquisition/polyphase_decimator.hpp>
 #include <sw/dsp/analysis/acquisition_precision.hpp>
@@ -445,6 +448,209 @@ private:
 	std::size_t     factor_;
 };
 
+// ===========================================================================
+// DecimationChain (multi-stage cascade)
+// ===========================================================================
+//
+// Upstream DecimationChain<Sample, Stages...> is variadic and holds its stages
+// in a std::tuple, so the stage count is a compile-time property. Python needs
+// a runtime-length list. Bridging that without reimplementing the chain (rate
+// bookkeeping, short-circuit threading, ratio products all live upstream and
+// should stay there) takes two pieces:
+//
+//   1. ErasedStage<T> — a move-only value type satisfying the upstream stage
+//      contract (process() -> pair<bool,T>, factor(), reset()) that forwards
+//      through a virtual interface. Every stage in a chain then has the SAME
+//      static type, so a chain of N stages is DecimationChain<T,
+//      ErasedStage<T> x N>.
+//
+//   2. A runtime switch over N, instantiating that alias for each supported
+//      stage count. kMaxChainStages caps the instantiation count: each dtype
+//      pays for every arity, so this is 18 * kMaxChainStages instantiations
+//      of DecimationChain. Six covers the deep SDR cascades (CIC -> HB -> HB
+//      -> HB -> FIR) that motivate the class; raising it costs compile time,
+//      nothing else.
+//
+// Stages are rebuilt at the chain's dtype from the prototype objects' design
+// parameters rather than adopted wholesale — same reasoning as DDC's
+// decimator, and additionally required here because the chain's inter-stage
+// sample type is T, not double.
+
+constexpr std::size_t kMaxChainStages = 6;
+
+// Parameters extracted from a Python prototype stage, enough to rebuild the
+// concrete decimator at any T.
+struct StageSpec {
+	enum class Kind { cic, halfband, polyphase };
+	Kind                kind;
+	int                 cic_ratio = 0;
+	int                 cic_stages = 0;
+	int                 cic_delay = 1;
+	std::vector<double> taps;
+	std::size_t         factor = 1;
+};
+
+template <typename T>
+struct IChainStage {
+	virtual ~IChainStage() = default;
+	virtual std::pair<bool, T> process(T in) = 0;
+	virtual std::size_t factor() const = 0;
+	virtual void reset() = 0;
+};
+
+// Wraps one concrete upstream decimator. step_decimator / decimation_ratio_of
+// are the same detail helpers DecimationChain itself uses to talk to a stage,
+// so this adapter stays honest if that contract ever grows a new shape.
+template <typename T, class Decim>
+class ChainStage : public IChainStage<T> {
+public:
+	explicit ChainStage(Decim d) : d_(std::move(d)) {}
+	std::pair<bool, T> process(T in) override {
+		return sw::dsp::detail::step_decimator(d_, in);
+	}
+	std::size_t factor() const override {
+		return sw::dsp::detail::decimation_ratio_of(d_);
+	}
+	void reset() override { d_.reset(); }
+
+private:
+	Decim d_;
+};
+
+template <typename T>
+class ErasedStage {
+public:
+	using sample_scalar = T;
+
+	explicit ErasedStage(std::unique_ptr<IChainStage<T>> impl)
+		: impl_(std::move(impl)) {}
+	ErasedStage(ErasedStage&&) noexcept = default;
+	ErasedStage& operator=(ErasedStage&&) noexcept = default;
+
+	std::pair<bool, T> process(T in) { return impl_->process(in); }
+	std::size_t factor() const       { return impl_->factor(); }
+	void reset()                     { impl_->reset(); }
+
+private:
+	std::unique_ptr<IChainStage<T>> impl_;
+};
+
+template <typename T>
+std::unique_ptr<IChainStage<T>> make_chain_stage(const StageSpec& spec) {
+	switch (spec.kind) {
+	case StageSpec::Kind::cic:
+		return std::make_unique<ChainStage<T, sw::dsp::CICDecimator<T>>>(
+			sw::dsp::CICDecimator<T>(spec.cic_ratio, spec.cic_stages,
+			                          spec.cic_delay));
+	case StageSpec::Kind::halfband: {
+		mtl::vec::dense_vector<T> taps(spec.taps.size());
+		for (std::size_t i = 0; i < spec.taps.size(); ++i)
+			taps[i] = static_cast<T>(spec.taps[i]);
+		return std::make_unique<ChainStage<T, sw::dsp::HalfBandFilter<T>>>(
+			sw::dsp::HalfBandFilter<T>(taps));
+	}
+	case StageSpec::Kind::polyphase: {
+		mtl::vec::dense_vector<T> taps(spec.taps.size());
+		for (std::size_t i = 0; i < spec.taps.size(); ++i)
+			taps[i] = static_cast<T>(spec.taps[i]);
+		return std::make_unique<ChainStage<T, sw::dsp::PolyphaseDecimator<T>>>(
+			sw::dsp::PolyphaseDecimator<T>(taps, spec.factor));
+	}
+	}
+	throw std::invalid_argument("DecimationChain: unsupported stage kind");
+}
+
+// DecimationChain<T, ErasedStage<T> repeated N times>.
+template <class T, std::size_t>
+using ErasedStageAt = ErasedStage<T>;
+
+template <class T, class Seq>
+struct ChainTypeFor;
+template <class T, std::size_t... Is>
+struct ChainTypeFor<T, std::index_sequence<Is...>> {
+	using type = sw::dsp::DecimationChain<T, ErasedStageAt<T, Is>...>;
+};
+template <class T, std::size_t N>
+using ChainOf = typename ChainTypeFor<T, std::make_index_sequence<N>>::type;
+
+template <class T, std::size_t N, std::size_t... Is>
+ChainOf<T, N> build_chain(T rate, std::vector<ErasedStage<T>>& stages,
+                          std::index_sequence<Is...>) {
+	return ChainOf<T, N>(rate, std::move(stages[Is])...);
+}
+
+struct IDecimationChainImpl {
+	virtual ~IDecimationChainImpl() = default;
+	virtual std::pair<bool, double> process(double in) = 0;
+	virtual np_f64 process_block(np_f64_ro input) = 0;
+	virtual double input_rate() const = 0;
+	virtual double output_rate() const = 0;
+	virtual std::size_t total_decimation() const = 0;
+	virtual std::vector<std::size_t> stage_ratios() const = 0;
+	virtual std::vector<double> stage_rates() const = 0;
+	virtual std::size_t num_stages() const = 0;
+	virtual void reset() = 0;
+};
+
+template <typename T, std::size_t N>
+class DecimationChainImpl : public IDecimationChainImpl {
+public:
+	DecimationChainImpl(double input_rate, std::vector<ErasedStage<T>>& stages)
+		: chain_(build_chain<T, N>(static_cast<T>(input_rate), stages,
+		                            std::make_index_sequence<N>{})) {}
+
+	std::pair<bool, double> process(double in) override {
+		auto [ready, y] = chain_.process(static_cast<T>(in));
+		return {ready, static_cast<double>(y)};
+	}
+	np_f64 process_block(np_f64_ro input) override {
+		auto in = numpy_to_vec_fresh<T>(input);
+		auto out = chain_.process_block(in);
+		return vec_to_numpy(out);
+	}
+	double input_rate() const override {
+		return static_cast<double>(chain_.input_rate());
+	}
+	double output_rate() const override {
+		return static_cast<double>(chain_.output_rate());
+	}
+	std::size_t total_decimation() const override {
+		return chain_.total_decimation();
+	}
+	std::vector<std::size_t> stage_ratios() const override {
+		auto arr = chain_.stage_ratios();
+		return std::vector<std::size_t>(arr.begin(), arr.end());
+	}
+	std::vector<double> stage_rates() const override {
+		auto arr = chain_.stage_rates();
+		std::vector<double> out;
+		out.reserve(arr.size());
+		for (auto r : arr) out.push_back(static_cast<double>(r));
+		return out;
+	}
+	std::size_t num_stages() const override { return N; }
+	void reset() override { chain_.reset(); }
+
+private:
+	ChainOf<T, N> chain_;
+};
+
+// Runtime stage-count -> compile-time arity. Recursion over the arity range
+// keeps this to one line per supported N without hand-writing the switch.
+template <typename T, std::size_t N = 1>
+std::unique_ptr<IDecimationChainImpl>
+make_chain_impl(double input_rate, std::vector<ErasedStage<T>>& stages) {
+	if (stages.size() == N)
+		return std::make_unique<DecimationChainImpl<T, N>>(input_rate, stages);
+	if constexpr (N < kMaxChainStages)
+		return make_chain_impl<T, N + 1>(input_rate, stages);
+	else
+		throw std::invalid_argument(
+			"DecimationChain: stage count " + std::to_string(stages.size()) +
+			" exceeds the supported maximum of " +
+			std::to_string(kMaxChainStages));
+}
+
 } // anonymous namespace
 
 // ===========================================================================
@@ -527,7 +733,8 @@ private:
 
 class PyHalfBandFilter {
 public:
-	PyHalfBandFilter(np_f64_ro taps, const std::string& dtype) {
+	PyHalfBandFilter(np_f64_ro taps, const std::string& dtype)
+		: taps_(taps.data(), taps.data() + taps.shape(0)) {
 		auto config = mpdsp::parse_config(dtype);
 		// We have to materialize the taps in the chosen T before constructing
 		// the impl; dispatch on config to pick the right <T>.
@@ -536,6 +743,17 @@ public:
 				auto t = numpy_to_vec_fresh<T>(taps);
 				return std::make_unique<HalfBandImpl<T>>(t);
 			});
+	}
+
+	// Design parameters retained for DecimationChain, which has to rebuild a
+	// concrete stage at the chain's own dtype: upstream HalfBandFilter keeps
+	// no retrievable copy of its taps.
+	const std::vector<double>& taps_ref() const { return taps_; }
+	np_f64 taps() const {
+		double* out = nullptr;
+		auto arr = make_f64_array(taps_.size(), out);
+		for (std::size_t i = 0; i < taps_.size(); ++i) out[i] = taps_[i];
+		return arr;
 	}
 
 	double process(double in)               { return impl_->process(in); }
@@ -552,12 +770,14 @@ public:
 
 private:
 	std::unique_ptr<IHalfBandImpl> impl_;
+	std::vector<double>            taps_;
 };
 
 class PyPolyphaseDecimator {
 public:
 	PyPolyphaseDecimator(np_f64_ro taps, std::size_t factor,
-	                     const std::string& dtype) {
+	                     const std::string& dtype)
+		: taps_(taps.data(), taps.data() + taps.shape(0)) {
 		if (factor == 0)
 			throw std::invalid_argument(
 				"PolyphaseDecimator: factor must be > 0");
@@ -574,8 +794,19 @@ public:
 	std::size_t factor() const                 { return impl_->factor(); }
 	void reset()                               { impl_->reset(); }
 
+	// See PyHalfBandFilter::taps_ref — upstream PolyphaseDecimator decomposes
+	// the prototype into sub-filters and keeps no copy of the original taps.
+	const std::vector<double>& taps_ref() const { return taps_; }
+	np_f64 taps() const {
+		double* out = nullptr;
+		auto arr = make_f64_array(taps_.size(), out);
+		for (std::size_t i = 0; i < taps_.size(); ++i) out[i] = taps_[i];
+		return arr;
+	}
+
 private:
 	std::unique_ptr<IPolyphaseDecimatorImpl> impl_;
+	std::vector<double>                      taps_;
 };
 
 class PyPolyphaseInterpolator {
@@ -640,6 +871,82 @@ private:
 	std::unique_ptr<IDDCImpl> impl_;
 };
 
+class PyDecimationChain {
+public:
+	PyDecimationChain(double input_rate, nb::sequence stages,
+	                  const std::string& dtype) {
+		if (!(input_rate > 0.0))
+			throw std::invalid_argument(
+				"DecimationChain: input_rate must be positive");
+
+		std::vector<StageSpec> specs;
+		for (nb::handle h : stages) specs.push_back(spec_from(h));
+		if (specs.empty())
+			throw std::invalid_argument(
+				"DecimationChain: needs at least one stage");
+		if (specs.size() > kMaxChainStages)
+			throw std::invalid_argument(
+				"DecimationChain: stage count " + std::to_string(specs.size()) +
+				" exceeds the supported maximum of " +
+				std::to_string(kMaxChainStages));
+
+		auto config = mpdsp::parse_config(dtype);
+		impl_ = dispatch_dtype_fn(config, "DecimationChain",
+			[&]<typename T>() -> std::unique_ptr<IDecimationChainImpl> {
+				std::vector<ErasedStage<T>> built;
+				built.reserve(specs.size());
+				for (const auto& s : specs)
+					built.emplace_back(make_chain_stage<T>(s));
+				return make_chain_impl<T>(input_rate, built);
+			});
+	}
+
+	std::pair<bool, double> process(double in) { return impl_->process(in); }
+	np_f64 process_block(np_f64_ro input)      { return impl_->process_block(input); }
+	double input_rate() const                  { return impl_->input_rate(); }
+	double output_rate() const                 { return impl_->output_rate(); }
+	std::size_t total_decimation() const       { return impl_->total_decimation(); }
+	std::vector<std::size_t> stage_ratios() const { return impl_->stage_ratios(); }
+	std::vector<double> stage_rates() const    { return impl_->stage_rates(); }
+	std::size_t num_stages() const             { return impl_->num_stages(); }
+	void reset()                               { impl_->reset(); }
+
+private:
+	// Read design parameters off a prototype stage. The prototype's own dtype
+	// is ignored: every stage in a chain runs at the chain's dtype, because
+	// upstream threads a single Sample type between stages.
+	static StageSpec spec_from(nb::handle h) {
+		StageSpec spec{};
+		if (nb::isinstance<PyCICDecimator>(h)) {
+			const auto& c = nb::cast<const PyCICDecimator&>(h);
+			spec.kind       = StageSpec::Kind::cic;
+			spec.cic_ratio  = c.decimation_ratio();
+			spec.cic_stages = c.num_stages();
+			spec.cic_delay  = c.differential_delay();
+			return spec;
+		}
+		if (nb::isinstance<PyHalfBandFilter>(h)) {
+			const auto& f = nb::cast<const PyHalfBandFilter&>(h);
+			spec.kind = StageSpec::Kind::halfband;
+			spec.taps = f.taps_ref();
+			return spec;
+		}
+		if (nb::isinstance<PyPolyphaseDecimator>(h)) {
+			const auto& p = nb::cast<const PyPolyphaseDecimator&>(h);
+			spec.kind   = StageSpec::Kind::polyphase;
+			spec.taps   = p.taps_ref();
+			spec.factor = p.factor();
+			return spec;
+		}
+		throw std::invalid_argument(
+			"DecimationChain: stages must be CICDecimator, HalfBandFilter, or "
+			"PolyphaseDecimator instances (got " +
+			nb::cast<std::string>(nb::str(h.type())) + ")");
+	}
+
+	std::unique_ptr<IDecimationChainImpl> impl_;
+};
+
 // ===========================================================================
 // bind_acquisition: wires the Py classes + free helpers into the module.
 // ===========================================================================
@@ -660,6 +967,30 @@ void bind_acquisition(nb::module_& m) {
 		"Design an equiripple half-band lowpass filter via Remez exchange. "
 		"num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). "
 		"Returns NumPy float64 taps; dtype controls internal design precision.");
+
+	m.def("design_cic_compensator",
+		[](std::size_t num_taps, int cic_stages, int cic_ratio,
+		   double passband, int differential_delay, const std::string& dtype) {
+			auto config = mpdsp::parse_config(dtype);
+			return dispatch_dtype_fn(config, "design_cic_compensator",
+				[&]<typename T>() {
+					auto taps = sw::dsp::design_cic_compensator<T>(
+						num_taps, cic_stages, cic_ratio,
+						static_cast<T>(passband), differential_delay);
+					return vec_to_numpy(taps);
+				});
+		}, nb::arg("num_taps"), nb::arg("cic_stages"), nb::arg("cic_ratio"),
+		   nb::arg("passband"), nb::arg("differential_delay") = 1,
+		   nb::arg("dtype") = "reference",
+		"Design an FIR that inverts a CIC decimator's passband droop, to be "
+		"run at the CIC's output rate. Frequency-sampling design: samples "
+		"1/|H_cic(f)| across [0, passband], rolls off smoothly to Nyquist, "
+		"IDFTs, applies a Hamming window, and normalizes to unit DC gain.\n\n"
+		"`passband` is normalized to the CIC *output* rate and must lie in "
+		"(0, 0.5). num_taps >= 3 (odd gives a linear-phase centered tap), "
+		"cic_stages >= 1, cic_ratio >= 2. Returns NumPy float64 taps; dtype "
+		"controls the precision of the design-time arithmetic, which matters "
+		"when the compensator is designed on the target.");
 
 	m.def("polyphase_decompose",
 		[](np_f64_ro taps, std::size_t factor, const std::string& dtype) {
@@ -773,6 +1104,12 @@ void bind_acquisition(nb::module_& m) {
 		     "Decimate a block; returns floor(N/2) output samples.")
 		.def_prop_ro("num_taps", &PyHalfBandFilter::num_taps)
 		.def_prop_ro("num_nonzero_taps", &PyHalfBandFilter::num_nonzero_taps)
+		// take_ownership: the getter builds a fresh capsule-owned ndarray on
+		// every call, so the default reference_internal policy throws at
+		// runtime. See src/BINDING_PATTERNS.md.
+		.def_prop_ro("taps", &PyHalfBandFilter::taps,
+		     nb::rv_policy::take_ownership,
+		     "The design taps this filter was constructed with, as float64.")
 		.def("reset", &PyHalfBandFilter::reset);
 
 	// ---- PolyphaseDecimator --------------------------------------------
@@ -787,6 +1124,12 @@ void bind_acquisition(nb::module_& m) {
 		     "Feed one input. Returns (emit, output).")
 		.def("process_block", &PyPolyphaseDecimator::process_block, nb::arg("input"))
 		.def_prop_ro("factor", &PyPolyphaseDecimator::factor)
+		// take_ownership — see the HalfBandFilter.taps note above.
+		.def_prop_ro("taps", &PyPolyphaseDecimator::taps,
+		     nb::rv_policy::take_ownership,
+		     "The full-rate prototype taps this decimator was constructed "
+		     "with, as float64 (not the decomposed sub-filters — use "
+		     "polyphase_decompose for those).")
 		.def("reset", &PyPolyphaseDecimator::reset);
 
 	// ---- PolyphaseInterpolator -----------------------------------------
@@ -844,4 +1187,44 @@ void bind_acquisition(nb::module_& m) {
 		     "cycles — equal to center_frequency / sample_rate.")
 		.def("reset", &PyDDC::reset,
 		     "Clear the NCO phase and both decimator delay lines.");
+
+	// ---- DecimationChain -----------------------------------------------
+	nb::class_<PyDecimationChain>(m, "DecimationChain",
+		"Multi-stage decimation cascade: ADC -> CIC -> half-band -> ... -> "
+		"baseband. Large decimation ratios are cheapest as a cascade of "
+		"small ones, each stage running at the (progressively lower) rate "
+		"its predecessor emits.\n\n"
+		"`stages` is a list of CICDecimator / HalfBandFilter / "
+		"PolyphaseDecimator instances used as **prototypes**: the chain "
+		"reads their design parameters and rebuilds equivalent stages at the "
+		"chain's own dtype. The prototypes are neither mutated nor aliased, "
+		"and their individual dtypes are ignored — upstream threads a single "
+		"sample type between stages, so the chain's dtype governs "
+		"throughout.\n\n"
+		"At most 6 stages; each additional arity is a separate template "
+		"instantiation per dtype.")
+		.def(nb::init<double, nb::sequence, const std::string&>(),
+		     nb::arg("input_rate"), nb::arg("stages"),
+		     nb::arg("dtype") = "reference")
+		.def("process", &PyDecimationChain::process, nb::arg("input"),
+		     "Feed one input sample. Returns (emit, output); emit is True "
+		     "only on the cycle where the *final* stage produces a sample, "
+		     "i.e. once per total_decimation inputs.")
+		.def("process_block", &PyDecimationChain::process_block, nb::arg("input"),
+		     "Decimate a block; returns the ~len(input)/total_decimation "
+		     "samples emitted by the final stage.")
+		.def_prop_ro("input_rate", &PyDecimationChain::input_rate)
+		.def_prop_ro("output_rate", &PyDecimationChain::output_rate,
+		     "input_rate / total_decimation.")
+		.def_prop_ro("total_decimation", &PyDecimationChain::total_decimation,
+		     "Product of the per-stage decimation ratios.")
+		.def_prop_ro("num_stages", &PyDecimationChain::num_stages)
+		.def("stage_ratios", &PyDecimationChain::stage_ratios,
+		     "Per-stage decimation ratios, in input order. HalfBandFilter "
+		     "reports 2 (it is structurally fixed at 2:1).")
+		.def("stage_rates", &PyDecimationChain::stage_rates,
+		     "Sample rate at the *output* of each stage, in input order. The "
+		     "last element equals output_rate.")
+		.def("reset", &PyDecimationChain::reset,
+		     "Reset every stage's internal state.");
 }

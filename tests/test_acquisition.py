@@ -1,8 +1,9 @@
-"""Tests for the high-rate data-acquisition bindings (Issues #86, #87).
+"""Tests for the high-rate data-acquisition bindings (Issues #86, #87, #88).
 
 Covers NCO, CICDecimator/Interpolator, HalfBandFilter, PolyphaseDecimator/
-Interpolator, the design helpers design_halfband and polyphase_decompose,
-and the DDC digital down-converter.
+Interpolator, the design helpers design_halfband, polyphase_decompose and
+design_cic_compensator, the DDC digital down-converter, and the
+DecimationChain multi-stage cascade.
 
 These are smoke + invariant tests rather than full numerical-accuracy
 sweeps — the depth lives in the upstream C++ test suite. Here we verify
@@ -415,3 +416,215 @@ class TestDDC:
         ref_sqnr = mpdsp.sqnr_db(ref_re[_DDC_SKIP:], ref_re[_DDC_SKIP:])
         coarse_sqnr = mpdsp.sqnr_db(ref_re[_DDC_SKIP:], coarse_re[_DDC_SKIP:])
         assert coarse_sqnr < ref_sqnr
+
+
+# =============================================================================
+# DecimationChain + CIC droop compensator — Issue #88
+# =============================================================================
+
+_CHAIN_FS = 48000.0
+
+
+def _cic(ratio=4, stages=3, delay=1):
+    return mpdsp.CICDecimator(decimation_ratio=ratio, num_stages=stages,
+                              differential_delay=delay)
+
+
+def _halfband():
+    return mpdsp.HalfBandFilter(taps=mpdsp.design_halfband(11, 0.1))
+
+
+def _polyphase(factor=5):
+    return mpdsp.PolyphaseDecimator(taps=np.ones(20) / 20.0, factor=factor)
+
+
+def _cic_magnitude(freqs, ratio, stages, delay=1):
+    """|H_cic(f)| at output-rate-normalized f, normalized to unit DC gain.
+
+    |H(f)| = |sin(pi f D) / (R D sin(pi f / R))| ** M, with the f = 0 limit
+    taken as 1 (the 0/0 point of that expression).
+    """
+    out = np.ones_like(freqs, dtype=float)
+    nz = freqs != 0.0
+    num = np.sin(np.pi * freqs[nz] * delay)
+    den = ratio * delay * np.sin(np.pi * freqs[nz] / ratio)
+    out[nz] = np.abs(num / den) ** stages
+    return out
+
+
+class TestDecimationChain:
+    def test_two_stage_cic_halfband(self):
+        chain = mpdsp.DecimationChain(_CHAIN_FS, [_cic(ratio=4), _halfband()])
+        assert chain.num_stages == 2
+        # HalfBandFilter is structurally 2:1 and reports so.
+        assert chain.stage_ratios() == [4, 2]
+        assert chain.total_decimation == 8
+        assert chain.input_rate == pytest.approx(_CHAIN_FS)
+        assert chain.output_rate == pytest.approx(_CHAIN_FS / 8)
+
+        n_in = 8000
+        out = chain.process_block(np.ones(n_in))
+        assert abs(len(out) - n_in // 8) <= 1
+
+    def test_three_stage_rates_match_expected_sequence(self):
+        chain = mpdsp.DecimationChain(
+            _CHAIN_FS, [_cic(ratio=4), _halfband(), _polyphase(factor=5)])
+        assert chain.stage_ratios() == [4, 2, 5]
+        assert chain.total_decimation == 40
+        # Rate at the output of each stage, in input order.
+        assert chain.stage_rates() == pytest.approx(
+            [_CHAIN_FS / 4, _CHAIN_FS / 8, _CHAIN_FS / 40])
+        # Documented invariant: the last stage rate is the chain output rate.
+        assert chain.stage_rates()[-1] == pytest.approx(chain.output_rate)
+
+    @pytest.mark.parametrize("dtype", _DTYPES)
+    def test_dtype_dispatch_constructs_and_runs(self, dtype):
+        chain = mpdsp.DecimationChain(
+            _CHAIN_FS, [_cic(), _halfband()], dtype=dtype)
+        out = chain.process_block(np.ones(2000))
+        assert np.all(np.isfinite(out))
+        assert len(out) > 0
+
+    def test_streaming_matches_block(self):
+        x = np.random.default_rng(0).standard_normal(2000)
+        block = mpdsp.DecimationChain(_CHAIN_FS, [_cic(), _halfband()])
+        streamed = mpdsp.DecimationChain(_CHAIN_FS, [_cic(), _halfband()])
+
+        expected = block.process_block(x)
+        got = [y for sample in x
+               for ready, y in [streamed.process(sample)] if ready]
+
+        assert len(got) == len(expected)
+        np.testing.assert_allclose(got, expected, atol=1e-12)
+
+    def test_reset_restores_initial_output(self):
+        x = np.random.default_rng(1).standard_normal(1000)
+        chain = mpdsp.DecimationChain(_CHAIN_FS, [_cic(), _halfband()])
+        first = chain.process_block(x)
+        chain.reset()
+        second = chain.process_block(x)
+        np.testing.assert_allclose(first, second, atol=1e-12)
+
+    def test_prototype_stages_are_not_consumed(self):
+        """Prototypes supply parameters only — they stay independently usable.
+
+        The chain rebuilds equivalent stages at its own dtype rather than
+        adopting the prototype objects, so feeding a prototype afterwards must
+        behave as though the chain never existed.
+        """
+        cic = _cic(ratio=4)
+        before = cic.process_block(np.ones(400))
+
+        chain = mpdsp.DecimationChain(_CHAIN_FS, [cic, _halfband()])
+        chain.process_block(np.ones(4000))
+
+        cic.reset()
+        after = cic.process_block(np.ones(400))
+        np.testing.assert_allclose(before, after, atol=1e-12)
+
+    def test_single_stage_chain_is_allowed(self):
+        chain = mpdsp.DecimationChain(_CHAIN_FS, [_cic(ratio=8)])
+        assert chain.num_stages == 1
+        assert chain.total_decimation == 8
+        assert chain.output_rate == pytest.approx(_CHAIN_FS / 8)
+
+    def test_empty_stage_list_raises(self):
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.DecimationChain(_CHAIN_FS, [])
+
+    def test_too_many_stages_raises(self):
+        # Well past any supported arity; the message names the cap.
+        with pytest.raises((ValueError, RuntimeError)):
+            mpdsp.DecimationChain(_CHAIN_FS, [_cic() for _ in range(12)])
+
+    def test_non_stage_object_raises(self):
+        with pytest.raises((ValueError, RuntimeError, TypeError)):
+            mpdsp.DecimationChain(_CHAIN_FS, [1.0])
+
+    def test_interpolator_is_rejected_as_a_stage(self):
+        # PolyphaseInterpolator upsamples; it is not a decimation stage.
+        pi = mpdsp.PolyphaseInterpolator(taps=np.ones(20) / 20.0, factor=4)
+        with pytest.raises((ValueError, RuntimeError, TypeError)):
+            mpdsp.DecimationChain(_CHAIN_FS, [pi])
+
+    def test_nonpositive_input_rate_raises(self):
+        for bad in (0.0, -_CHAIN_FS):
+            with pytest.raises((ValueError, RuntimeError)):
+                mpdsp.DecimationChain(bad, [_cic()])
+
+
+class TestStageTapsAccessors:
+    """`taps` readback, added so DecimationChain can rebuild stages."""
+
+    def test_halfband_taps_round_trip(self):
+        taps = mpdsp.design_halfband(11, 0.1)
+        hb = mpdsp.HalfBandFilter(taps=taps)
+        np.testing.assert_allclose(hb.taps, taps, atol=1e-15)
+        assert hb.taps.dtype == np.float64
+
+    def test_polyphase_taps_round_trip(self):
+        taps = np.arange(20, dtype=np.float64) / 20.0
+        pd = mpdsp.PolyphaseDecimator(taps=taps, factor=4)
+        np.testing.assert_allclose(pd.taps, taps, atol=1e-15)
+
+    def test_taps_getter_returns_independent_copy(self):
+        # Each read builds a fresh capsule-owned array; mutating one must not
+        # disturb the filter or a subsequent read.
+        hb = mpdsp.HalfBandFilter(taps=mpdsp.design_halfband(11, 0.1))
+        first = hb.taps
+        first[0] = 999.0
+        assert hb.taps[0] != 999.0
+
+
+class TestDesignCICCompensator:
+    @pytest.mark.parametrize("dtype", _DTYPES)
+    def test_shape_and_unit_dc_gain(self, dtype):
+        h = mpdsp.design_cic_compensator(
+            31, cic_stages=3, cic_ratio=4, passband=0.2, dtype=dtype)
+        assert h.shape == (31,)
+        assert np.all(np.isfinite(h))
+        # Normalized to unit DC gain so the compensator preserves scale.
+        assert h.sum() == pytest.approx(1.0, abs=1e-6)
+
+    # (cic_ratio, cic_stages, passband, minimum uncompensated droop in dB).
+    # The droop floors are measured, held a little under the observed values
+    # so the test pins the premise without being brittle about it.
+    @pytest.mark.parametrize("ratio,stages,passband,min_droop_db", [
+        (4, 3, 0.4, 6.0),    # observed 6.83 dB
+        (8, 4, 0.2, 2.0),    # observed 2.28 dB
+        (16, 5, 0.25, 4.0),  # observed 4.54 dB
+    ])
+    def test_flattens_cic_passband_droop(self, ratio, stages, passband,
+                                         min_droop_db):
+        """The compensated passband is far flatter than the raw CIC passband."""
+        h = mpdsp.design_cic_compensator(
+            41, cic_stages=stages, cic_ratio=ratio, passband=passband)
+
+        f = np.linspace(0.0, passband, 128)
+        cic_mag = _cic_magnitude(f, ratio, stages)
+        # Compensator magnitude response at the same normalized frequencies.
+        comp_mag = np.abs(
+            np.exp(-2j * np.pi * np.outer(f, np.arange(len(h)))) @ h)
+
+        def ripple_db(mag):
+            return 20.0 * np.log10(mag.max() / mag.min())
+
+        # The premise: the raw CIC droops materially across this passband.
+        assert ripple_db(cic_mag) > min_droop_db
+        # The claim: compensation leaves the passband within 1 dB. Measured
+        # residuals are 0.04–0.33 dB, so this has real headroom.
+        assert ripple_db(cic_mag * comp_mag) < 1.0
+
+    def test_invalid_parameters_raise(self):
+        bad_kwargs = [
+            dict(num_taps=2, cic_stages=3, cic_ratio=4, passband=0.2),
+            dict(num_taps=31, cic_stages=0, cic_ratio=4, passband=0.2),
+            dict(num_taps=31, cic_stages=3, cic_ratio=1, passband=0.2),
+            dict(num_taps=31, cic_stages=3, cic_ratio=4, passband=0.0),
+            dict(num_taps=31, cic_stages=3, cic_ratio=4, passband=0.5),
+            dict(num_taps=31, cic_stages=3, cic_ratio=4, passband=0.2,
+                 differential_delay=0),
+        ]
+        for kwargs in bad_kwargs:
+            with pytest.raises((ValueError, RuntimeError)):
+                mpdsp.design_cic_compensator(**kwargs)

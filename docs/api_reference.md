@@ -48,6 +48,7 @@ the note at the bottom.
   - [`PolyphaseDecimator`](#polyphasedecimator)
   - [`PolyphaseInterpolator`](#polyphaseinterpolator)
   - [`DDC`](#ddc)
+  - [`DecimationChain`](#decimationchain)
   - [`KalmanFilter`](#kalmanfilter)
   - [`LMSFilter`](#lmsfilter)
   - [`NLMSFilter`](#nlmsfilter)
@@ -233,6 +234,7 @@ Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-b
 |------|-----------|-------------|
 | `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray[float64]` | Equiripple half-band lowpass design via Remez exchange. `num_taps` must be of the form `4K+3`. The result has the half-band structure (`h[center] = 0.5`, `h[center ± 2k] = 0` for `k ≥ 1`). |
 | `polyphase_decompose` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference') -> list[ndarray[float64]]` | Decompose an FIR prototype into `factor` polyphase sub-filters of length `ceil(N/factor)`. Returns one sub-tap array per phase. |
+| `design_cic_compensator` | `(num_taps: int, cic_stages: int, cic_ratio: int, passband: float, differential_delay: int = 1, dtype: str = 'reference') -> ndarray[float64]` | Design an FIR that inverts a CIC decimator's passband droop, to be run at the CIC output rate. `passband` is normalized to that output rate and must lie in `(0, 0.5)`. Frequency-sampling design, Hamming-windowed, normalized to unit DC gain. |
 
 ## Image — generators
 
@@ -584,6 +586,7 @@ Half-band FIR filter. `process_decimate` / `process_block_decimate` exploit the 
 | `__init__` | `(taps: ndarray1d[ro], dtype: str = 'reference')` — Taps must satisfy the half-band structure (validated at construction). Use `design_halfband` to obtain valid taps. |
 | `.num_taps` | `(self) -> int` |
 | `.num_nonzero_taps` | `(self) -> int` |
+| `.taps` | `(self) -> ndarray[float64]` — The design taps this filter was constructed with. Each read returns an independent copy. |
 | `.process` | `(self, input: float) -> float` — Full-rate: one input → one output. |
 | `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
 | `.process_decimate` | `(self, input: float) -> tuple[bool, float]` — 2:1 decimation; `emit` alternates True/False. |
@@ -600,6 +603,7 @@ M-factor polyphase FIR decimator. Decomposes the prototype into M sub-filters; e
 |--------|-------------------------|
 | `__init__` | `(taps: ndarray1d[ro], factor: int, dtype: str = 'reference')` — `factor` must be `> 0`. |
 | `.factor` | `(self) -> int` |
+| `.taps` | `(self) -> ndarray[float64]` — The full-rate prototype taps, not the decomposed sub-filters (use `polyphase_decompose` for those). Each read returns an independent copy. |
 | `.process` | `(self, input: float) -> tuple[bool, float]` |
 | `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` |
 | `.reset` | `(self) -> None` |
@@ -638,6 +642,38 @@ The decimator is fixed to `PolyphaseDecimator` and built from `taps` / `decimati
 | `.process_block` | `(self, input: ndarray1d[ro]) -> tuple[ndarray[float64], ndarray[float64]]` — `(real, imag)` of the ~`N / decimation_factor` complex baseband samples. Combine with `real + 1j*imag`. |
 | `.set_center_frequency` | `(self, frequency: float) -> None` — Retunes the oscillator; decimator state is left untouched. |
 | `.reset` | `(self) -> None` — Clears the NCO phase and both decimator delay lines. |
+
+### `DecimationChain`
+
+Multi-stage decimation cascade — `ADC → CIC → half-band → … → baseband`. Large decimation ratios are cheapest as a cascade of small ones, since each stage runs at the progressively lower rate its predecessor emits.
+
+> Composes CIC / half-band / polyphase stages; `process` emits once per `total_decimation` inputs.
+
+`stages` is a list of `CICDecimator` / `HalfBandFilter` / `PolyphaseDecimator` instances used as **prototypes**: the chain reads their design parameters and rebuilds equivalent stages at the chain's own dtype. Prototypes are neither mutated nor aliased, and their individual dtypes are ignored — upstream threads a single sample type between stages, so the chain's `dtype` governs throughout. `PolyphaseInterpolator` is rejected: it upsamples.
+
+Recommended compositions (input order matters — bulk reduction first, sharpest filter last):
+
+| Shape | When |
+|---|---|
+| `[CICDecimator]` | Bulk rate reduction alone, multiplier-free. Pair with `design_cic_compensator` downstream to undo passband droop. |
+| `[CICDecimator, HalfBandFilter]` | The common two-stage front end: CIC drops the bulk, half-band cleans up 2:1 cheaply. |
+| `[CICDecimator, HalfBandFilter, PolyphaseDecimator]` | Adds a final shaped FIR at the lowest rate, where taps are cheapest. |
+| `[CICDecimator, HalfBandFilter, HalfBandFilter, PolyphaseDecimator]` | Deep SDR cascade; each half-band halves the rate before the FIR. |
+
+At most **6 stages** — each additional arity is a separate template instantiation per dtype, so the cap is a compile-time budget rather than an algorithmic limit.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `__init__` | `(input_rate: float, stages: Sequence, dtype: str = 'reference')` — `input_rate` must be `> 0`; 1–6 stages. |
+| `.input_rate` | `(self) -> float` |
+| `.output_rate` | `(self) -> float` — `input_rate / total_decimation`. |
+| `.total_decimation` | `(self) -> int` — Product of the per-stage ratios. |
+| `.num_stages` | `(self) -> int` |
+| `.stage_ratios` | `(self) -> list[int]` — Per-stage decimation ratios, input order. `HalfBandFilter` reports 2. |
+| `.stage_rates` | `(self) -> list[float]` — Rate at the *output* of each stage; the last element equals `output_rate`. |
+| `.process` | `(self, input: float) -> tuple[bool, float]` — `emit` is `True` only when the final stage emits, once per `total_decimation` inputs. |
+| `.process_block` | `(self, input: ndarray1d[ro]) -> ndarray[float64]` — The ~`N / total_decimation` samples emitted by the final stage. |
+| `.reset` | `(self) -> None` — Resets every stage. |
 
 ### `KalmanFilter`
 

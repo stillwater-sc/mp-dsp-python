@@ -159,6 +159,7 @@ CATEGORIES = [
     ]),
     ("Acquisition — high-rate ADC → baseband pipeline", [
         "design_halfband", "polyphase_decompose",
+        "design_cic_compensator",
     ]),
     ("Image — generators", [
         "checkerboard", "stripes_horizontal", "stripes_vertical", "grid",
@@ -219,6 +220,7 @@ CLASSES = [
     "PeakEnvelope", "RMSEnvelope", "Compressor", "AGC",
     "NCO", "CICDecimator", "CICInterpolator", "HalfBandFilter",
     "PolyphaseDecimator", "PolyphaseInterpolator", "DDC",
+    "DecimationChain",
     "KalmanFilter", "LMSFilter", "NLMSFilter", "RLSFilter",
     "TransferFunction", "ContinuousTransferFunction",
 ]
@@ -436,6 +438,14 @@ CLASS_INTROS = {
         "arguments. `process_block` returns a `(real, imag)` tuple, matching "
         "`NCO.mix_down`; the internal oscillator is exposed read-only through "
         "`.nco_phase` / `.nco_phase_increment` rather than as a handle."
+    ),
+    "DecimationChain": (
+        "Multi-stage decimation cascade. `stages` is a list of "
+        "`CICDecimator` / `HalfBandFilter` / `PolyphaseDecimator` instances "
+        "used as prototypes — the chain reads their design parameters and "
+        "rebuilds equivalent stages at its own dtype, since upstream threads "
+        "a single sample type between stages. Capped at 6 stages; each arity "
+        "is a separate template instantiation per dtype."
     ),
     "TransferFunction": (
         "Rational H(z) = B(z)/A(z) with double-precision coefficients. "
