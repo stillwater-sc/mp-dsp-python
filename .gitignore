@@ -50,3 +50,6 @@ build_*/
 # Python
 */__pycache__/*
 */*/__pycache__/*
+
+# Demo artifacts (generated WAVs, plots, exported headers)
+demos/*/artifacts/
