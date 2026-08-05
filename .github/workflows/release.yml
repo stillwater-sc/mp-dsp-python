@@ -3,8 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
+      # Deliberately one broad pattern rather than an enumerated list.
+      # The previous two-pattern form silently skipped `.postN` tags
+      # (issue #73): `.post1` has no `-` separator, so it matched neither
+      # the exact-triple pattern nor the `-*` pre-release one, and the
+      # whole release chain was skipped with no failing run to notice.
+      # An enumerated list would drift again the first time we use a
+      # PEP 440 form nobody listed, so anything starting with a vX.Y.Z
+      # triple fires here and the pre-release question is decided below.
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
   contents: write
@@ -59,9 +66,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract version from tag
+      - name: Extract version and classify the release
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # A full release is exactly X.Y.Z or X.Y.Z.postN — per PEP 440 a
+          # post-release is a real release, and docs/publishing.md treats it
+          # as a first-class flavor. Everything else (rc / a / b / dev, with
+          # or without a separator) is a pre-release.
+          #
+          # This is not cosmetic: publish.yml keys off
+          # `github.event.release.prerelease` to route wheels to TestPyPI
+          # rather than PyPI. The old `contains(github.ref, '-')` test
+          # would call `v1.2.3rc1` a full release and push a release
+          # candidate straight to real PyPI, which cannot be undone.
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$ ]]; then
+            PRERELEASE=false
+          else
+            PRERELEASE=true
+          fi
+          echo "PRERELEASE=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "tag v$VERSION -> prerelease=$PRERELEASE"
 
       - name: Generate release notes
         id: notes
@@ -83,5 +110,5 @@ jobs:
           name: "v${{ steps.version.outputs.VERSION }}"
           body_path: release_notes.md
           draft: false
-          prerelease: ${{ contains(github.ref, '-') }}
+          prerelease: ${{ steps.version.outputs.PRERELEASE }}
           generate_release_notes: true

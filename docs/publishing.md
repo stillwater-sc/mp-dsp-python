@@ -186,19 +186,28 @@ git tag vX.Y.Z.postN
 git push origin vX.Y.Z.postN
 ```
 
-`release.yml` does **not** fire on this tag — its glob only matches
-`vX.Y.Z` and `vX.Y.Z-*` (see issue #73). So no automatic Release page
-**and no automatic gated test matrix.** That's the same test-gate gap
-the semver path has, relocated — there, `release.yml`'s matrix runs
-*after* the tag and before the Release page appears; here, the tag
-shortcuts straight to the Release page without any matrix in between.
+`release.yml` fires on this tag and behaves exactly as it does for a
+semver tag: the Linux/Windows/macOS matrix gates the release, then the
+Release page is created with auto-generated notes and **not** marked
+pre-release (PEP 440 post-releases are full releases).
 
-Before creating the Release, manually confirm `ci.yml` on `main` is
-green. `ci.yml` runs the same Linux/Windows/macOS build+test matrix
-`release.yml` would have; it already ran when the release-bump PR
-(the one that flipped `result = "{value}.postN"`) was merged, so in
-practice this is a one-line verification rather than a new workflow
-invocation:
+This used to be the exception. Until issue #73 was fixed the workflow's
+glob matched only `vX.Y.Z` and `vX.Y.Z-*`, so a `.postN` tag matched
+neither — `.post1` has no `-` separator — and the whole workflow was
+skipped silently, with no failing run to notice. The glob is now a
+single `v[0-9]+.[0-9]+.[0-9]+*`, so any PEP 440 suffix fires it, and
+`tests/test_workflows.py` pins that.
+
+As with the semver path, the Release is created under `GITHUB_TOKEN`
+and therefore does not auto-trigger `publish.yml`; dispatch it manually
+as described above.
+
+<details>
+<summary>Historical workaround (no longer needed)</summary>
+
+Before the fix, the Release had to be created by hand, which also meant
+manually confirming `ci.yml` on `main` was green first — `ci.yml` runs
+the same matrix `release.yml` would have:
 
 ```bash
 gh run list --branch main --workflow=ci.yml --limit 1 \
@@ -236,27 +245,26 @@ RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
 gh run watch "$RUN_ID"
 ```
 
-So for the post-release path, the full sequence is:
+</details>
+
+The post-release sequence is now the same as the semver one:
 
 ```bash
-# 1. Verify CI on main is green (no release.yml gate on postN, see #73):
-gh run list --branch main --workflow=ci.yml --limit 1 \
-    --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"'
-
-# 2. Tag, push, create the Release page (user-auth → chains into publish.yml):
+# 1. Tag and push — release.yml gates on the test matrix, then creates
+#    the Release page (not marked pre-release).
 git tag vX.Y.Z.postN && git push origin vX.Y.Z.postN
-gh release create vX.Y.Z.postN --title "..." --notes "..."
 
-# 3. Watch the publish run that the release event just kicked off:
+# 2. Dispatch the publish (the GITHUB_TOKEN-created Release does not
+#    chain — see the note in the semver path above).
+gh workflow run publish.yml -f target=pypi --ref main
 RUN_ID=$(gh run list --workflow=publish.yml --limit 1 \
     --json databaseId --jq '.[0].databaseId')
 gh run watch "$RUN_ID"
 ```
 
-When #73 is resolved, the semver and post paths will converge back into
-a single "tag → release.yml (gated test matrix) creates Release under
-PAT → publish.yml chains automatically" flow, and the manual CI-green
-pre-check collapses into the workflow.
+The one remaining difference between the two paths is the `GITHUB_TOKEN`
+chaining gap, which affects both equally and would be closed by swapping
+in a PAT.
 
 ## Considerations worth flagging
 
@@ -273,10 +281,18 @@ pre-check collapses into the workflow.
 
 The two paths at a glance:
 
-| Tag shape | `release.yml` fires? | GitHub Release page | `publish.yml` to PyPI |
-|-----------|---------------------|---------------------|-----------------------|
-| `vX.Y.Z` | Yes (glob matches) | Auto-created (under `GITHUB_TOKEN` → doesn't chain) | **Manual dispatch** |
-| `vX.Y.Z.postN` | No (glob doesn't match — #73) | **Manual `gh release create`** (user-auth → **does** chain) | Automatic, don't dispatch |
+| Tag shape | `release.yml` fires? | Marked pre-release? | GitHub Release page | `publish.yml` to PyPI |
+|-----------|---------------------|---------------------|---------------------|-----------------------|
+| `vX.Y.Z` | Yes | No | Auto-created (under `GITHUB_TOKEN` → doesn't chain) | **Manual dispatch** |
+| `vX.Y.Z.postN` | Yes (since #73) | No — post-releases are full releases | Auto-created, same as above | **Manual dispatch** |
+| `vX.Y.Z-rc1`, `vX.Y.ZrcN`, `.devN`, `aN`, `bN` | Yes (since #73) | **Yes** | Auto-created, badged pre-release | Manual dispatch → routes to **TestPyPI** |
+
+The pre-release column is decided by `release.yml`'s classification step,
+not by the tag glob: a full release is exactly `X.Y.Z` or `X.Y.Z.postN`,
+everything else is a pre-release. That matters because `publish.yml` routes
+on `github.event.release.prerelease` — the previous `contains(github.ref, '-')`
+heuristic called `v1.2.3rc1` a full release, which would have sent a release
+candidate to real PyPI.
 
 ### Path A — plain semver (`vX.Y.Z`)
 
