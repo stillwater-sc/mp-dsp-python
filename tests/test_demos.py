@@ -797,3 +797,273 @@ class TestAncScriptsRun:
             capture_output=True, text=True, timeout=600)
         assert result.returncode == 0, result.stderr
         assert out.is_file() and out.stat().st_size > 0
+
+
+# =============================================================================
+# Demo 2 — motor current loop + resonance notch (#59)
+# =============================================================================
+
+_MOTOR_DIR = Path(__file__).resolve().parents[1] / "demos" / "02_motor_servo"
+
+
+@pytest.fixture
+def motor_demo():
+    with _demo_modules(_MOTOR_DIR,
+                       ("design", "simulate", "emit_c_header")) as mods:
+        yield types_ns(design=mods["design"], simulate=mods["simulate"],
+                       emit=mods["emit_c_header"])
+
+
+class TestMotorPlant:
+    def test_discrete_plant_matches_the_analytic_model(self, motor_demo):
+        """ZOH of 1/(Ls+R): DC gain must be 1/R and the pole exp(-T/tau)."""
+        motor = motor_demo.simulate.Motor()
+        num, den = motor.discrete_plant()
+        assert num.sum() / den.sum() == pytest.approx(
+            1.0 / motor.resistance_ohm, rel=1e-9)
+        assert -den[1] == pytest.approx(
+            np.exp(-1.0 / (motor_demo.simulate.SAMPLE_RATE_HZ
+                           * motor.electrical_tau_s)), rel=1e-12)
+
+    def test_electrical_time_constant(self, motor_demo):
+        motor = motor_demo.simulate.Motor(resistance_ohm=0.05,
+                                          inductance_h=50e-6)
+        assert motor.electrical_tau_s == pytest.approx(1e-3)
+
+    def test_plant_is_stable(self, motor_demo):
+        motor = motor_demo.simulate.Motor()
+        assert 0.0 < motor.plant_pole() < 1.0
+
+    def test_close_loop_pads_before_adding(self, motor_demo):
+        """T = L/(1+L). Adding unequal-length polynomials without padding
+        shifts the system by a sample and yields a plausible wrong answer."""
+        num, den = motor_demo.simulate.close_loop(
+            np.array([0.5]), np.array([1.0, -0.9]))
+        assert len(num) == len(den)
+        np.testing.assert_allclose(den, [1.0, -0.4])
+
+    def test_step_response_of_a_known_system(self, motor_demo):
+        """First-order lag: y[n] = 0.5 y[n-1] + 0.5 x[n] settles at 1."""
+        step = motor_demo.simulate.step_response(
+            np.array([0.5]), np.array([1.0, -0.5]), num_samples=60)
+        assert step[-1] == pytest.approx(1.0, abs=1e-6)
+        assert np.all(np.diff(step) >= -1e-12)      # monotone, no overshoot
+
+    def test_divergent_system_is_truncated(self, motor_demo):
+        step = motor_demo.simulate.step_response(
+            np.array([1.0]), np.array([1.0, -1.5]), num_samples=4000)
+        assert not np.all(np.isfinite(step))
+
+    def test_metrics_flag_divergence(self, motor_demo):
+        metrics = motor_demo.simulate.response_metrics(
+            np.array([1.0, np.nan]), 20000.0)
+        assert metrics["diverged"]
+
+
+class TestMotorDesign:
+    def test_pi_zero_cancels_the_plant_pole(self, motor_demo):
+        """The tuning premise. If this drifts, the loop is not what the
+        crossover formula assumes."""
+        motor = motor_demo.simulate.Motor()
+        num, den, _ = motor_demo.design.design_pi(motor, 1200.0)
+        np.testing.assert_allclose(den, [1.0, -1.0])          # integrator
+        assert -num[1] / num[0] == pytest.approx(motor.plant_pole(),
+                                                 rel=1e-12)
+
+    def test_crossover_scales_the_gain(self, motor_demo):
+        motor = motor_demo.simulate.Motor()
+        _, _, slow = motor_demo.design.design_pi(motor, 600.0)
+        _, _, fast = motor_demo.design.design_pi(motor, 1200.0)
+        assert fast == pytest.approx(2.0 * slow, rel=1e-9)
+
+    def test_notch_attenuates_at_its_centre(self, motor_demo):
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        num, den = motor_demo.design.design_notch(point)
+        depth = motor_demo.design.notch_depth_db(num, den, point.notch_hz)
+        assert depth < -40.0
+        # ...and passes DC and Nyquist essentially untouched.
+        assert motor_demo.design.notch_depth_db(num, den, 10.0) > -1.0
+
+    @pytest.mark.parametrize("point_name", ["conservative", "aggressive"])
+    def test_reference_design_is_stable_and_accurate(self, motor_demo,
+                                                     point_name):
+        point = motor_demo.design.DESIGN_POINTS[point_name]
+        result = next(iter(motor_demo.design.sweep(point, ["reference"])))
+        assert result.status == "ok"
+        assert result.max_pole < 1.0
+        assert result.metrics["steady_state"] == pytest.approx(1.0, abs=0.01)
+
+    def test_all_seven_dtypes_sweep(self, motor_demo):
+        """Acceptance: plant + controller + notch across 7 dtypes."""
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        results = motor_demo.design.sweep(
+            point, motor_demo.design.DEFAULT_DTYPES)
+        assert len(results) == 7
+        assert len(motor_demo.design.DEFAULT_DTYPES) == 7
+        for r in results:
+            assert np.isfinite(r.max_pole)
+            assert np.isfinite(r.notch_depth_db)
+
+    def test_notch_depth_degrades_with_precision(self, motor_demo):
+        """The conservative point's headline: precision costs notch depth."""
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        by_dtype = {r.dtype: r for r in motor_demo.design.sweep(
+            point, ["reference", "half", "posit_8_2"])}
+        assert by_dtype["reference"].notch_depth_db < -100.0
+        assert by_dtype["half"].notch_depth_db < -40.0
+        # 8-bit barely notches at all.
+        assert by_dtype["posit_8_2"].notch_depth_db > -25.0
+
+    def test_conservative_point_is_stable_at_every_dtype(self, motor_demo):
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        results = motor_demo.design.sweep(
+            point, motor_demo.design.DEFAULT_DTYPES)
+        assert all(r.stable for r in results)
+
+    def test_aggressive_point_destabilizes_at_8_bit(self, motor_demo):
+        """Acceptance: the step-response sweep must show which dtypes are
+        stable and which are not — so at least one must not be."""
+        point = motor_demo.design.DESIGN_POINTS["aggressive"]
+        by_dtype = {r.dtype: r for r in motor_demo.design.sweep(
+            point, ["reference", "posit_8_2"])}
+        assert by_dtype["reference"].stable
+        assert not by_dtype["posit_8_2"].stable
+        assert by_dtype["posit_8_2"].status == "UNSTABLE"
+
+    def test_the_failure_is_a_pole_on_the_unit_circle(self, motor_demo):
+        """Pin the mechanism, not just the symptom.
+
+        At posit<8,2> the notch denominator rounds to [1, -1.5, 0.5], whose
+        roots are exactly 1.0 and 0.5 — quantization lands a pole on the
+        boundary and converts the notch into an integrator.
+        """
+        point = motor_demo.design.DESIGN_POINTS["aggressive"]
+        _, den = motor_demo.design.design_notch(point)
+        quantized = motor_demo.design._quantize(den, "posit_8_2")
+        np.testing.assert_allclose(quantized, [1.0, -1.5, 0.5], atol=1e-12)
+        assert np.max(np.abs(np.roots(quantized))) == pytest.approx(1.0,
+                                                                    abs=1e-12)
+
+    def test_design_margin_is_what_differs(self, motor_demo):
+        """The demo's thesis: same dtype, different margin, opposite outcome."""
+        conservative = next(iter(motor_demo.design.sweep(
+            motor_demo.design.DESIGN_POINTS["conservative"], ["posit_8_2"])))
+        aggressive = next(iter(motor_demo.design.sweep(
+            motor_demo.design.DESIGN_POINTS["aggressive"], ["posit_8_2"])))
+        assert conservative.stable
+        assert not aggressive.stable
+
+
+class TestMotorArtifacts:
+    def test_summary_and_step_csv(self, motor_demo, tmp_path):
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        results = motor_demo.design.sweep(point, ["reference", "half"])
+        motor_demo.design.write_summary_csv(tmp_path / "summary.csv", results)
+        motor_demo.design.write_step_csv(tmp_path / "steps.csv", results)
+
+        summary = (tmp_path / "summary.csv").read_text().strip().splitlines()
+        assert summary[0].startswith("design_point,dtype,")
+        assert len(summary) == 1 + len(results)
+
+        steps = (tmp_path / "steps.csv").read_text().strip().splitlines()
+        assert steps[0].startswith("time_ms,")
+        assert len(steps) > 100
+
+    def test_summary_png(self, motor_demo, tmp_path):
+        pytest.importorskip("matplotlib")
+        by_point = {
+            name: motor_demo.design.sweep(
+                motor_demo.design.DESIGN_POINTS[name], ["reference", "half"])
+            for name in ("conservative", "aggressive")}
+        assert motor_demo.design.plot_summary(
+            tmp_path / "summary.png", by_point, motor_demo.simulate.Motor())
+        assert (tmp_path / "summary.png").stat().st_size > 0
+
+
+class TestMotorCHeader:
+    def test_header_contents(self, motor_demo):
+        text = motor_demo.emit.render_header("conservative", "reference")
+        assert "#ifndef CURRENT_LOOP_H" in text and "#endif" in text
+        for macro in ("LOOP_RATE_HZ", "PI_B0", "PI_B1", "PI_KP",
+                      "NOTCH_B0", "NOTCH_A1", "NOTCH_A2", "NOTCH_CENTER_HZ"):
+            assert macro in text, f"missing {macro}"
+        # The difference equations a porter needs.
+        assert "u[n] = u[n-1]" in text
+        # And the warning that the PI zero is motor-specific.
+        assert "Re-run this exporter if R or L change" in text
+
+    def test_refuses_an_unstable_configuration(self, motor_demo):
+        with pytest.raises(ValueError, match="unstable"):
+            motor_demo.emit.render_header("aggressive", "posit_8_2")
+
+    def test_rejects_an_unknown_design_point(self, motor_demo):
+        with pytest.raises(ValueError, match="unknown design point"):
+            motor_demo.emit.render_header("reckless", "reference")
+
+    def test_coefficients_match_the_design(self, motor_demo):
+        """The header must carry the numbers the sweep actually validated."""
+        motor = motor_demo.simulate.Motor()
+        point = motor_demo.design.DESIGN_POINTS["conservative"]
+        c_num, _, _ = motor_demo.design.design_pi(motor, point.crossover_hz)
+        text = motor_demo.emit.render_header("conservative", "reference")
+        assert f"{c_num[0]:.17g}" in text
+        assert f"{c_num[1]:.17g}" in text
+
+    @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not present")
+    @pytest.mark.parametrize("std", ["c89", "c99"])
+    def test_header_compiles(self, motor_demo, tmp_path, std):
+        header = tmp_path / "current_loop.h"
+        header.write_text(
+            motor_demo.emit.render_header("conservative", "reference",
+                                          name="current_loop.h"))
+        source = tmp_path / "tu.c"
+        source.write_text(
+            '#include "current_loop.h"\n'
+            "int main(void) {\n"
+            "    return (LOOP_RATE_HZ > 0.0 && PI_KP > 0.0\n"
+            "            && NOTCH_CENTER_HZ > 0.0) ? 0 : 1;\n"
+            "}\n")
+        binary = tmp_path / "tu"
+        compiled = subprocess.run(
+            ["gcc", f"-std={std}", "-Wall", "-Wextra", "-pedantic", "-Werror",
+             "-I", str(tmp_path), str(source), "-o", str(binary)],
+            capture_output=True, text=True, timeout=120)
+        assert compiled.returncode == 0, compiled.stderr
+        assert subprocess.run([str(binary)], timeout=60).returncode == 0
+
+
+class TestMotorScriptsRun:
+    def test_design_main(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, str(_MOTOR_DIR / "design.py"),
+             "--outdir", str(tmp_path)],
+            capture_output=True, text=True, timeout=600)
+        assert result.returncode == 0, result.stderr
+        assert "conservative" in result.stdout and "aggressive" in result.stdout
+        assert "UNSTABLE" in result.stdout      # the 8-bit aggressive case
+        for name in ("summary.csv", "step_responses.csv"):
+            assert (tmp_path / name).is_file()
+
+    def test_simulate_main(self):
+        result = subprocess.run(
+            [sys.executable, str(_MOTOR_DIR / "simulate.py")],
+            capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stderr
+        assert "electrical tau" in result.stdout
+
+    def test_emit_main_and_refusal_exit_code(self, tmp_path):
+        out = tmp_path / "current_loop.h"
+        ok = subprocess.run(
+            [sys.executable, str(_MOTOR_DIR / "emit_c_header.py"),
+             "--out", str(out)],
+            capture_output=True, text=True, timeout=300)
+        assert ok.returncode == 0, ok.stderr
+        assert out.is_file()
+
+        refused = subprocess.run(
+            [sys.executable, str(_MOTOR_DIR / "emit_c_header.py"),
+             "--design-point", "aggressive", "--dtype", "posit_8_2",
+             "--out", str(tmp_path / "bad.h")],
+            capture_output=True, text=True, timeout=300)
+        assert refused.returncode == 1
+        assert not (tmp_path / "bad.h").exists()
