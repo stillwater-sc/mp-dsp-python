@@ -568,3 +568,232 @@ class TestDDCScriptsRun:
                 capture_output=True, text=True, timeout=600)
             assert result.returncode == 0, result.stderr
             assert list(out.glob(f"*{suffix}"))
+
+
+# =============================================================================
+# Demo 3 — active vibration cancellation (#60)
+# =============================================================================
+
+_ANC_DIR = Path(__file__).resolve().parents[1] / "demos" / "03_vibration_cancellation"
+
+
+@pytest.fixture
+def anc():
+    names = ("design", "simulate", "emit_c_header")
+    with _demo_modules(_ANC_DIR, names) as mods:
+        yield types_ns(design=mods["design"], simulate=mods["simulate"],
+                       emit=mods["emit_c_header"])
+
+
+# Adaptive training over software-float types is slow, so the tests use a
+# short run. Long enough for LMS/NLMS to converge and for the narrow RLS
+# configurations to fail, which is what is being asserted.
+_ANC_SAMPLES = 6000
+
+
+@pytest.fixture
+def disturbance(anc):
+    return anc.simulate.synthesize(num_samples=_ANC_SAMPLES)
+
+
+class TestDisturbance:
+    def test_shapes_and_metadata(self, anc, disturbance):
+        reference, primary, meta = disturbance
+        assert reference.shape == primary.shape == (_ANC_SAMPLES,)
+        assert np.all(np.isfinite(reference)) and np.all(np.isfinite(primary))
+        assert meta["speed_change_at"] == _ANC_SAMPLES // 2
+        assert meta["achievable_reduction_db"] == meta["sensor_snr_db"]
+
+    def test_sensor_floor_is_real(self, anc, disturbance):
+        """The noise floor must actually bound cancellation.
+
+        Without it the identification is exact and every dtype reports
+        300+ dB, which makes the whole comparison meaningless.
+        """
+        reference, primary, meta = disturbance
+        clean = np.convolve(reference,
+                            meta["primary_path"])[:len(primary)]
+        residual_noise = primary - clean
+        measured_snr = 10.0 * np.log10(
+            np.mean(clean ** 2) / np.mean(residual_noise ** 2))
+        assert measured_snr == pytest.approx(meta["sensor_snr_db"], abs=1.0)
+
+    def test_speed_change_is_present(self, anc, disturbance):
+        """The second half must genuinely differ, or there is nothing to
+        re-converge on."""
+        reference, _, meta = disturbance
+        split = meta["speed_change_at"]
+        first = np.abs(np.fft.rfft(reference[:split]))
+        second = np.abs(np.fft.rfft(reference[split:]))
+        assert np.argmax(first) != np.argmax(second)
+
+
+class TestTraining:
+    @pytest.mark.parametrize("algorithm", ["LMS", "NLMS", "RLS"])
+    def test_reference_reaches_the_sensor_floor(self, anc, disturbance,
+                                                algorithm):
+        """Acceptance: all three variants train. In double each must reach
+        the physical limit, or the comparison has no baseline."""
+        reference, primary, meta = disturbance
+        result = anc.design.train(algorithm, "reference", reference, primary,
+                                  meta)
+        assert result.status == "ok"
+        assert result.reduction_db == pytest.approx(
+            meta["achievable_reduction_db"], abs=4.0)
+
+    @pytest.mark.parametrize("algorithm", ["LMS", "NLMS"])
+    def test_gradient_filters_degrade_gracefully(self, anc, disturbance,
+                                                 algorithm):
+        """LMS and NLMS must still cancel at 8-bit, just less.
+
+        The contrast with RLS is the demo's point, so it needs pinning on
+        both sides.
+        """
+        reference, primary, meta = disturbance
+        coarse = anc.design.train(algorithm, "posit_8_2", reference, primary,
+                                  meta)
+        assert coarse.status == "ok"
+        assert coarse.reduction_db > 3.0        # still cancelling
+        fine = anc.design.train(algorithm, "reference", reference, primary,
+                                meta)
+        assert coarse.reduction_db < fine.reduction_db - 5.0   # but worse
+
+    def test_rls_fails_at_narrow_precision(self, anc, disturbance):
+        """Acceptance: at least one dtype/filter combination diverges.
+
+        Reproduces the notebooks/06_estimation finding that RLS's Kalman-form
+        update loses P-matrix symmetry at narrow precision.
+        """
+        reference, primary, meta = disturbance
+        result = anc.design.train("RLS", "half", reference, primary, meta)
+        assert result.status in ("DIVERGED", "AMPLIFIED")
+
+    def test_divergence_is_distinguished_from_amplification(self, anc):
+        """They are different failures: one produces NaN, the other produces
+        a filter that drives the structure. Conflating them would hide the
+        more dangerous case, which looks like a working filter."""
+        result = anc.design.TrainingResult(
+            algorithm="RLS", dtype="x", errors=np.zeros(4),
+            weights=np.zeros(4), diverged=True)
+        assert result.status == "DIVERGED"
+        result.diverged = False
+        result.amplified = True
+        assert result.status == "AMPLIFIED"
+
+    def test_weight_drift_is_scored_against_the_same_algorithm(
+            self, anc, disturbance):
+        reference, primary, meta = disturbance
+        results = anc.design.run_all(reference, primary, meta,
+                                     ["LMS"], ["reference", "half"])
+        by_dtype = {r.dtype: r for r in results}
+        assert np.isnan(by_dtype["reference"].weight_drift)
+        assert by_dtype["half"].weight_drift > 0.0
+
+    def test_diverged_runs_are_not_scored(self, anc, disturbance):
+        """A diverged run must not report a reduction figure — a number
+        there would read as a measurement rather than a failure."""
+        reference, primary, meta = disturbance
+        result = anc.design.train("RLS", "posit_8_2", reference, primary, meta)
+        if result.diverged:
+            assert np.isnan(result.reduction_db)
+            assert result.notes
+
+
+class TestAncArtifacts:
+    def test_summary_csv(self, anc, disturbance, tmp_path):
+        reference, primary, meta = disturbance
+        results = anc.design.run_all(reference, primary, meta,
+                                     ["LMS"], ["reference", "half"])
+        anc.design.write_summary_csv(tmp_path / "summary.csv", results, meta)
+        rows = (tmp_path / "summary.csv").read_text().strip().splitlines()
+        assert rows[0].startswith("algorithm,dtype,")
+        assert len(rows) == 1 + len(results)
+
+    def test_summary_png(self, anc, disturbance, tmp_path):
+        pytest.importorskip("matplotlib")
+        reference, primary, meta = disturbance
+        results = anc.design.run_all(reference, primary, meta,
+                                     ["LMS", "RLS"], ["reference", "half"])
+        assert anc.design.plot_summary(tmp_path / "summary.png", results,
+                                       primary, meta)
+        assert (tmp_path / "summary.png").stat().st_size > 0
+
+    def test_diverged_trace_breaks_rather_than_flatlines(self, anc):
+        """A diverged run must leave a gap in the plot. Flat-lining at the
+        floor would read as perfect cancellation."""
+        errors = np.concatenate([np.ones(512), np.full(512, np.nan)])
+        trace = anc.design._smoothed_error_power_db(errors, window=64)
+        assert np.all(np.isfinite(trace[:400]))
+        assert np.all(np.isnan(trace[-400:]))
+
+
+class TestAncCHeader:
+    def test_header_contents(self, anc):
+        text = anc.emit.render_header("NLMS", "reference",
+                                      num_samples=_ANC_SAMPLES)
+        assert "#ifndef CANCELLER_H" in text and "#endif" in text
+        assert "CANCELLER_NUM_TAPS   24" in text
+        assert "canceller_taps[CANCELLER_NUM_TAPS]" in text
+        # Adaptation parameters ship alongside the taps — see the README.
+        assert "CANCELLER_STEP_SIZE" in text
+        assert "-y[n]" in text          # sign convention stated
+
+    def test_refuses_a_diverged_run(self, anc):
+        """Exporting NaN weights into an actuator loop is the worst possible
+        place to discover a divergence."""
+        with pytest.raises(ValueError, match="diverged|amplified"):
+            anc.emit.render_header("RLS", "half", num_samples=_ANC_SAMPLES)
+
+    def test_rejects_an_unknown_algorithm(self, anc):
+        with pytest.raises(ValueError, match="unknown algorithm"):
+            anc.emit.render_header("SGD", "reference",
+                                   num_samples=_ANC_SAMPLES)
+
+    @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not present")
+    @pytest.mark.parametrize("std", ["c89", "c99"])
+    def test_header_compiles(self, anc, tmp_path, std):
+        header = tmp_path / "canceller.h"
+        header.write_text(anc.emit.render_header("NLMS", "reference",
+                                                 num_samples=_ANC_SAMPLES))
+        source = tmp_path / "tu.c"
+        source.write_text(
+            '#include "canceller.h"\n'
+            "int main(void) {\n"
+            "    return (CANCELLER_NUM_TAPS == 24\n"
+            "            && canceller_taps[0] == canceller_taps[0]) ? 0 : 1;\n"
+            "}\n")
+        binary = tmp_path / "tu"
+        compiled = subprocess.run(
+            ["gcc", f"-std={std}", "-Wall", "-Wextra", "-pedantic", "-Werror",
+             "-I", str(tmp_path), str(source), "-o", str(binary)],
+            capture_output=True, text=True, timeout=120)
+        assert compiled.returncode == 0, compiled.stderr
+        assert subprocess.run([str(binary)], timeout=60).returncode == 0
+
+
+class TestAncScriptsRun:
+    def test_design_main(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, str(_ANC_DIR / "design.py"),
+             "--num-samples", "4000", "--outdir", str(tmp_path),
+             "--algorithms", "LMS", "--dtypes", "reference", "half"],
+            capture_output=True, text=True, timeout=900)
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "summary.csv").is_file()
+
+    def test_simulate_main(self):
+        result = subprocess.run(
+            [sys.executable, str(_ANC_DIR / "simulate.py"),
+             "--num-samples", "4000"],
+            capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stderr
+        assert "sensor floor" in result.stdout
+
+    def test_emit_main(self, tmp_path):
+        out = tmp_path / "canceller.h"
+        result = subprocess.run(
+            [sys.executable, str(_ANC_DIR / "emit_c_header.py"),
+             "--out", str(out), "--num-samples", "6000"],
+            capture_output=True, text=True, timeout=600)
+        assert result.returncode == 0, result.stderr
+        assert out.is_file() and out.stat().st_size > 0
