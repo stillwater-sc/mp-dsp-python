@@ -41,6 +41,7 @@
 #include "_binding_helpers.hpp"
 #include "types.hpp"
 
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <memory>
@@ -657,6 +658,34 @@ make_chain_impl(double input_rate, std::vector<ErasedStage<T>>& stages) {
 // Py-wrappers (visible names — held by std::unique_ptr<I*Impl> + dispatch)
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// Phase-accumulator sanity check (Issue #117).
+//
+// NCO holds `frequency` and `sample_rate` at the configuration's state scalar
+// and divides only afterwards (`phase_inc = frequency / sample_rate`), so
+// absolute rates at RF scale overflow narrow state types before the division
+// can bring the ratio back into range. fixpnt trips upstream's own
+// "sample_rate must be positive" check, but the cfloat types (`cf24`, `half`)
+// quietly produce a NaN phase increment and then emit NaN for every sample
+// thereafter, with nothing to point at the cause.
+//
+// Turning that into an error at construction is the whole difference between
+// a one-line fix and an afternoon of bisecting a pipeline. The message names
+// the workaround because it is not guessable from the symptom.
+// ---------------------------------------------------------------------------
+
+static void require_finite_phase(double increment, const char* cls,
+                                 const std::string& dtype) {
+	if (std::isfinite(increment)) return;
+	throw std::invalid_argument(
+		std::string(cls) + ": phase increment is not finite for dtype '"
+		+ dtype + "'. frequency and sample_rate are held at that dtype's "
+		"state precision, so absolute rates can overflow it before "
+		"frequency/sample_rate is evaluated. Pass normalized rates instead "
+		"(sample_rate=1.0, frequency as a fraction of it) — an oscillator "
+		"only ever uses the ratio.");
+}
+
 class PyNCO {
 public:
 	PyNCO(double frequency, double sample_rate, const std::string& dtype) {
@@ -665,9 +694,14 @@ public:
 		auto config = mpdsp::parse_config(dtype);
 		impl_ = make_impl_for_dtype<NCOImpl, INCOImpl>(
 			config, "NCO", frequency, sample_rate);
+		dtype_ = dtype;
+		require_finite_phase(impl_->phase_increment(), "NCO", dtype_);
 	}
 
-	void set_frequency(double f, double sr) { impl_->set_frequency(f, sr); }
+	void set_frequency(double f, double sr) {
+		impl_->set_frequency(f, sr);
+		require_finite_phase(impl_->phase_increment(), "NCO", dtype_);
+	}
 	void set_phase_offset(double off)        { impl_->set_phase_offset(off); }
 	double phase() const                     { return impl_->phase(); }
 	double phase_increment() const           { return impl_->phase_increment(); }
@@ -683,6 +717,7 @@ public:
 
 private:
 	std::unique_ptr<INCOImpl> impl_;
+	std::string               dtype_;
 };
 
 class PyCICDecimator {
@@ -853,13 +888,18 @@ public:
 				return std::make_unique<DDCImpl<T>>(
 					center_frequency, sample_rate, t, decimation_factor);
 			});
+		dtype_ = dtype;
+		require_finite_phase(impl_->nco_phase_increment(), "DDC", dtype_);
 	}
 
 	std::pair<bool, std::complex<double>> process(double in) {
 		return impl_->process(in);
 	}
 	nb::tuple process_block(np_f64_ro input) { return impl_->process_block(input); }
-	void set_center_frequency(double f)      { impl_->set_center_frequency(f); }
+	void set_center_frequency(double f) {
+		impl_->set_center_frequency(f);
+		require_finite_phase(impl_->nco_phase_increment(), "DDC", dtype_);
+	}
 	double center_frequency() const          { return impl_->center_frequency(); }
 	double sample_rate() const               { return impl_->sample_rate(); }
 	std::size_t decimation_factor() const    { return impl_->decimation_factor(); }
@@ -869,6 +909,7 @@ public:
 
 private:
 	std::unique_ptr<IDDCImpl> impl_;
+	std::string               dtype_;
 };
 
 class PyDecimationChain {
@@ -966,7 +1007,15 @@ void bind_acquisition(nb::module_& m) {
 		   nb::arg("dtype") = "reference",
 		"Design an equiripple half-band lowpass filter via Remez exchange. "
 		"num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). "
-		"Returns NumPy float64 taps; dtype controls internal design precision.");
+		"Returns NumPy float64 taps; dtype controls internal design "
+		"precision.\n\n"
+		"KNOWN LIMITATION (issue #117): the upstream Remez exchange does not "
+		"converge correctly, so this designer tops out near 21 dB of "
+		"stopband attenuation and gets *worse* with more taps — 127 taps at "
+		"transition_width=0.15 measures -24.7 dB, i.e. the stopband sits "
+		"above the passband. For anything needing real selectivity use "
+		"fir_lowpass with a Kaiser or Blackman window, which reaches 88 dB "
+		"at 51 taps.");
 
 	m.def("design_cic_compensator",
 		[](std::size_t num_taps, int cic_stages, int cic_ratio,

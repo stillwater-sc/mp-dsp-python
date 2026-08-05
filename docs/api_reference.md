@@ -346,6 +346,10 @@ plot = mpdsp.apply_bilinear(
 
 Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-band → polyphase FIR → baseband). The class entries live in the [Classes](#classes) section; the free-function design helpers are listed here.
 
+**Known limitation — `design_halfband` ([#117](https://github.com/stillwater-sc/mp-dsp-python/issues/117)).** The upstream Remez exchange does not converge correctly, so this designer tops out near 21 dB of stopband attenuation and gets *worse* with more taps — 127 taps at `transition_width=0.15` measures −24.7 dB, meaning the stopband sits above the passband. Where real selectivity matters, use `fir_lowpass` with a Kaiser or Blackman window, which reaches 88 dB at 51 taps.
+
+**`NCO` and `DDC` hold `frequency` and `sample_rate` at the configuration's state precision** and divide only afterwards, so absolute rates at RF scale overflow narrow types. Passing normalized rates — `sample_rate=1.0` with the frequency as a fraction of it — is well defined for every dtype and means the same thing, since an oscillator only uses the ratio. Rates that would produce a non-finite phase increment now raise rather than yielding silent NaN.
+
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray` | Design an equiripple half-band lowpass filter via Remez exchange. num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). Returns NumPy float64 taps; dtype controls internal design precision. |

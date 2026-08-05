@@ -1916,7 +1916,8 @@ void bind_filters(nb::module_& m) {
 		"Equiripple lowpass FIR via Parks-McClellan (Remez exchange). "
 		"passband_edge_hz and stopband_edge_hz define the transition band; "
 		"weights control the passband-vs-stopband trade-off (larger stopband "
-		"weight -> deeper stopband).");
+		"weight -> deeper stopband)."
+		"\n\nKNOWN LIMITATION (issue #117): the upstream Remez exchange does not converge correctly — designs carry a fixed ~2.4 dB passband ripple with a 1.25 DC gain regardless of tap count, rather than the equiripple response the method promises. Use fir_lowpass with a Kaiser window where passband flatness matters.");
 
 	m.def("remez_bandpass",
 		[](int num_taps, double sr, double stop1_hz, double pass1_hz,
@@ -1955,7 +1956,8 @@ void bind_filters(nb::module_& m) {
 		   nb::arg("coeff_dtype") = "reference",
 		"Equiripple bandpass FIR via Parks-McClellan. Requires "
 		"stop1 < pass1 < pass2 < stop2, all in Hz. Symmetric stopband "
-		"weights on both sides.");
+		"weights on both sides."
+		"\n\nKNOWN LIMITATION (issue #117): the upstream Remez exchange does not converge correctly — designs carry a fixed ~2.4 dB passband ripple with a 1.25 DC gain regardless of tap count, rather than the equiripple response the method promises. Use fir_lowpass with a Kaiser window where passband flatness matters.");
 
 	m.def("remez",
 		[](int num_taps, np_f64_ro bands, np_f64_ro desired,
@@ -2002,7 +2004,8 @@ void bind_filters(nb::module_& m) {
 		"list of band edges in normalized frequency [0, 0.5], length 2N "
 		"for N bands; desired has one value per band edge; weights has one "
 		"per band. type is 'bandpass' (default; symmetric taps), "
-		"'differentiator', or 'hilbert' (both antisymmetric).");
+		"'differentiator', or 'hilbert' (both antisymmetric)."
+		"\n\nKNOWN LIMITATION (issue #117): the upstream Remez exchange does not converge correctly — designs carry a fixed ~2.4 dB passband ripple with a 1.25 DC gain regardless of tap count, rather than the equiripple response the method promises. Use fir_lowpass with a Kaiser window where passband flatness matters.");
 
 	// -----------------------------------------------------------------------
 	// OverlapAdd / OverlapSave block-FFT convolvers (Phase 5 / #111).

@@ -628,3 +628,74 @@ class TestDesignCICCompensator:
         for kwargs in bad_kwargs:
             with pytest.raises((ValueError, RuntimeError)):
                 mpdsp.design_cic_compensator(**kwargs)
+
+
+# =============================================================================
+# Phase-accumulator overflow guard (Issue #117)
+# =============================================================================
+
+class TestPhaseOverflowGuard:
+    """NCO/DDC must not silently produce a NaN phase increment.
+
+    Upstream holds `frequency` and `sample_rate` at the configuration's state
+    scalar and divides only afterwards, so absolute RF-scale rates overflow
+    narrow state types before `frequency / sample_rate` is evaluated. fixpnt
+    trips upstream's own positivity check; the cfloat types used to construct
+    successfully and then emit NaN for every sample, which is far worse.
+    """
+
+    # Rates that overflow a 16- or 24-bit float significand's exponent range.
+    _RF_CARRIER = 1.2e9
+    _RF_RATE = 5.0e9
+
+    # These configurations hold the ratio fine but not the absolute rates.
+    _NARROW = ["cf24", "half"]
+
+    @pytest.mark.parametrize("dtype", _NARROW)
+    def test_nco_rejects_absolute_rf_rates(self, dtype):
+        with pytest.raises((ValueError, RuntimeError)) as excinfo:
+            mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype=dtype)
+        # The message has to name the workaround; the symptom does not imply it.
+        assert "normalized" in str(excinfo.value)
+
+    @pytest.mark.parametrize("dtype", _NARROW)
+    def test_ddc_rejects_absolute_rf_rates(self, dtype):
+        with pytest.raises((ValueError, RuntimeError)) as excinfo:
+            mpdsp.DDC(self._RF_CARRIER, self._RF_RATE,
+                      mpdsp.design_halfband(11, 0.1), 2, dtype=dtype)
+        assert "normalized" in str(excinfo.value)
+
+    @pytest.mark.parametrize("dtype", _NARROW)
+    def test_retuning_is_guarded_too(self, dtype):
+        """set_frequency can push a healthy oscillator into NaN."""
+        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
+        assert np.isfinite(nco.phase_increment)
+        with pytest.raises((ValueError, RuntimeError)):
+            nco.set_frequency(self._RF_CARRIER, self._RF_RATE)
+
+    @pytest.mark.parametrize("dtype", _NARROW)
+    def test_ddc_retuning_is_guarded(self, dtype):
+        ddc = mpdsp.DDC(0.24, 1.0, mpdsp.design_halfband(11, 0.1), 2,
+                        dtype=dtype)
+        with pytest.raises((ValueError, RuntimeError)):
+            ddc.set_center_frequency(self._RF_CARRIER)
+
+    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline",
+                                       "posit_full", "cf24", "half",
+                                       "fpga_fixed"])
+    def test_normalized_rates_work_for_every_dtype(self, dtype):
+        """The documented workaround has to actually work everywhere."""
+        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
+        assert np.isfinite(nco.phase_increment)
+        assert nco.phase_increment == pytest.approx(0.24, abs=1e-3)
+
+        ddc = mpdsp.DDC(0.24, 1.0, mpdsp.design_halfband(11, 0.1), 2,
+                        dtype=dtype)
+        assert np.isfinite(ddc.nco_phase_increment)
+
+    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline",
+                                       "posit_full"])
+    def test_wide_dtypes_still_accept_absolute_rates(self, dtype):
+        """The guard must not reject configurations that were always fine."""
+        nco = mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype=dtype)
+        assert nco.phase_increment == pytest.approx(0.24, abs=1e-6)
