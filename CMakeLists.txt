@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.22)
 # the regex provider configured in pyproject.toml — do not hardcode
 # it anywhere else.
 project(mp-dsp-python
-	VERSION 0.8.0
+	VERSION 0.9.0
 	LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -33,14 +33,19 @@ project(mp-dsp-python
 #   -DMPDSP_REQUIRED_DSP_VERSION=0.5.0   (lower floor for experimentation)
 #   -DMPDSP_DSP_PIN=main                 (build against unreleased upstream)
 # ---------------------------------------------------------------------------
-set(MPDSP_REQUIRED_DSP_VERSION       "0.8.0"  CACHE STRING
+set(MPDSP_REQUIRED_DSP_VERSION       "0.9.0"  CACHE STRING
 	"Minimum mixed-precision-dsp version required at configure time")
 set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
 	"Minimum universal version required at configure time")
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
 	"Minimum mtl5 version required at configure time")
 
-set(MPDSP_DSP_PIN       "v0.8.0" CACHE STRING
+# v0.9.0 is the bug-fix release closing upstream #203-#206: the
+# Parks-McClellan exchange, the half-band designer, and the Constantinides
+# band transformations. This package's tests assert the fixed behaviour
+# (equiripple half-bands, lp_to_bs with actual notch zeros), so building
+# against v0.8.0 now fails them.
+set(MPDSP_DSP_PIN       "v0.9.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the

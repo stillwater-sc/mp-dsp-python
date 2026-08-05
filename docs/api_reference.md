@@ -1,8 +1,8 @@
 # `mpdsp` API reference
 
 Complete enumeration of every public name in the `mpdsp` package, grouped
-by subsystem. Generated from `0.8.0.dev0` (upstream `sw::dsp
-0.8.0`) via `inspect` and the nanobind-attached
+by subsystem. Generated from `0.9.0.dev0` (upstream `sw::dsp
+0.9.0`) via `inspect` and the nanobind-attached
 `__doc__` strings. Keep this in sync by re-running the generator — see
 the note at the bottom.
 
@@ -134,8 +134,8 @@ precision-cost frontier.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.8.0.dev0"`. |
-| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.8.0"`. |
+| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.9.0.dev0"`. |
+| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.9.0"`. |
 | `mpdsp.__dsp_version_info__` | `tuple` | `(major, minor, patch)` tuple of ints for `__dsp_version__`. |
 | `mpdsp.HAS_CORE` | `bool` | `True` when the nanobind extension imported cleanly. `False` in unbuilt source checkouts, and (pre-0.4.1.post1) indicated a packaging bug before we hardened the import. |
 | `mpdsp.HAS_PLOT` | `bool` | `True` when matplotlib is importable — gates the `plot_*` helpers. |
@@ -346,13 +346,13 @@ plot = mpdsp.apply_bilinear(
 
 Multirate primitives for the high-rate data-acquisition pipeline (CIC → half-band → polyphase FIR → baseband). The class entries live in the [Classes](#classes) section; the free-function design helpers are listed here.
 
-**Known limitation — `design_halfband` ([#117](https://github.com/stillwater-sc/mp-dsp-python/issues/117)).** The upstream Remez exchange does not converge correctly, so this designer tops out near 21 dB of stopband attenuation and gets *worse* with more taps — 127 taps at `transition_width=0.15` measures −24.7 dB, meaning the stopband sits above the passband. Where real selectivity matters, use `fir_lowpass` with a Kaiser or Blackman window, which reaches 88 dB at 51 taps.
+`design_halfband` takes an `exact_dc_gain` flag. A half-band satisfies A(0) + A(0.5) = 1 identically and A(0.5) is a stopband extremum, so unity DC gain and maximum stopband depth are mutually exclusive: the default (`False`) takes the deeper stopband and a DC gain of 1 ± δ, bounded by the same ripple the passband already accepts. Pass `True` when unity DC gain through cascaded stages matters more, at a cost of roughly 6 dB.
 
 **`NCO` and `DDC` hold `frequency` and `sample_rate` at the configuration's state precision** and divide only afterwards, so absolute rates at RF scale overflow narrow types. Passing normalized rates — `sample_rate=1.0` with the frequency as a fraction of it — is well defined for every dtype and means the same thing, since an oscillator only uses the ratio. Rates that would produce a non-finite phase increment now raise rather than yielding silent NaN.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `design_halfband` | `(num_taps: int, transition_width: float = 0.1, dtype: str = 'reference') -> ndarray` | Design an equiripple half-band lowpass filter via Remez exchange. num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). Returns NumPy float64 taps; dtype controls internal design precision. |
+| `design_halfband` | `(num_taps: int, transition_width: float = 0.1, exact_dc_gain: bool = False, dtype: str = 'reference') -> ndarray` | Design an equiripple half-band lowpass filter via Remez exchange. num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). Returns NumPy float64 taps; dtype controls internal design precision. |
 | `polyphase_decompose` | `(taps: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], factor: int, dtype: str = 'reference') -> list[ndarray]` | Decompose an FIR prototype into `factor` polyphase sub-filters. Returns a list of NumPy float64 arrays of length ceil(N/factor). |
 | `design_cic_compensator` | `(num_taps: int, cic_stages: int, cic_ratio: int, passband: float, differential_delay: int = 1, dtype: str = 'reference') -> ndarray` | Design an FIR that inverts a CIC decimator's passband droop, to be run at the CIC's output rate. Frequency-sampling design: samples 1/\|H_cic(f)\| across [0, passband], rolls off smoothly to Nyquist, IDFTs, applies a Hamming window, and normalizes to unit DC gain. |
 

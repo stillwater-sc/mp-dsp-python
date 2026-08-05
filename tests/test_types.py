@@ -810,11 +810,13 @@ class TestPrototypeResponseShape:
 
 
 class TestBandTransformResponseShape:
-    """Strict xfails tracking upstream mixed-precision-dsp#204.
+    """Response shape of lp_to_bp / lp_to_bs.
 
-    `strict=True` means these turn into failures the moment upstream is
-    fixed — which is exactly the notification wanted, since the dashboard
-    and its warning text should be reverted at that point.
+    These were strict xfails while upstream mixed-precision-dsp#204 was
+    open — `lp_to_bs` emitted no notch zeros at all, so the "bandstop"
+    peaked at the band centre. The strictness did its job: the moment the
+    fix landed the xfails turned into failures, which is what prompted this
+    conversion. They are ordinary assertions now.
     """
 
     _LOW, _HIGH = 800.0, 1200.0
@@ -826,9 +828,6 @@ class TestBandTransformResponseShape:
     def _sweep(self):
         return self._omega0 * np.logspace(-2, 2, 4001)
 
-    @pytest.mark.xfail(strict=True,
-                       reason="upstream mixed-precision-dsp#204: lp_to_bp "
-                              "peaks at ~3.5x omega0 instead of omega0")
     def test_bandpass_peaks_at_band_centre(self):
         bp = mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0),
                             self._LOW, self._HIGH)
@@ -836,17 +835,19 @@ class TestBandTransformResponseShape:
         peak = omega[int(np.argmax(_analog_response_db(bp, omega)))]
         assert peak == pytest.approx(self._omega0, rel=0.15)
 
-    @pytest.mark.xfail(strict=True,
-                       reason="upstream mixed-precision-dsp#204: lp_to_bp "
-                              "emits 2N origin zeros instead of N")
     def test_bandpass_zero_count(self):
+        """N zeros at the origin, not 2N.
+
+        Under s -> (s^2 + w0^2)/(BW s) an N-pole all-pole lowpass gives 2N
+        poles, with its N zeros at infinity mapping to the origin and the
+        other N staying at infinity.
+        """
         lp = mpdsp.butterworth_prototype(4, 1.0)
         bp = mpdsp.lp_to_bp(lp, self._LOW, self._HIGH)
         assert len(bp.s_zeros) == len(lp.s_poles)
+        np.testing.assert_allclose(np.abs(np.asarray(bp.s_zeros)), 0.0,
+                                   atol=1e-9)
 
-    @pytest.mark.xfail(strict=True,
-                       reason="upstream mixed-precision-dsp#204: lp_to_bs "
-                              "emits no notch zeros, so there is no notch")
     def test_bandstop_notches_at_band_centre(self):
         bs = mpdsp.lp_to_bs(mpdsp.butterworth_prototype(4, 1.0),
                             self._LOW, self._HIGH)
@@ -855,15 +856,20 @@ class TestBandTransformResponseShape:
         null = omega[int(np.argmin(db))]
         assert null == pytest.approx(self._omega0, rel=0.15)
 
-    @pytest.mark.xfail(strict=True,
-                       reason="upstream mixed-precision-dsp#204: lp_to_bs "
-                              "produces an all-pole constellation")
     def test_bandstop_has_jw_axis_zeros(self):
-        bs = mpdsp.lp_to_bs(mpdsp.butterworth_prototype(4, 1.0),
-                            self._LOW, self._HIGH)
-        assert len(bs.s_zeros) > 0
+        """The notch itself: 2N zeros at +/-j*w0, exactly on the jw axis.
+
+        An all-pole lowpass has no finite zeros, so every one of these is
+        created by the transformation — their absence is what made the old
+        `lp_to_bs` a bandpass in disguise.
+        """
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        bs = mpdsp.lp_to_bs(lp, self._LOW, self._HIGH)
+        assert len(bs.s_zeros) == 2 * len(lp.s_poles)
         zeros = np.asarray(bs.s_zeros)
         np.testing.assert_allclose(zeros.real, 0.0, atol=1e-9)
+        np.testing.assert_allclose(np.abs(zeros.imag), self._omega0,
+                                   rtol=1e-6)
 
     def test_transforms_still_double_the_order(self):
         """Unaffected by #204 and worth keeping green — the pole count is

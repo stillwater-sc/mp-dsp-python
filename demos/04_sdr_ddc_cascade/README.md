@@ -108,26 +108,41 @@ difference is scaling: `fpga_fixed`'s sample scalar is a fixed `fixpnt<16,12>`
 Q-format, while the sweep fits a power-of-two scale per stage. That is why
 real FPGA designs scale per stage, and it is visible here as 25 dB.
 
-## Two upstream problems this demo ran into
+## Two design notes
 
-Both are filed as **#117**; the demo works around them and says where.
+**The stages are Kaiser-windowed FIRs, not half-bands** — measured, not
+inherited. A half-band's transition band is structurally centred on 0.25, and
+several of this cascade's alias bands land inside it where nothing attenuates
+them. At its best setting (51 taps, `transition_width=0.1`) a half-band stage
+reaches 87 dB on its own, but the cascade gives **51.6 dB of alias rejection
+against the Kaiser design's 89.9 dB at the same 208 taps**. Narrowing the
+transition makes it worse, not better — 25 dB at `transition_width=0.02` —
+because a tighter spec on a fixed tap count buys nothing.
 
-**`design_halfband` and `remez_lowpass` do not meet spec.** The halfband
-designer tops out near 21 dB of stopband attenuation and gets *worse* with
-more taps (127 taps at `transition_width=0.15` measured −24.7 dB, i.e. the
-stopband is above the passband). `remez_lowpass` carries a fixed ~2.4 dB
-passband ripple and a 1.25 DC gain regardless of length. Both are Remez-based
-and look like a convergence failure. The cascade therefore uses
-`fir_lowpass` with a Kaiser window, which measures 88 dB stopband and 0.00 dB
-ripple at 51 taps — the window method is fine.
+The half-band does win on multiplies: 156 non-zero taps against 208. If the
+alias spec were looser, it would be the right call. It is not looser here.
 
-**`NCO` / `DDC` overflow on absolute rates.** Both take frequency and sample
-rate as the configuration's state scalar and divide only afterwards, so GHz
-values overflow narrow state types before the division can bring them back
-into range. At 1.2 GHz / 5 GSPS: `fpga_fixed` raises "sample_rate must be
-positive", and `cf24` and `half` **silently return a NaN phase increment**
-and carry on. This demo passes normalized rates (sample rate 1.0, carrier as
-a fraction), which is well-defined for every dtype and means the same thing.
+(An earlier version of this demo used Kaiser because upstream's Remez
+designers were broken — `design_halfband` topped out near 21 dB and got
+*worse* with more taps, filed as
+[mixed-precision-dsp#203](https://github.com/stillwater-sc/mixed-precision-dsp/issues/203).
+That is fixed: half-bands now reach 87 dB at 51 taps. The conclusion happens
+to be unchanged, but the reason is now a design trade rather than a defect,
+and the prediction in the old text — that a working designer would make the
+cascade *shorter* — turned out to be wrong.)
+
+**`NCO` and `DDC` need normalized rates.** Both take frequency and sample
+rate as the configuration's state scalar and divide only afterwards, so
+absolute GHz values overflow every type narrower than float before the
+division can recover the ratio. At 1.2 GHz / 5 GSPS, `fpga_fixed` cannot hold
+the rate at all and `cf24` / `half` produce a non-finite phase increment.
+These raise now rather than returning silent NaN, but raising is still a
+failure — the demo passes `sample_rate=1.0` with the carrier as a fraction,
+which every dtype handles and which means the same thing to an oscillator.
+The underlying fix is
+[mixed-precision-dsp#207](https://github.com/stillwater-sc/mixed-precision-dsp/issues/207):
+divide in double and convert only the ratio, which would make absolute Hz
+work everywhere.
 
 ## FPGA handoff
 

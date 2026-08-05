@@ -1047,31 +1047,17 @@ def main():
                     "selectivity_k (elliptic modulus)", 0.05, 0.99, 0.9,
                     step=0.01, key="analog_selectivity")
 
-            # Bandpass/bandstop can only be shown as the untransformed
-            # lowpass prototype: upstream's lp_to_bp / lp_to_bs produce
-            # constellations whose responses are not bandpass and bandstop
-            # (mixed-precision-dsp#204 — lp_to_bs emits no notch zeros at
-            # all). Rendering the transformed view would put a knowingly
-            # wrong curve on screen, so it is withheld rather than captioned.
-            # lp_to_hp is correct, so highpass keeps the choice.
+            # All three band transforms are trustworthy now that upstream
+            # mixed-precision-dsp#204 is fixed, so every non-lowpass
+            # topology gets the choice. It was withheld for bandpass and
+            # bandstop while lp_to_bp / lp_to_bs produced constellations
+            # whose responses were not bandpass and bandstop.
             as_lp = False
-            if topology == "highpass":
+            if topology in ("highpass", "bandpass", "bandstop"):
                 view = st.radio(
                     "View", ["Transformed H(s)", "Lowpass prototype"],
                     horizontal=True, key="analog_view")
                 as_lp = view == "Lowpass prototype"
-            elif topology in ("bandpass", "bandstop"):
-                as_lp = True
-                st.warning(
-                    f"Showing the **lowpass prototype** this {topology} is "
-                    f"built from. The transformed H(s) view is withheld: "
-                    f"upstream's `lp_to_bp` / `lp_to_bs` currently produce "
-                    f"constellations whose responses are not {topology} "
-                    f"(see [mixed-precision-dsp#204](https://github.com/"
-                    f"stillwater-sc/mixed-precision-dsp/issues/204)). The "
-                    f"prototype below is correct, and is the view this "
-                    f"pane's bilinear-warp comparison needs anyway."
-                )
 
             try:
                 proto = build_analog_prototype(

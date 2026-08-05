@@ -208,13 +208,11 @@ Two cases show an explanation instead of a plot:
 
 Two caveats worth knowing:
 
-- **Bandpass and bandstop** show the *lowpass prototype* they are built from,
-  not the transformed H(s). Upstream's `lp_to_bp` / `lp_to_bs` currently
-  produce constellations whose responses are not bandpass and bandstop
-  ([mixed-precision-dsp#204](https://github.com/stillwater-sc/mixed-precision-dsp/issues/204)
-  — `lp_to_bs` emits no notch zeros at all), so the transformed view is
-  withheld rather than shown wrong. Highpass keeps the choice, since
-  `lp_to_hp` is correct.
+- **Highpass, bandpass and bandstop** offer a **View** toggle: the
+  transformed H(s) belonging to this specific filter, or the normalized
+  lowpass prototype the band transformation starts from. The prototype view
+  shows the family signature without the transformation folded in; the
+  transformed view is what the bilinear step actually consumes.
 - **Elliptic** exposes its own `selectivity_k` slider. Upstream's elliptic
   prototype is parameterized by the elliptic modulus while the digital
   designer takes a `rolloff` factor; there is no exact mapping, so the

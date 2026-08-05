@@ -672,6 +672,11 @@ make_chain_impl(double input_rate, std::vector<ErasedStage<T>>& stages) {
 // Turning that into an error at construction is the whole difference between
 // a one-line fix and an afternoon of bisecting a pipeline. The message names
 // the workaround because it is not guessable from the symptom.
+//
+// This is a mitigation, not the fix. Upstream mixed-precision-dsp#207 would
+// divide in double and convert only the ratio, making absolute Hz work for
+// every state type; this guard stays useful regardless, since it catches any
+// non-finite accumulator rather than only this cause.
 // ---------------------------------------------------------------------------
 
 static void require_finite_phase(double increment, const char* cls,
@@ -996,26 +1001,28 @@ void bind_acquisition(nb::module_& m) {
 	// ---- Free design helpers -------------------------------------------
 	m.def("design_halfband",
 		[](std::size_t num_taps, double transition_width,
-		   const std::string& dtype) {
+		   bool exact_dc_gain, const std::string& dtype) {
 			auto config = mpdsp::parse_config(dtype);
 			return dispatch_dtype_fn(config, "design_halfband", [&]<typename T>() {
 				auto taps = sw::dsp::design_halfband<T>(
-					num_taps, T(transition_width));
+					num_taps, T(transition_width), exact_dc_gain);
 				return vec_to_numpy(taps);
 			});
 		}, nb::arg("num_taps"), nb::arg("transition_width") = 0.1,
+		   nb::arg("exact_dc_gain") = false,
 		   nb::arg("dtype") = "reference",
 		"Design an equiripple half-band lowpass filter via Remez exchange. "
 		"num_taps must be of the form 4K+3 (e.g., 7, 11, 15, 19, ...). "
 		"Returns NumPy float64 taps; dtype controls internal design "
 		"precision.\n\n"
-		"KNOWN LIMITATION (issue #117): the upstream Remez exchange does not "
-		"converge correctly, so this designer tops out near 21 dB of "
-		"stopband attenuation and gets *worse* with more taps — 127 taps at "
-		"transition_width=0.15 measures -24.7 dB, i.e. the stopband sits "
-		"above the passband. For anything needing real selectivity use "
-		"fir_lowpass with a Kaiser or Blackman window, which reaches 88 dB "
-		"at 51 taps.");
+		"exact_dc_gain trades the two properties a half-band cannot have at "
+		"once. A(0) + A(0.5) = 1 holds identically for a half-band and "
+		"A(0.5) is a stopband extremum, so the DC gain is 1 -/+ delta for "
+		"the equiripple design. Leave it false (the default) for the "
+		"deeper stopband — the DC error is bounded by the same ripple the "
+		"passband already accepts. Pass true when unity DC gain through "
+		"cascaded stages matters more, at a cost of about 6 dB of "
+		"attenuation.");
 
 	m.def("design_cic_compensator",
 		[](std::size_t num_taps, int cic_stages, int cic_ratio,

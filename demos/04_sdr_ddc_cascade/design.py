@@ -11,13 +11,20 @@ Cascade, total decimation 16 (5 GSPS -> 312.5 MSPS):
 
 Why the stages are window-method FIRs
 -------------------------------------
-`design_halfband` and `remez_lowpass` are the natural fits and are not used
-here, because measured against this spec they do not deliver: the halfband
-designer tops out near 21 dB of stopband attenuation and gets *worse* with
-more taps, and `remez_lowpass` carries a fixed ~2.4 dB passband ripple with a
-1.25 DC gain regardless of length. `fir_lowpass` with a Kaiser window hits
-88 dB stopband and 0.00 dB ripple at 51 taps, so the cascade is built from
-that. See the README, and mp-dsp-python#117.
+`design_halfband` is the natural fit for a decimate-by-2 stage and is still
+not used, but for a measured reason rather than the bug that originally
+forced it. A half-band's transition band is structurally centred on 0.25:
+at its best setting here (51 taps, `transition_width=0.1`) a single stage
+reaches 87 dB, but several of the cascade's alias bands land inside that
+transition, where nothing is attenuating them. Measured on this spec, a
+half-band cascade gives 51.6 dB of alias rejection against the Kaiser
+design's 89.9 dB at the same 208 taps — and narrowing the transition makes
+it worse, not better (25 dB at `transition_width=0.02`), since a tighter
+spec on a fixed tap count buys nothing.
+
+The half-band does win on multiplies — 156 non-zero taps against 208 — so
+if the alias-band spec were looser it would be the right call. It is not
+looser here.
 
 Validation
 ----------
@@ -180,12 +187,16 @@ def run_cascade(signal: np.ndarray, stages: list[np.ndarray], meta: dict,
     of it), not in Hz. This is not cosmetic. `NCO` and `DDC` take frequency
     and sample rate as the configuration's state scalar and divide only
     afterwards, so absolute GHz values overflow every narrow state type
-    before the division can bring them back into range. Measured at
-    1.2 GHz / 5 GSPS: `fpga_fixed` (fixpnt<32,24>, integer range +/-128)
-    raises "sample_rate must be positive", and `cf24` and `half` silently
-    return a NaN phase increment and carry on producing garbage. Normalized
-    rates keep every dtype in range and mean the same thing — a DDC only
-    ever cares about the ratio. See mp-dsp-python#117.
+    before the division can bring them back into range. At 1.2 GHz / 5 GSPS
+    every type narrower than float fails: `fpga_fixed` (fixpnt<32,24>,
+    integer range +/-128) cannot hold the rate at all, and `cf24` and `half`
+    produce a non-finite phase increment.
+
+    Those now raise rather than returning silent NaN (the guard added in
+    mp-dsp-python#117), but raising is still a failure — normalized rates
+    are what actually works, and they mean the same thing, since an
+    oscillator only ever uses the ratio. The underlying fix is upstream
+    mixed-precision-dsp#207: divide in double and convert only the ratio.
     """
     carrier_normalized = meta["carrier_hz"] / meta["sample_rate_hz"]
 
