@@ -465,6 +465,12 @@ public:
 	// This captures the dominant quantization effect (coefficient precision);
 	// pole extraction is done in double on both cascades.
 	double pole_displacement(const std::string& dtype) const;
+
+	// Frequency response with the coefficients quantized through `dtype`
+	// first. Defined out of line because the quantization dispatcher lives
+	// below, next to pole_displacement's.
+	np_c128 frequency_response_quantized(np_f64_ro normalized_freqs,
+	                                     const std::string& dtype) const;
 };
 
 // ---------------------------------------------------------------------------
@@ -862,8 +868,13 @@ static CascadeD quantize_cascade(const CascadeD& src) {
 	return dst;
 }
 
-static double pole_displacement_dispatch(const CascadeD& src,
-                                         mpdsp::ArithConfig config) {
+// Round-trip every coefficient through `config`'s scalar type and hand back
+// the resulting double cascade. Shared by pole_displacement (which measures
+// how far the poles moved) and frequency_response(dtype=) (which evaluates
+// what the quantized cascade actually does) — the same quantization seen
+// through two different questions, so it must be exactly one table.
+static CascadeD quantize_cascade_dispatch(const CascadeD& src,
+                                          mpdsp::ArithConfig config) {
 	using mpdsp::ArithConfig;
 	using mpdsp::cf24;
 	using mpdsp::fx3224_t;
@@ -881,17 +892,19 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	using mpdsp::p32_2;
 	CascadeD quantized;
 	switch (config) {
-	case ArithConfig::reference:    return 0.0;  // no quantization
+	case ArithConfig::reference:    return src;  // no quantization
 	case ArithConfig::gpu_baseline: quantized = quantize_cascade<float>(src); break;
 	case ArithConfig::ml_hw:        quantized = quantize_cascade<half_>(src); break;
 	case ArithConfig::cf24_config:  quantized = quantize_cascade<cf24>(src); break;
 	case ArithConfig::half_config:  quantized = quantize_cascade<half_>(src); break;
 	case ArithConfig::posit_full:   quantized = quantize_cascade<p32>(src); break;
 	// sensor_* keep coefficients at double (only the sample path quantizes),
-	// so coefficient-level pole displacement is zero for them.
+	// so there is nothing to quantize here: pole displacement is zero and
+	// the frequency response is identical to reference. That is a true
+	// answer to the coefficient question, not a missing case.
 	case ArithConfig::sensor_8bit:
 	case ArithConfig::sensor_6bit:
-		return 0.0;
+		return src;
 	case ArithConfig::fpga_fixed:
 		quantized = quantize_cascade<fx3224_t>(src); break;
 	// Posit taxonomy grid (#81) — coefficient-level quantization through
@@ -906,7 +919,14 @@ static double pole_displacement_dispatch(const CascadeD& src,
 	case ArithConfig::posit_32_1: quantized = quantize_cascade<p32_1>(src); break;
 	case ArithConfig::posit_32_2: quantized = quantize_cascade<p32_2>(src); break;
 	}
-	return sw::dsp::pole_displacement(src, quantized);
+	return quantized;
+}
+
+static double pole_displacement_dispatch(const CascadeD& src,
+                                         mpdsp::ArithConfig config) {
+	if (config == mpdsp::ArithConfig::reference) return 0.0;
+	return sw::dsp::pole_displacement(
+		src, quantize_cascade_dispatch(src, config));
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,6 +1214,30 @@ double PyIIRFilter::pole_displacement(const std::string& dtype) const {
 	return pole_displacement_dispatch(cascade, config);
 }
 
+np_c128 PyIIRFilter::frequency_response_quantized(
+		np_f64_ro normalized_freqs, const std::string& dtype) const {
+	auto config = mpdsp::parse_config(dtype);
+	// Evaluation stays in double; only the coefficients are quantized. That
+	// is the deployment question this answers — "what does storing these
+	// coefficients in T do to my response" — and it is exactly the dual of
+	// pole_displacement, which asks the same thing about the poles.
+	//
+	// It deliberately does NOT model state or sample-path arithmetic: the
+	// filter state stays double throughout. For the response a filter
+	// actually realizes at a dtype, including sample-path quantization, use
+	// sweep_bode(), which measures it empirically by running samples through.
+	const CascadeD quantized = quantize_cascade_dispatch(cascade, config);
+
+	std::size_t n = normalized_freqs.shape(0);
+	std::complex<double>* out_ptr = nullptr;
+	auto arr = make_c128_array(n, out_ptr);
+	const double* f = normalized_freqs.data();
+	for (std::size_t i = 0; i < n; ++i) {
+		out_ptr[i] = quantized.response(f[i]);
+	}
+	return arr;
+}
+
 // ---------------------------------------------------------------------------
 // Module registration.
 // ---------------------------------------------------------------------------
@@ -1236,10 +1280,19 @@ void bind_filters(nb::module_& m) {
 		     nb::arg("signal"), nb::arg("dtype") = "reference",
 		     "Filter a signal. dtype selects arithmetic for state and samples "
 		     "(see available_dtypes()). Returns NumPy float64.")
-		.def("frequency_response", &PyIIRFilter::frequency_response,
-		     nb::arg("normalized_freqs"),
+		.def("frequency_response",
+		     &PyIIRFilter::frequency_response_quantized,
+		     nb::arg("normalized_freqs"), nb::arg("dtype") = "reference",
 		     "Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). "
-		     "Returns complex128.")
+		     "Returns complex128.\n\n"
+		     "dtype quantizes the coefficients through that type before "
+		     "evaluating — the deployment question, and the dual of "
+		     "pole_displacement(dtype): one asks what quantizing the "
+		     "coefficients does to the response, the other what it does to "
+		     "the poles. Evaluation itself stays in double, so this does "
+		     "not model state or sample-path arithmetic; for the response a "
+		     "filter actually realizes at a dtype, use sweep_bode(), which "
+		     "measures it by running samples through.")
 		.def("stability_margin", &PyIIRFilter::stability_margin,
 		     "1 - max(|pole|). Positive = stable, 0 = marginal, < 0 = unstable.")
 		.def("condition_number", &PyIIRFilter::condition_number,

@@ -425,3 +425,110 @@ class TestAnalogPrototypePane:
         assert dashboard.build_analog_prototype(
             "Butterworth", "bandpass", 4,
             {"center": 100.0, "width": 400.0}, {}) is None
+
+
+class TestDtypeMagnitudeOverlay:
+    """The frequency-response pane must draw real per-dtype curves (#77).
+
+    Before this landed the pane added empty legend artists carrying only an
+    SQNR number, which read as colour-coded curves that were not there.
+    """
+
+    @staticmethod
+    def _filter():
+        import mpdsp
+        return mpdsp.butterworth_lowpass(order=6, sample_rate=8000.0,
+                                         cutoff=800.0)
+
+    @staticmethod
+    def _plotted(ax):
+        """Lines with actual data — the empty-artist trick is what we are
+        guarding against, so length matters."""
+        return [ln for ln in ax.get_lines() if len(ln.get_xdata()) > 0]
+
+    @pytest.mark.parametrize("x_scale", ["linear", "log"])
+    def test_one_curve_per_dtype(self, dashboard, x_scale):
+        import matplotlib.pyplot as plt
+        import mpdsp
+        signal = mpdsp.white_noise(length=1024, amplitude=0.5, seed=1)
+        dtypes = ["reference", "half", "posit_8_2"]
+
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, dtypes, signal,
+            x_scale=x_scale, cutoff=800.0)
+        try:
+            ax = fig.axes[0]
+            # reference + one per non-reference dtype.
+            assert len(self._plotted(ax)) == len(dtypes)
+            labels = [ln.get_label() for ln in self._plotted(ax)]
+            assert any("half" in l for l in labels)
+            assert any("posit_8_2" in l for l in labels)
+        finally:
+            plt.close(fig)
+
+    def test_curves_actually_differ(self, dashboard):
+        """A coarse dtype must visibly separate from the reference line."""
+        import matplotlib.pyplot as plt
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, ["reference", "posit_8_2"], None,
+            cutoff=800.0)
+        try:
+            curves = self._plotted(fig.axes[0])
+            reference, coarse = curves[0].get_ydata(), curves[-1].get_ydata()
+            assert np.max(np.abs(coarse - reference)) > 1.0
+        finally:
+            plt.close(fig)
+
+    def test_sqnr_annotation_is_kept(self, dashboard):
+        """The SQNR number carries the sample-path effect the curve cannot,
+        so it stays in the label when a signal is supplied."""
+        import matplotlib.pyplot as plt
+        import mpdsp
+        signal = mpdsp.white_noise(length=1024, amplitude=0.5, seed=1)
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, ["reference", "half"], signal,
+            cutoff=800.0)
+        try:
+            labels = [ln.get_label() for ln in self._plotted(fig.axes[0])]
+            assert any("SQNR" in l for l in labels)
+        finally:
+            plt.close(fig)
+
+    def test_works_without_a_signal(self, dashboard):
+        """Curves do not depend on the test signal; only the SQNR does."""
+        import matplotlib.pyplot as plt
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, ["reference", "half"], None, cutoff=800.0)
+        try:
+            labels = [ln.get_label() for ln in self._plotted(fig.axes[0])]
+            assert len(self._plotted(fig.axes[0])) == 2
+            assert not any("SQNR" in l for l in labels)
+        finally:
+            plt.close(fig)
+
+    def test_coefficient_preserving_dtype_is_labelled(self, dashboard):
+        """sensor_* leaves the coefficients alone, so its curve lies exactly
+        on the reference. Without a label that reads as a missing curve."""
+        import matplotlib.pyplot as plt
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, ["reference", "sensor_8bit"], None,
+            cutoff=800.0)
+        try:
+            labels = [ln.get_label() for ln in self._plotted(fig.axes[0])]
+            assert any("coefficients unchanged" in l for l in labels)
+        finally:
+            plt.close(fig)
+
+    def test_bad_dtype_degrades_to_a_legend_note(self, dashboard):
+        """One broken dtype must not take the whole pane down."""
+        import matplotlib.pyplot as plt
+        fig = dashboard.plot_magnitude_phase(
+            self._filter(), 8000.0, ["reference", "not_a_dtype"], None,
+            cutoff=800.0)
+        try:
+            ax = fig.axes[0]
+            assert len(self._plotted(ax)) == 1          # reference survives
+            all_labels = [ln.get_label() for ln in ax.get_lines()]
+            assert any("not_a_dtype" in l for l in all_labels)
+        finally:
+            plt.close(fig)

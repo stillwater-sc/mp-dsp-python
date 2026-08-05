@@ -1371,3 +1371,120 @@ class TestSweepBode:
         with pytest.raises((ValueError, RuntimeError)):
             mpdsp.sweep_bode(_bode_iir(), _BODE_FS, 50.0, 3000.0,
                              dtype="not_a_dtype")
+
+
+# ---------------------------------------------------------------------------
+# Per-dtype frequency response (Issue #77).
+#
+# frequency_response(freqs, dtype=) quantizes the coefficients through the
+# target type and evaluates the resulting cascade in double. It is the dual of
+# pole_displacement(dtype): one asks what quantizing the coefficients does to
+# the response, the other what it does to the poles. Neither models the
+# state or sample path — sweep_bode does that.
+# ---------------------------------------------------------------------------
+
+class TestFrequencyResponseDtype:
+    @staticmethod
+    def _filter():
+        return mpdsp.butterworth_lowpass(order=6, sample_rate=SAMPLE_RATE,
+                                         cutoff=800.0)
+
+    @staticmethod
+    def _freqs():
+        return np.linspace(0.001, 0.49, 400)
+
+    @staticmethod
+    def _max_deviation_db(reference, other):
+        to_db = lambda h: 20.0 * np.log10(np.abs(h) + 1e-30)  # noqa: E731
+        return float(np.max(np.abs(to_db(other) - to_db(reference))))
+
+    def test_default_is_unchanged(self):
+        """Omitting dtype must behave exactly as before the kwarg existed."""
+        filt, freqs = self._filter(), self._freqs()
+        np.testing.assert_array_equal(
+            filt.frequency_response(freqs),
+            filt.frequency_response(freqs, dtype="reference"))
+
+    def test_shape_and_dtype(self):
+        filt, freqs = self._filter(), self._freqs()
+        out = filt.frequency_response(freqs, dtype="half")
+        assert out.shape == freqs.shape
+        assert out.dtype == np.complex128
+        assert np.all(np.isfinite(out))
+
+    @pytest.mark.parametrize("dtype", ["gpu_baseline", "cf24", "posit_full",
+                                       "half", "posit_16_1", "posit_8_2",
+                                       "fpga_fixed"])
+    def test_every_dtype_evaluates(self, dtype):
+        filt, freqs = self._filter(), self._freqs()
+        assert np.all(np.isfinite(filt.frequency_response(freqs, dtype=dtype)))
+
+    def test_coarse_dtype_deviates_more_than_fine(self):
+        """The curves must be ordered by precision, or the overlay is noise.
+
+        Measured on this filter: ~0.000 dB for posit<32,2>-backed configs,
+        0.009 dB for half, 2.05 dB for posit<8,2>.
+        """
+        filt, freqs = self._filter(), self._freqs()
+        reference = filt.frequency_response(freqs)
+        fine = self._max_deviation_db(
+            reference, filt.frequency_response(freqs, dtype="posit_full"))
+        mid = self._max_deviation_db(
+            reference, filt.frequency_response(freqs, dtype="half"))
+        coarse = self._max_deviation_db(
+            reference, filt.frequency_response(freqs, dtype="posit_8_2"))
+        assert fine < mid < coarse
+        assert coarse > 1.0
+
+    @pytest.mark.parametrize("dtype", ["sensor_8bit", "sensor_6bit"])
+    def test_sensor_dtypes_leave_coefficients_alone(self, dtype):
+        """Not a missing case: sensor_* quantize the sample path only, so
+        the coefficient-quantized response is identical to reference. The
+        dashboard labels this rather than drawing an invisible curve."""
+        filt, freqs = self._filter(), self._freqs()
+        np.testing.assert_array_equal(
+            filt.frequency_response(freqs),
+            filt.frequency_response(freqs, dtype=dtype))
+        assert filt.pole_displacement(dtype) == 0.0
+
+    def test_agrees_with_pole_displacement_on_what_moved(self):
+        """A dtype that moves no poles must not move the response, and one
+        that moves poles must move it — the two views share one quantizer."""
+        filt, freqs = self._filter(), self._freqs()
+        reference = filt.frequency_response(freqs)
+        for dtype in ("posit_full", "half", "posit_8_2"):
+            moved = filt.pole_displacement(dtype) > 1e-6
+            deviated = self._max_deviation_db(
+                reference, filt.frequency_response(freqs, dtype=dtype)) > 1e-6
+            assert moved == deviated, f"{dtype}: poles/response disagree"
+
+    def test_gain_error_without_pole_movement_is_visible(self):
+        """fpga_fixed barely moves the poles yet shifts the response by
+        0.38 dB — the numerator quantizes worse than the denominator. This
+        is precisely what pole_displacement alone cannot tell you, and the
+        reason a response overlay earns its place."""
+        filt, freqs = self._filter(), self._freqs()
+        deviation = self._max_deviation_db(
+            filt.frequency_response(freqs),
+            filt.frequency_response(freqs, dtype="fpga_fixed"))
+        assert filt.pole_displacement("fpga_fixed") < 1e-5
+        assert deviation > 0.1
+
+    def test_unknown_dtype_raises(self):
+        filt, freqs = self._filter(), self._freqs()
+        with pytest.raises((ValueError, RuntimeError)):
+            filt.frequency_response(freqs, dtype="not_a_dtype")
+
+    def test_works_across_families_and_topologies(self):
+        makers = [
+            mpdsp.butterworth_bandpass(order=4, sample_rate=SAMPLE_RATE,
+                                       center_freq=1000.0, width_freq=400.0),
+            mpdsp.chebyshev1_lowpass(order=4, sample_rate=SAMPLE_RATE,
+                                     cutoff=1000.0, ripple_db=1.0),
+            mpdsp.rbj_lowshelf(sample_rate=SAMPLE_RATE, cutoff=1000.0,
+                               gain_db=6.0),
+        ]
+        freqs = self._freqs()
+        for filt in makers:
+            out = filt.frequency_response(freqs, dtype="posit_16_1")
+            assert out.shape == freqs.shape and np.all(np.isfinite(out))

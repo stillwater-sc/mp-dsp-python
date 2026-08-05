@@ -223,11 +223,21 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
     small positive lower bound instead (fs/10000 for "Hz", 0.01·f_c for
     "ratio") so the log sweep gets ~4 decades of context.
 
-    If `dtypes` and `signal` are provided, overlays per-dtype magnitude
-    responses computed from the filter's quantized coefficients. Today this
-    just annotates the reference curve with SQNR per dtype; true per-dtype
-    frequency response requires upstream support (#40) for mixed-precision
-    spectral analysis.
+    If `dtypes` is provided, overlays one magnitude curve per dtype: the
+    response of the cascade with its coefficients round-tripped through that
+    type, via `IIRFilter.frequency_response(freqs, dtype=)`.
+
+    That models coefficient quantization — the dominant deployment-time
+    effect, and the thing filter families are compared on. It does *not*
+    model state or sample-path arithmetic, which stays at double during
+    evaluation; `sweep_bode()` measures that empirically by running samples
+    through the filter.
+
+    When `signal` is also given, each curve's legend entry carries the SQNR
+    of that dtype's `process()` output against the reference. That number
+    *does* include the sample-path effect, so a dtype whose curve sits on
+    the reference line can still show a finite SQNR — the two measurements
+    answer different questions and are shown together deliberately.
     """
     nyquist = sample_rate / 2.0
 
@@ -280,17 +290,38 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
     if normalize:
         ax_mag.axhline(-3.0, color="0.7", linewidth=0.5, linestyle="--")
 
-    if dtypes and signal is not None:
-        ref_out = filt.process(signal, dtype="reference")
+    # Per-dtype magnitude overlay (#77). Each curve is the response of the
+    # cascade with its coefficients quantized through that dtype — the
+    # deployment question. The SQNR annotation stays in the label: it comes
+    # from running the test signal through, so it also carries the
+    # state/sample-path effect that the coefficient-quantized curve cannot.
+    # The two numbers answer different questions and are useful together.
+    if dtypes:
+        ax_mag.plot([], [], " ", label="—")  # legend spacer before overlays
+        ref_out = (filt.process(signal, dtype="reference")
+                   if signal is not None else None)
         for dt in dtypes:
             if dt == "reference":
                 continue
             try:
-                out = filt.process(signal, dtype=dt)
-                sqnr = mpdsp.sqnr_db(ref_out, out)
-                ax_mag.plot([], [], " ", label=f"{dt}: SQNR={sqnr:.1f} dB")
-            except Exception:  # noqa: BLE001 - surface whatever upstream throws
-                ax_mag.plot([], [], " ", label=f"{dt}: error")
+                mag_db_dt = 20.0 * np.log10(np.maximum(
+                    np.abs(filt.frequency_response(freqs, dtype=dt)), 1e-12))
+
+                label = dt
+                if ref_out is not None:
+                    out = filt.process(signal, dtype=dt)
+                    label = f"{dt} (SQNR {mpdsp.sqnr_db(ref_out, out):.1f} dB)"
+
+                # A dtype that leaves the coefficients untouched would draw
+                # exactly under the reference line and read as a missing
+                # curve; say so instead.
+                if np.allclose(mag_db_dt, mag_db, atol=1e-9):
+                    label += " — coefficients unchanged"
+
+                ax_mag.plot(x, mag_db_dt, linewidth=1.1, alpha=0.85,
+                            label=label)
+            except Exception as exc:  # noqa: BLE001
+                ax_mag.plot([], [], " ", label=f"{dt}: {type(exc).__name__}")
         ax_mag.legend(loc="best", fontsize="small")
 
     ax_phase.plot(x, phase, linewidth=1.4, color="C1")

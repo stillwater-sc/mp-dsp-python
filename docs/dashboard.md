@@ -150,11 +150,31 @@ unwrapped phase (in radians) over the full `[0, fs/2]` band.
 
 - The **reference curve** is the double-precision frequency response
   computed from the designed biquad coefficients.
-- If you have any non-reference dtypes selected, they appear as
-  **annotations in the legend** showing the SQNR between that dtype's
-  processed-signal output and the reference. Genuine per-dtype
-  magnitude response requires spectral `dtype=` dispatch, tracked in
-  #40.
+- Every non-reference dtype you select gets **its own overlaid curve**: the
+  response of the cascade with its coefficients round-tripped through that
+  type. This is the deployment question — *what does storing these
+  coefficients in T do to my magnitude response* — and it is the dual of the
+  pole-displacement figure on the Pole / zero tab, which asks the same thing
+  about the poles.
+- Each curve's legend entry also carries the **SQNR** of that dtype's
+  `process()` output against the reference. That number is measured by
+  running the test signal through, so it includes the state and sample-path
+  arithmetic that the coefficient-quantized curve does not.
+
+Those two measurements answer different questions, and reading them together
+is the point:
+
+| What you see | What it means |
+|---|---|
+| Curve separates from reference | Coefficient quantization is changing the filter's shape. |
+| Curve on the reference line, SQNR still finite | Coefficients survive the type; the loss is in the state or sample path. `sensor_8bit` is the clean example — it quantizes only the sample path, so its curve is labelled *coefficients unchanged*. |
+| Curve separates but poles barely move | The numerator is quantizing worse than the denominator — gain and zero placement, not stability. `fpga_fixed` on a steep lowpass shows 0.38 dB of response error against a pole displacement of ~1e-7. |
+
+For the response a filter *actually realizes* at a dtype — coefficients,
+state and sample path together — use `mpdsp.sweep_bode()`, which measures it
+empirically by driving the filter with settled sines rather than evaluating
+H(z). The overlay here is analytic and instant; `sweep_bode` is slower and
+more complete.
 
 ### Tab 2: Analog prototype (pre-bilinear H(s))
 

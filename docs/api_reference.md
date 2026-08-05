@@ -528,7 +528,7 @@ Returned by every `*_lowpass` / `*_highpass` / `*_bandpass` / `*_bandstop` / `rb
 |--------|-------------------------|
 | `.coefficients` | `(self) -> list[tuple[float, float, float, float, float]]` — List of (b0, b1, b2, a1, a2) tuples, one per stage. |
 | `.condition_number` | `(self, num_freqs: int = 256) -> float` — Worst-case relative change in \|H\| per coefficient perturbation across stages. Higher = more sensitive to coefficient quantization. |
-| `.frequency_response` | `(self, normalized_freqs: numpy.ndarray[dtype=float64, shape=(*), writable=False]) -> numpy.ndarray[dtype=complex128]` — Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). Returns complex128. |
+| `.frequency_response` | `(self, normalized_freqs: numpy.ndarray[dtype=float64, shape=(*), writable=False], dtype: str = 'reference') -> numpy.ndarray[dtype=complex128]` — Evaluate H(e^{j2*pi*f}) at each normalized frequency (f/fs). Returns complex128. |
 | `.from_coefficients` | `(biquads: collections.abc.Sequence[mpdsp._core.BiquadCoefficients]) -> mpdsp._core.IIRFilter` — Construct an IIRFilter from a list of BiquadCoefficients. Length must be in [1, 8] (compile-time cascade bound). Each element populates one biquad section in order. Enables importing coefficients designed elsewhere (scipy, MATLAB, hand-designed cascades) into the mpdsp… |
 | `.num_stages` | `(self) -> int` — Number of active biquad sections. |
 | `.pole_displacement` | `(self, dtype: str) -> float` — Max pole displacement when coefficients are quantized through the target dtype (see available_dtypes). Returns 0 for 'reference'. |
