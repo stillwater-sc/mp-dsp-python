@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -271,3 +272,156 @@ class TestBuildApiRef:
             "If the change is prose, edit INTROS / CLASS_INTROS in "
             "scripts/build_api_ref.py rather than the document."
         )
+
+
+# ---------------------------------------------------------------------------
+# plot_dashboard.py — analog-prototype pane (Issue #78)
+#
+# The dashboard imports streamlit at module scope but never calls it at import
+# time, so the plotting functions are testable behind a stub. That matters:
+# streamlit is an optional extra that CI does not install, so importorskip
+# would mean this logic is never exercised anywhere.
+# ---------------------------------------------------------------------------
+
+_DASHBOARD = Path(__file__).resolve().parents[1] / "scripts" / "plot_dashboard.py"
+
+
+@pytest.fixture(scope="module")
+def dashboard():
+    pytest.importorskip("mpdsp")
+    pytest.importorskip("matplotlib")
+    import importlib
+    import types as _types
+
+    import matplotlib
+    matplotlib.use("Agg")
+
+    # Stub streamlit only if it is genuinely absent, so a real install is
+    # exercised when present.
+    installed = sys.modules.get("streamlit")
+    if installed is None:
+        try:
+            import streamlit  # noqa: F401
+        except ImportError:
+            sys.modules["streamlit"] = _types.ModuleType("streamlit")
+
+    sys.path.insert(0, str(_DASHBOARD.parent))
+    try:
+        yield importlib.import_module("plot_dashboard")
+    finally:
+        sys.path.remove(str(_DASHBOARD.parent))
+
+
+_FREQ_PARAMS = {"cutoff": 1000.0, "center": 1000.0, "width": 400.0}
+_SAMPLE_RATE = 8000.0
+
+
+class TestAnalogPrototypePane:
+    @pytest.mark.parametrize("family", [
+        "Butterworth", "Chebyshev I", "Chebyshev II", "Bessel", "Elliptic"])
+    def test_supported_families_are_available(self, dashboard, family):
+        available, reason = dashboard.analog_prototype_available(family)
+        assert available and reason == ""
+
+    @pytest.mark.parametrize("family,needle", [
+        ("RBJ", "z-plane"),
+        ("Legendre", "no analog-prototype factory"),
+    ])
+    def test_unsupported_families_explain_themselves(self, dashboard, family,
+                                                     needle):
+        """RBJ has no analog prototype by construction; Legendre has none
+        bound upstream. Both must say so rather than render nothing."""
+        available, reason = dashboard.analog_prototype_available(family)
+        assert not available
+        assert needle in reason
+
+    @pytest.mark.parametrize("topology,expected_kind", [
+        ("lowpass", "lowpass"),
+        ("highpass", "highpass"),
+    ])
+    def test_prototype_topology(self, dashboard, topology, expected_kind):
+        plot = dashboard.build_analog_prototype(
+            "Butterworth", topology, 4, _FREQ_PARAMS, {})
+        assert plot is not None
+        assert plot.kind == expected_kind
+        assert len(plot.s_poles) == 4
+
+    def test_lowpass_prototype_view_is_untransformed(self, dashboard):
+        plot = dashboard.build_analog_prototype(
+            "Butterworth", "bandpass", 4, _FREQ_PARAMS, {},
+            as_lowpass_prototype=True)
+        assert plot.kind == "lowpass"
+        assert len(plot.s_poles) == 4
+
+    def test_family_specific_parameters_reach_the_factory(self, dashboard):
+        """Changing ripple must change the constellation, or the pane is
+        silently ignoring the sidebar."""
+        gentle = dashboard.build_analog_prototype(
+            "Chebyshev I", "lowpass", 4, _FREQ_PARAMS, {"ripple_db": 0.1})
+        steep = dashboard.build_analog_prototype(
+            "Chebyshev I", "lowpass", 4, _FREQ_PARAMS, {"ripple_db": 3.0})
+        assert gentle.ripple_db != steep.ripple_db
+        assert not np.allclose(np.asarray(gentle.s_poles),
+                               np.asarray(steep.s_poles))
+
+    def test_elliptic_selectivity_is_wired(self, dashboard):
+        loose = dashboard.build_analog_prototype(
+            "Elliptic", "lowpass", 4, _FREQ_PARAMS, {"ripple_db": 1.0},
+            selectivity_k=0.5)
+        tight = dashboard.build_analog_prototype(
+            "Elliptic", "lowpass", 4, _FREQ_PARAMS, {"ripple_db": 1.0},
+            selectivity_k=0.95)
+        assert not np.allclose(np.asarray(loose.s_poles),
+                               np.asarray(tight.s_poles))
+
+    def test_response_is_peak_normalized(self, dashboard):
+        plot = dashboard.build_analog_prototype(
+            "Butterworth", "lowpass", 4, _FREQ_PARAMS, {})
+        omega = 2 * np.pi * np.logspace(1, 5, 500)
+        mag_db, phase_deg = dashboard.analog_response(plot, omega)
+        assert mag_db.max() == pytest.approx(0.0, abs=1e-9)
+        assert np.all(np.isfinite(mag_db)) and np.all(np.isfinite(phase_deg))
+
+    def test_response_matches_the_analog_prototype(self, dashboard):
+        """-3 dB at cutoff — the pane must plot the real H(s), not a stand-in."""
+        plot = dashboard.build_analog_prototype(
+            "Butterworth", "lowpass", 4, _FREQ_PARAMS, {})
+        mag_db, _ = dashboard.analog_response(
+            plot, 2 * np.pi * np.array([100.0, 1000.0, 10000.0]))
+        assert mag_db[0] == pytest.approx(0.0, abs=0.01)
+        assert mag_db[1] == pytest.approx(-3.01, abs=0.05)
+        assert mag_db[2] == pytest.approx(-80.0, abs=0.5)
+
+    def test_phase_is_unwrapped(self, dashboard):
+        plot = dashboard.build_analog_prototype(
+            "Butterworth", "lowpass", 6, _FREQ_PARAMS, {})
+        _, phase_deg = dashboard.analog_response(
+            plot, 2 * np.pi * np.logspace(1, 5, 2000))
+        # Unwrapped phase has no 360-degree jumps between adjacent samples.
+        assert np.abs(np.diff(phase_deg)).max() < 180.0
+
+    @pytest.mark.parametrize("family,extra", [
+        ("Butterworth", {}),
+        ("Chebyshev I", {"ripple_db": 1.0}),
+        ("Chebyshev II", {"stopband_db": 40.0}),
+        ("Bessel", {}),
+        ("Elliptic", {"ripple_db": 1.0}),
+    ])
+    @pytest.mark.parametrize("topology",
+                             ["lowpass", "highpass", "bandpass", "bandstop"])
+    def test_figure_renders(self, dashboard, family, extra, topology):
+        import matplotlib.pyplot as plt
+        plot = dashboard.build_analog_prototype(
+            family, topology, 4, _FREQ_PARAMS, extra)
+        assert plot is not None
+        fig = dashboard.plot_analog_bode(plot, _SAMPLE_RATE)
+        try:
+            assert len(dashboard.figure_to_png_bytes(fig)) > 0
+        finally:
+            plt.close(fig)
+
+    def test_degenerate_band_is_rejected(self, dashboard):
+        """A band whose lower edge reaches DC has no bandpass prototype."""
+        assert dashboard.build_analog_prototype(
+            "Butterworth", "bandpass", 4,
+            {"center": 100.0, "width": 400.0}, {}) is None

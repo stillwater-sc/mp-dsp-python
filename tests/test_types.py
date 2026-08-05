@@ -709,3 +709,166 @@ class TestPrototypeTransforms:
         assert plot.kind == "bandpass"
         assert len(plot.z_poles) == 8
         assert all(abs(p) < 1.0 for p in plot.z_poles)
+
+
+# =============================================================================
+# Frequency-response shape of the prototypes and transforms
+#
+# The transform tests above check pole/zero *counts* and metadata. That is not
+# enough: `lp_to_bp` and `lp_to_bs` pass those checks while producing
+# constellations whose responses are not bandpass and bandstop at all
+# (upstream mixed-precision-dsp#204). These tests pin the actual physics.
+# =============================================================================
+
+def _analog_response_db(plot, omega):
+    """|H(j*omega)| in dB from the s-plane constellation, peak-normalized."""
+    s = 1j * np.asarray(omega, dtype=complex)
+    num = np.ones_like(s)
+    for z in plot.s_zeros:
+        num = num * (s - z)
+    den = np.ones_like(s)
+    for p in plot.s_poles:
+        den = den * (s - p)
+    mag = np.abs(num / den)
+    mag = mag / mag.max() if mag.max() > 0 else mag
+    return 20.0 * np.log10(np.maximum(mag, 1e-15))
+
+
+class TestPrototypeResponseShape:
+    def test_butterworth_lowpass_is_textbook(self):
+        """0 dB in band, -3 dB at cutoff, -20N dB/decade after."""
+        plot = mpdsp.butterworth_prototype(4, 1000.0)
+        db = _analog_response_db(
+            plot, 2 * np.pi * np.array([100.0, 1000.0, 10000.0]))
+        assert db[0] == pytest.approx(0.0, abs=0.01)
+        assert db[1] == pytest.approx(-3.01, abs=0.05)
+        # Fourth order rolls off at 80 dB per decade.
+        assert db[2] == pytest.approx(-80.0, abs=0.5)
+
+    @pytest.mark.parametrize("order,expected_rolloff_db", [
+        (2, -40.0), (4, -80.0), (6, -120.0),
+    ])
+    def test_rolloff_tracks_order(self, order, expected_rolloff_db):
+        """-20N dB per decade, measured between two stopband decades.
+
+        Not from the cutoff: the response is already -3.01 dB there, so a
+        cutoff-to-decade measurement lands 3 dB shy of the asymptote and
+        looks like a library error when it is a measurement error. Between
+        10*fc and 100*fc the slope is exact to three decimals.
+        """
+        plot = mpdsp.butterworth_prototype(order, 1000.0)
+        db = _analog_response_db(
+            plot, 2 * np.pi * np.array([10000.0, 100000.0]))
+        assert db[1] - db[0] == pytest.approx(expected_rolloff_db, abs=0.01)
+
+    def test_lowpass_passes_low_and_stops_high(self):
+        plot = mpdsp.butterworth_prototype(4, 1000.0)
+        omega = 2 * np.pi * np.logspace(1, 5, 400)
+        db = _analog_response_db(plot, omega)
+        assert np.argmax(db) < len(db) // 4       # peak lives at the low end
+        assert db[-1] < -60.0
+
+    def test_lp_to_hp_inverts_the_shape(self):
+        """The one band transform that is correct upstream."""
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        hp = mpdsp.lp_to_hp(lp, 1000.0)
+        omega = 2 * np.pi * np.logspace(1, 5, 400)
+        db = _analog_response_db(hp, omega)
+        assert np.argmax(db) > 3 * len(db) // 4   # peak at the high end
+        assert db[0] < -60.0
+
+    def test_chebyshev1_ripples_within_its_spec(self):
+        ripple_db = 1.0
+        plot = mpdsp.chebyshev1_prototype(6, 1000.0, ripple_db)
+        # Sample strictly inside the passband, away from the cutoff knee.
+        db = _analog_response_db(
+            plot, 2 * np.pi * np.linspace(10.0, 900.0, 500))
+        assert db.max() - db.min() <= ripple_db + 0.15
+
+    def test_chebyshev2_meets_its_stopband_spec(self):
+        """Flat passband, equiripple stopband at exactly the requested depth.
+
+        The sweep has to span the passband: peak-normalizing a
+        stopband-only sweep measures everything against the stopband ripple
+        instead of the passband, which makes a correct filter look broken.
+        """
+        stopband_db = 40.0
+        plot = mpdsp.chebyshev2_prototype(6, 1000.0, stopband_db)
+        omega = 2 * np.pi * np.logspace(0, 5, 20001)      # 1 Hz .. 100 kHz
+        freq = omega / (2 * np.pi)
+        db = _analog_response_db(plot, omega)
+
+        in_passband = freq <= 300.0
+        in_stopband = (freq >= 2000.0) & (freq <= 50000.0)
+
+        # Chebyshev II is maximally flat in the passband.
+        assert db[in_passband].max() - db[in_passband].min() < 0.01
+        # ...and equiripple in the stopband, peaking at the requested depth.
+        assert db[in_stopband].max() == pytest.approx(-stopband_db, abs=0.5)
+        # The finite jw-axis zeros drive nulls far below that ripple.
+        assert db[in_stopband].min() < db[in_stopband].max() - 40.0
+
+
+class TestBandTransformResponseShape:
+    """Strict xfails tracking upstream mixed-precision-dsp#204.
+
+    `strict=True` means these turn into failures the moment upstream is
+    fixed — which is exactly the notification wanted, since the dashboard
+    and its warning text should be reverted at that point.
+    """
+
+    _LOW, _HIGH = 800.0, 1200.0
+
+    @property
+    def _omega0(self):
+        return 2 * np.pi * np.sqrt(self._LOW * self._HIGH)
+
+    def _sweep(self):
+        return self._omega0 * np.logspace(-2, 2, 4001)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="upstream mixed-precision-dsp#204: lp_to_bp "
+                              "peaks at ~3.5x omega0 instead of omega0")
+    def test_bandpass_peaks_at_band_centre(self):
+        bp = mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0),
+                            self._LOW, self._HIGH)
+        omega = self._sweep()
+        peak = omega[int(np.argmax(_analog_response_db(bp, omega)))]
+        assert peak == pytest.approx(self._omega0, rel=0.15)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="upstream mixed-precision-dsp#204: lp_to_bp "
+                              "emits 2N origin zeros instead of N")
+    def test_bandpass_zero_count(self):
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        bp = mpdsp.lp_to_bp(lp, self._LOW, self._HIGH)
+        assert len(bp.s_zeros) == len(lp.s_poles)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="upstream mixed-precision-dsp#204: lp_to_bs "
+                              "emits no notch zeros, so there is no notch")
+    def test_bandstop_notches_at_band_centre(self):
+        bs = mpdsp.lp_to_bs(mpdsp.butterworth_prototype(4, 1.0),
+                            self._LOW, self._HIGH)
+        omega = self._sweep()
+        db = _analog_response_db(bs, omega)
+        null = omega[int(np.argmin(db))]
+        assert null == pytest.approx(self._omega0, rel=0.15)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="upstream mixed-precision-dsp#204: lp_to_bs "
+                              "produces an all-pole constellation")
+    def test_bandstop_has_jw_axis_zeros(self):
+        bs = mpdsp.lp_to_bs(mpdsp.butterworth_prototype(4, 1.0),
+                            self._LOW, self._HIGH)
+        assert len(bs.s_zeros) > 0
+        zeros = np.asarray(bs.s_zeros)
+        np.testing.assert_allclose(zeros.real, 0.0, atol=1e-9)
+
+    def test_transforms_still_double_the_order(self):
+        """Unaffected by #204 and worth keeping green — the pole count is
+        the part that is right."""
+        lp = mpdsp.butterworth_prototype(4, 1.0)
+        for transform in (mpdsp.lp_to_bp, mpdsp.lp_to_bs):
+            out = transform(lp, self._LOW, self._HIGH)
+            assert len(out.s_poles) == 2 * len(lp.s_poles)

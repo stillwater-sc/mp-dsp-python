@@ -302,6 +302,191 @@ def plot_magnitude_phase(filt, sample_rate: float, dtypes: list[str] | None,
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Analog prototype (pre-bilinear H(s)) — Issue #78
+#
+# Every classical IIR family is designed as an analog prototype in the s-plane
+# and then bilinear-transformed to a digital cascade. The digital response the
+# "Frequency response" tab shows therefore bakes in the bilinear frequency
+# warp: it squashes asymptotically toward Nyquist, while the prototype extends
+# linearly in omega. Showing both is how the warp becomes visible, and it is
+# the only way to read a family's signature without warp artifacts — Bessel's
+# flat group delay, for instance, is an omega-space property that the digital
+# form only approximates near DC.
+#
+# The prototypes come from mpdsp's *_prototype factories (#115). Those are
+# keyed on design parameters rather than extracted from a designed IIRFilter,
+# which is fine here because the dashboard owns the parameters it just used.
+# ---------------------------------------------------------------------------
+
+# Families whose analog prototype is available. Legendre is absent upstream:
+# sw::dsp::transfer_function has no legendre_prototype, so there is nothing to
+# plot for it even though its digital designer exists.
+PROTOTYPE_FACTORIES = {
+    "Butterworth": mpdsp.butterworth_prototype,
+    "Chebyshev I": mpdsp.chebyshev1_prototype,
+    "Chebyshev II": mpdsp.chebyshev2_prototype,
+    "Bessel": mpdsp.bessel_prototype,
+    "Elliptic": mpdsp.elliptic_prototype,
+}
+
+
+def analog_prototype_available(family: str) -> tuple[bool, str]:
+    """(available, reason) for the analog-prototype pane."""
+    if family == "RBJ":
+        return False, (
+            "RBJ biquads are designed directly in the z-plane from the audio "
+            "EQ cookbook formulas — there is no analog prototype to show. "
+            "The digital response on the *Frequency response* tab is the "
+            "whole design."
+        )
+    if family not in PROTOTYPE_FACTORIES:
+        return False, (
+            f"{family} has no analog-prototype factory upstream "
+            f"(`sw::dsp::transfer_function` provides Butterworth, "
+            f"Chebyshev I/II, Bessel, and Elliptic). The digital design is "
+            f"unaffected — only this pedagogical view is unavailable."
+        )
+    return True, ""
+
+
+def build_analog_prototype(family: str, topology: str, order: int,
+                           freq_params: dict, extra: dict,
+                           selectivity_k: float = 0.9,
+                           as_lowpass_prototype: bool = False):
+    """Return the PoleZeroPlot for the current design, or None.
+
+    Lowpass designs are built directly at the requested cutoff. The other
+    topologies build a normalized lowpass prototype and then apply the same
+    frequency transformation the digital designer applies before the bilinear
+    step, so the constellation corresponds to *this* filter rather than to a
+    generic lowpass.
+
+    `as_lowpass_prototype` short-circuits that and returns the underlying
+    lowpass instead — the more pedagogical view, since it shows the family
+    signature without the band transformation folded in.
+    """
+    factory = PROTOTYPE_FACTORIES.get(family)
+    if factory is None:
+        return None
+
+    kwargs = {}
+    if family == "Chebyshev I":
+        kwargs["ripple_db"] = extra.get("ripple_db", 1.0)
+    elif family == "Chebyshev II":
+        kwargs["stopband_db"] = extra.get("stopband_db", 40.0)
+    elif family == "Elliptic":
+        # NOTE: upstream's elliptic prototype is parameterized by the elliptic
+        # modulus (selectivity_k), while the digital designer takes a
+        # `rolloff` factor. They are not the same knob and there is no exact
+        # mapping, so this pane exposes selectivity_k separately and the
+        # caption says the two curves will not correspond exactly.
+        kwargs["ripple_db"] = extra.get("ripple_db", 1.0)
+        kwargs["selectivity_k"] = selectivity_k
+
+    if topology == "lowpass" and not as_lowpass_prototype:
+        return factory(order, freq_params["cutoff"], **kwargs)
+
+    # Normalized lowpass prototype, then transform.
+    plot = factory(order, 1.0, **kwargs)
+    if as_lowpass_prototype or topology == "lowpass":
+        return plot
+    if topology == "highpass":
+        return mpdsp.lp_to_hp(plot, freq_params["cutoff"])
+
+    center = freq_params["center"]
+    width = freq_params["width"]
+    low, high = center - width / 2.0, center + width / 2.0
+    if low <= 0.0:
+        return None
+    if topology == "bandpass":
+        return mpdsp.lp_to_bp(plot, low, high)
+    if topology == "bandstop":
+        return mpdsp.lp_to_bs(plot, low, high)
+    return None
+
+
+def analog_response(plot, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate H(j*omega) from the s-plane constellation.
+
+    H(s) = prod(s - z_i) / prod(s - p_j), evaluated directly from the poles
+    and zeros rather than by expanding to polynomial coefficients — the
+    expansion is ill-conditioned at the orders a bandstop reaches, and
+    `laplace_freqs` wants a uniform grid anyway, which is the wrong sampling
+    for a Bode plot.
+
+    Returns (magnitude_db, phase_deg), normalized so the peak is 0 dB. Peak
+    normalization works across every topology, where fixing |H(0)| = 1 would
+    divide by zero for highpass and bandpass.
+    """
+    s = 1j * omega
+    numerator = np.ones_like(s)
+    for zero in plot.s_zeros:
+        numerator = numerator * (s - zero)
+    denominator = np.ones_like(s)
+    for pole in plot.s_poles:
+        denominator = denominator * (s - pole)
+
+    h = numerator / denominator
+    magnitude = np.abs(h)
+    peak = magnitude.max()
+    if peak > 0:
+        magnitude = magnitude / peak
+    magnitude_db = 20.0 * np.log10(np.maximum(magnitude, 1e-12))
+    phase_deg = np.degrees(np.unwrap(np.angle(h)))
+    return magnitude_db, phase_deg
+
+
+def plot_analog_bode(plot, sample_rate: float, num_points: int = 1024):
+    """Bode plot of the analog prototype, with Nyquist marked.
+
+    The sweep spans four decades around the constellation so the asymptotic
+    roll-off is visible; the digital design's Nyquist is drawn as a reference
+    line, because everything to the right of it is what the bilinear
+    transform has to compress into the region below it.
+    """
+    radii = np.abs(np.concatenate([
+        np.asarray(plot.s_poles, dtype=complex),
+        np.asarray(plot.s_zeros, dtype=complex)
+        if len(plot.s_zeros) else np.zeros(0, dtype=complex)]))
+    radii = radii[radii > 0]
+    center = float(np.median(radii)) if len(radii) else 1.0
+    omega = np.logspace(np.log10(center) - 2.0, np.log10(center) + 2.0,
+                        num_points)
+
+    magnitude_db, phase_deg = analog_response(plot, omega)
+
+    fig, (ax_mag, ax_phase) = plt.subplots(
+        2, 1, figsize=(9, 6), sharex=True,
+        gridspec_kw={"height_ratios": [2, 1]})
+
+    nyquist_omega = 2.0 * np.pi * (sample_rate / 2.0)
+
+    ax_mag.semilogx(omega, magnitude_db, linewidth=1.4)
+    ax_mag.axhline(-3.0, color="grey", linestyle=":", linewidth=0.9,
+                   label="-3 dB")
+    if omega[0] < nyquist_omega < omega[-1]:
+        ax_mag.axvline(nyquist_omega, color="tab:red", linestyle="--",
+                       linewidth=1.0, label="digital Nyquist")
+    ax_mag.set_ylabel("|H(jw)| (dB)")
+    ax_mag.set_ylim(-100, 10)
+    ax_mag.grid(True, which="both", alpha=0.3)
+    ax_mag.legend(fontsize=8)
+    ax_mag.set_title(f"Analog prototype — {plot.design}, order {plot.order}, "
+                     f"{plot.kind}")
+
+    ax_phase.semilogx(omega, phase_deg, linewidth=1.2, color="tab:orange")
+    if omega[0] < nyquist_omega < omega[-1]:
+        ax_phase.axvline(nyquist_omega, color="tab:red", linestyle="--",
+                         linewidth=1.0)
+    ax_phase.set_xlabel("angular frequency w (rad/s)")
+    ax_phase.set_ylabel("phase (deg)")
+    ax_phase.grid(True, which="both", alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
+
 def plot_group_delay(filt, sample_rate: float, num_points: int = 512):
     """Group delay τ(f) = -d(phase)/d(omega), plotted across [0, fs/2].
 
@@ -780,10 +965,10 @@ def main():
         signal = mpdsp.white_noise(length=sig_length, amplitude=0.5, seed=1)
 
     # --- Tabs ---
-    (tab_freq, tab_pz, tab_gd, tab_time, tab_prec,
+    (tab_freq, tab_analog, tab_pz, tab_gd, tab_time, tab_prec,
      tab_two_type, tab_summary) = st.tabs(
-        ["Frequency response", "Pole / zero", "Group delay",
-         "Time domain", "Mixed-precision comparison",
+        ["Frequency response", "Analog prototype", "Pole / zero",
+         "Group delay", "Time domain", "Mixed-precision comparison",
          "Compare A vs B", "Summary"])
 
     # Build the shared descriptor used in export filenames so the same
@@ -807,6 +992,112 @@ def main():
         st.download_button("Download PNG", figure_to_png_bytes(fig),
                            f"{tag}_freq.png", "image/png")
         plt.close(fig)
+
+    with tab_analog:
+        available, reason = analog_prototype_available(family)
+        if not available:
+            st.info(reason)
+        else:
+            st.markdown(
+                "The **pre-bilinear** H(s): the analog prototype this filter "
+                "was designed from, before the bilinear transform mapped it "
+                "to the z-plane. Compare against the *Frequency response* "
+                "tab — the digital curve compresses asymptotically toward "
+                "Nyquist, while this one continues linearly in omega. That "
+                "difference is bilinear frequency warping."
+            )
+
+            # Elliptic's prototype takes the elliptic modulus, which is not
+            # the `rolloff` knob the digital designer takes; expose it here
+            # rather than pretend a mapping exists.
+            selectivity_k = 0.9
+            if family == "Elliptic":
+                selectivity_k = st.slider(
+                    "selectivity_k (elliptic modulus)", 0.05, 0.99, 0.9,
+                    step=0.01, key="analog_selectivity")
+
+            # Bandpass/bandstop can only be shown as the untransformed
+            # lowpass prototype: upstream's lp_to_bp / lp_to_bs produce
+            # constellations whose responses are not bandpass and bandstop
+            # (mixed-precision-dsp#204 — lp_to_bs emits no notch zeros at
+            # all). Rendering the transformed view would put a knowingly
+            # wrong curve on screen, so it is withheld rather than captioned.
+            # lp_to_hp is correct, so highpass keeps the choice.
+            as_lp = False
+            if topology == "highpass":
+                view = st.radio(
+                    "View", ["Transformed H(s)", "Lowpass prototype"],
+                    horizontal=True, key="analog_view")
+                as_lp = view == "Lowpass prototype"
+            elif topology in ("bandpass", "bandstop"):
+                as_lp = True
+                st.warning(
+                    f"Showing the **lowpass prototype** this {topology} is "
+                    f"built from. The transformed H(s) view is withheld: "
+                    f"upstream's `lp_to_bp` / `lp_to_bs` currently produce "
+                    f"constellations whose responses are not {topology} "
+                    f"(see [mixed-precision-dsp#204](https://github.com/"
+                    f"stillwater-sc/mixed-precision-dsp/issues/204)). The "
+                    f"prototype below is correct, and is the view this "
+                    f"pane's bilinear-warp comparison needs anyway."
+                )
+
+            try:
+                proto = build_analog_prototype(
+                    family, topology, order, freq_params, extra,
+                    selectivity_k=selectivity_k, as_lowpass_prototype=as_lp)
+            except Exception as exc:                      # noqa: BLE001
+                proto = None
+                st.error(f"Prototype construction failed: {exc}")
+
+            if proto is None:
+                st.warning("No analog prototype available for this "
+                           "parameter combination.")
+            else:
+                fig = plot_analog_bode(proto, sample_rate)
+                st.pyplot(fig)
+                st.download_button("Download PNG", figure_to_png_bytes(fig),
+                                   f"{tag}_analog.png", "image/png")
+                plt.close(fig)
+
+                if as_lp:
+                    st.caption(
+                        "Showing the **normalized lowpass prototype** the "
+                        "band transformation starts from — the family "
+                        "signature without the transformation folded in. "
+                        "Switch to *Transformed H(s)* for the constellation "
+                        "belonging to this specific filter."
+                    )
+                else:
+                    st.caption(
+                        f"Showing the **transformed H(s)** for this specific "
+                        f"{topology} — the lowpass prototype after the "
+                        f"frequency transformation, which is what the "
+                        f"bilinear step actually consumes. Magnitude is "
+                        f"normalized to a 0 dB peak, since |H(0)| = 0 for "
+                        f"highpass and bandpass."
+                    )
+
+                if family == "Elliptic":
+                    st.caption(
+                        ":warning: Upstream's elliptic prototype is "
+                        "parameterized by the elliptic modulus "
+                        "(`selectivity_k`), while the digital designer takes "
+                        "a `rolloff` factor. There is no exact mapping "
+                        "between them, so this curve will not correspond "
+                        "exactly to the digital response — treat it as "
+                        "representative of the family, not of this design."
+                    )
+
+                st.markdown(
+                    f"**s-plane constellation** — {len(proto.s_poles)} pole(s), "
+                    f"{len(proto.s_zeros)} zero(s). "
+                    + ("All-pole family: the stopband roll-off comes entirely "
+                       "from the poles."
+                       if not len(proto.s_zeros)
+                       else "Finite zeros on the jw axis produce the stopband "
+                            "nulls.")
+                )
 
     with tab_pz:
         fig = plot_pole_zero(filt)

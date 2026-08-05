@@ -93,7 +93,7 @@ basic auth, or use
 
 ## Tour of the tabs
 
-The sidebar drives what the whole dashboard renders. The four tabs in
+The sidebar drives what the whole dashboard renders. The tabs in
 the main panel are views of the same filter — changing any sidebar
 control re-renders all of them.
 
@@ -156,7 +156,52 @@ unwrapped phase (in radians) over the full `[0, fs/2]` band.
   magnitude response requires spectral `dtype=` dispatch, tracked in
   #40.
 
-### Tab 2: Pole / zero
+### Tab 2: Analog prototype (pre-bilinear H(s))
+
+Every classical IIR family is designed as an analog prototype in the s-plane
+and then bilinear-transformed to a digital cascade. The **Frequency response**
+tab shows the result of that transform, which bakes in the bilinear frequency
+warp — the digital curve compresses asymptotically toward Nyquist, while the
+prototype extends linearly in ω. Putting the two side by side is how the warp
+becomes visible, and it is the only way to read a family's signature without
+warp artifacts. Bessel's flat group delay, for instance, is an ω-space
+property that the digital form only approximates near DC.
+
+- **Log-frequency Bode plot** — magnitude in dB over ω (rad/s), with an
+  unwrapped phase subplot beneath. The digital design's Nyquist is drawn as a
+  reference line: everything to its right is what the bilinear transform has
+  to compress below it.
+- **Magnitude is normalized to a 0 dB peak**, not to |H(0)| = 1, because
+  |H(0)| = 0 for highpass and bandpass designs.
+- No dtype selector. Design-time coefficient precision is always `double`, so
+  there is nothing to compare here — the mixed-precision story lives on the
+  other tabs.
+
+Two cases show an explanation instead of a plot:
+
+- **RBJ biquads** are designed directly in the z-plane from the audio EQ
+  cookbook formulas. There is no analog prototype; the digital response *is*
+  the design.
+- **Legendre** has no prototype factory upstream (`sw::dsp::transfer_function`
+  provides Butterworth, Chebyshev I/II, Bessel, and Elliptic). Its digital
+  designer is unaffected — only this pedagogical view is unavailable.
+
+Two caveats worth knowing:
+
+- **Bandpass and bandstop** show the *lowpass prototype* they are built from,
+  not the transformed H(s). Upstream's `lp_to_bp` / `lp_to_bs` currently
+  produce constellations whose responses are not bandpass and bandstop
+  ([mixed-precision-dsp#204](https://github.com/stillwater-sc/mixed-precision-dsp/issues/204)
+  — `lp_to_bs` emits no notch zeros at all), so the transformed view is
+  withheld rather than shown wrong. Highpass keeps the choice, since
+  `lp_to_hp` is correct.
+- **Elliptic** exposes its own `selectivity_k` slider. Upstream's elliptic
+  prototype is parameterized by the elliptic modulus while the digital
+  designer takes a `rolloff` factor; there is no exact mapping, so the
+  prototype curve is representative of the family rather than of the exact
+  design on the other tabs. The pane says so.
+
+### Tab 3: Pole / zero
 
 - The **unit circle** is drawn for reference — stability requires all
   poles strictly inside it.
@@ -167,7 +212,16 @@ unwrapped phase (in radians) over the full `[0, fs/2]` band.
   `(b0, b1, b2, a1, a2)` for every stage. Always in double — these
   are the design-time coefficients before any quantization.
 
-### Tab 3: Time domain
+### Tab 4: Group delay
+
+Group delay in samples against frequency — how much each frequency is
+delayed relative to the others. Flat is good: a filter whose group delay
+varies across the passband smears transients. Bessel is the family that
+optimizes for this, and comparing its curve here against a Chebyshev of the
+same order is the quickest way to see what "maximally flat group delay"
+buys and what it costs in selectivity.
+
+### Tab 5: Time domain
 
 Impulse and step response for every selected dtype, overlaid on the
 same pair of axes. Useful for:
@@ -179,7 +233,7 @@ same pair of axes. Useful for:
   posit tracks the reference ripple on a step response.
 - Seeing **ringing bound** — the peak overshoot on a step.
 
-### Tab 4: Mixed-precision comparison
+### Tab 6: Mixed-precision comparison
 
 The payoff tab, and the reason this dashboard exists rather than
 `scipy.signal`.
@@ -196,7 +250,7 @@ The payoff tab, and the reason this dashboard exists rather than
   coefficients drift the pole locations from reference. Computed via
   `IIRFilter.pole_displacement(dtype)`.
 
-### Tab 5: Compare A vs B
+### Tab 7: Compare A vs B
 
 Dedicated two-type side-by-side, driven by two dtype dropdowns in the
 sidebar ("Type A" and "Type B"). Three panels stacked vertically:
@@ -221,7 +275,7 @@ Useful for deciding which of two candidate dtypes to deploy — the
 A-vs-B SQNR tells you "are these interchangeable?" and the two
 A-vs-ref / B-vs-ref numbers tell you "which one is closer to truth?"
 
-### Tab 6: Summary
+### Tab 8: Summary
 
 A single-row SQNR heatmap across all 7 arithmetic configurations
 plus the **precision-cost frontier** (SQNR vs bits/sample scatter
@@ -320,7 +374,7 @@ to render it.
 ### Adding a new view (tab)
 
 Write a pure function `plot_my_view(filt, ...) -> matplotlib.Figure`
-and add a new `st.tabs([...])` entry alongside the existing four.
+and add a new `st.tabs([...])` entry alongside the existing ones.
 Keep the helper pure-function (no Streamlit calls inside) — that lets
 the same function run headlessly for testing, which is how the
 existing four helpers are validated in CI.
