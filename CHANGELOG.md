@@ -10,7 +10,7 @@ Python-only patches ship as PEP 440 post-releases. See `docs/publishing.md`.
 Releases before 0.9.0 were tagged without a changelog file; this file starts
 with the 0.9.0 cycle.
 
-## [Unreleased]
+## [0.9.0] - 2026-08-06
 
 ### Added
 
