@@ -53,6 +53,7 @@
 
 namespace nb = nanobind;
 
+using mpdsp::bindings::complex_split_to_numpy;
 using mpdsp::bindings::dispatch_dtype_fn;
 using mpdsp::bindings::make_f64_array;
 using mpdsp::bindings::make_impl_for_dtype;
@@ -62,31 +63,6 @@ using mpdsp::bindings::numpy_to_vec_fresh;
 using mpdsp::bindings::vec_to_numpy;
 
 namespace {
-
-// ---------------------------------------------------------------------------
-// Single-pass split of a complex_T buffer into a (real, imag) tuple of
-// float64 ndarrays. Templated on the complex type itself rather than the
-// underlying scalar, so the same helper works for both std::complex<T> (when
-// T is float/double) and sw::universal::complex<T> (when T is posit/cfloat/
-// etc.) — the upstream `complex_for_t<T>` metafunction picks between those
-// at instantiation.
-//
-// One pass over the source buffer; both output arrays are filled in lockstep.
-// ---------------------------------------------------------------------------
-
-template <typename CT>
-nb::tuple complex_split_to_numpy(const mtl::vec::dense_vector<CT>& v) {
-	std::size_t n = v.size();
-	double* re_ptr = nullptr;
-	double* im_ptr = nullptr;
-	auto re_arr = make_f64_array(n, re_ptr);
-	auto im_arr = make_f64_array(n, im_ptr);
-	for (std::size_t i = 0; i < n; ++i) {
-		re_ptr[i] = static_cast<double>(v[i].real());
-		im_ptr[i] = static_cast<double>(v[i].imag());
-	}
-	return nb::make_tuple(re_arr, im_arr);
-}
 
 // ===========================================================================
 // NCO
@@ -111,13 +87,18 @@ struct INCOImpl {
 template <typename T>
 class NCOImpl : public INCOImpl {
 public:
+	// Pass the rates through as double. Upstream takes them templated and
+	// forms frequency/sample_rate in double *before* converting the ratio
+	// (issue #207), so casting to T here would overflow a narrow state type
+	// at the argument boundary and defeat the fix — which is exactly what
+	// this binding used to do.
 	NCOImpl(double frequency, double sample_rate)
-		: nco_(static_cast<T>(frequency), static_cast<T>(sample_rate)) {}
+		: nco_(frequency, sample_rate) {}
 
 	void set_frequency(double f, double sr) override {
 		if (!(sr > 0.0))
 			throw std::invalid_argument("NCO: sample_rate must be positive");
-		nco_.set_frequency(static_cast<T>(f), static_cast<T>(sr));
+		nco_.set_frequency(f, sr);       // double in, ratio converted — see ctor
 	}
 	void set_phase_offset(double offset) override {
 		nco_.set_phase_offset(static_cast<T>(offset));
@@ -410,7 +391,9 @@ class DDCImpl : public IDDCImpl {
 public:
 	DDCImpl(double center_frequency, double sample_rate,
 	        const mtl::vec::dense_vector<T>& taps, std::size_t factor)
-		: ddc_(static_cast<T>(center_frequency), static_cast<T>(sample_rate),
+		// Rates as double, same reasoning as NCOImpl — upstream divides
+		// before converting.
+		: ddc_(center_frequency, sample_rate,
 		       sw::dsp::PolyphaseDecimator<T>(taps, factor)),
 		  factor_(factor) {}
 
@@ -427,7 +410,7 @@ public:
 		return complex_split_to_numpy(out);
 	}
 	void set_center_frequency(double frequency) override {
-		ddc_.set_center_frequency(static_cast<T>(frequency));
+		ddc_.set_center_frequency(frequency);
 	}
 	double center_frequency() const override {
 		return static_cast<double>(ddc_.center_frequency());
@@ -673,10 +656,12 @@ make_chain_impl(double input_rate, std::vector<ErasedStage<T>>& stages) {
 // a one-line fix and an afternoon of bisecting a pipeline. The message names
 // the workaround because it is not guessable from the symptom.
 //
-// This is a mitigation, not the fix. Upstream mixed-precision-dsp#207 would
-// divide in double and convert only the ratio, making absolute Hz work for
-// every state type; this guard stays useful regardless, since it catches any
-// non-finite accumulator rather than only this cause.
+// Upstream #207 fixed the cause: NCO now forms frequency/sample_rate in
+// double before converting, so absolute Hz work for every state type — and
+// this binding had to stop casting to T at the boundary for that to take
+// effect, since the premature cast overflowed before upstream saw the values.
+// The check stays as a backstop: it catches any non-finite accumulator, not
+// only that cause, and it costs one comparison per construction.
 // ---------------------------------------------------------------------------
 
 static void require_finite_phase(double increment, const char* cls,

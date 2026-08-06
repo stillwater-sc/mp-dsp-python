@@ -58,6 +58,23 @@ with the 0.9.0 cycle.
   2.2e-08, cfloat⟨24,5⟩ 9.5e-06, `half` 6.6e-03, posit⟨8,2⟩ 5.6e-01.
   Seven designers, not eight — upstream `sw::dsp::rbj` has no Peaking class.
 
+- **Multirate — `Channelizer`, `FractionalDelay`, `channelizer_prototype_bank`.**
+  Upstream's `sw::dsp::multirate`, previously unbound. `Channelizer` splits a
+  wideband input into M complex baseband channels for about one
+  prototype-filter evaluation per input sample; measured ~100 dB of
+  out-of-band rejection at 16 taps per phase. `process_block` returns
+  `(num_blocks, num_channels)` arrays and drops a trailing partial block
+  rather than zero-padding it, since padding would inject a transient the
+  caller did not ask for. `FractionalDelay` resamples at an arbitrary
+  sub-sample offset — measured accurate to better than 0.01 samples at unity
+  gain, with requests below the group-delay floor rounding up rather than
+  failing silently.
+
+  `FractionalDelay.taps_per_phase` defaults to **11**, not upstream's 12:
+  that default is even and upstream's own validator rejects it, so the C++
+  class throws when constructed with its documented defaults
+  (`mixed-precision-dsp#208`).
+
 - **`design_halfband(exact_dc_gain=)`** (upstream #206). A half-band
   satisfies A(0) + A(0.5) = 1 identically and A(0.5) is a stopband extremum,
   so unity DC gain and maximum stopband depth are mutually exclusive.
@@ -89,14 +106,18 @@ with the 0.9.0 cycle.
 
 ### Fixed
 
-- **`NCO` / `DDC` no longer return a silent NaN phase increment** (#117).
-  Both hold `frequency` and `sample_rate` at the configuration's state scalar
-  and divide only afterwards, so absolute RF rates overflow narrow types. At
-  1.2 GHz / 5 GSPS, `fixpnt` tripped upstream's positivity check but `cf24`
-  and `half` constructed successfully and then emitted NaN forever. Both
-  constructors and both retune paths now validate and raise with a message
-  naming the normalized-rate workaround. The underlying fix is upstream
-  `mixed-precision-dsp#207`.
+- **`NCO` / `DDC` accept absolute RF rates at every dtype** (#117, upstream
+  #207). Both used to hold `frequency` and `sample_rate` at the
+  configuration's state scalar and divide only afterwards, so GHz values
+  overflowed narrow types: at 1.2 GHz / 5 GSPS, `cf24` and `half`
+  constructed successfully and then emitted NaN forever, and `fpga_fixed`
+  could not hold the rate at all.
+
+  Upstream now forms the ratio in double before converting. This package had
+  to **stop casting to `T` at the binding boundary** for that to take effect
+  — the premature cast overflowed before upstream ever saw the values, which
+  defeated the fix entirely. A binding-side finiteness check remains as a
+  backstop against a non-finite accumulator from any other cause.
 
 - **`scripts/build_api_ref.py` runs again, and its output is enforced**
   (#116). It had not parsed on Python < 3.12 since April — a backslash inside

@@ -144,6 +144,8 @@ try:
         DDC,
         # Acquisition — multi-stage cascade + CIC droop compensation (Phase 5 / #88)
         DecimationChain, design_cic_compensator,
+        # Multirate — polyphase channelizer + fractional delay
+        Channelizer, FractionalDelay, channelizer_prototype_bank,
         # Instrument — oscilloscope-style measurements (gap-analysis Phase 2 / #101)
         peak_to_peak, instrument_mean, instrument_rms,
         rise_time, fall_time, period, frequency,

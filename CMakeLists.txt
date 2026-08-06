@@ -40,12 +40,18 @@ set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
 	"Minimum mtl5 version required at configure time")
 
-# v0.9.0 is the bug-fix release closing upstream #203-#206: the
-# Parks-McClellan exchange, the half-band designer, and the Constantinides
-# band transformations. This package's tests assert the fixed behaviour
-# (equiripple half-bands, lp_to_bs with actual notch zeros), so building
-# against v0.8.0 now fails them.
-set(MPDSP_DSP_PIN       "v0.9.0" CACHE STRING
+# Pinned past v0.9.0 to a SHA, deliberately. v0.9.0 closed upstream
+# #203-#206 (the Parks-McClellan exchange, the half-band designer, the
+# Constantinides band transformations) and this package's tests assert
+# that fixed behaviour. But #207 — NCO/DDC forming frequency/sample_rate
+# in double *before* converting, so absolute RF rates work for narrow
+# state types — landed after the tag and is untagged.
+#
+# Without it, `DDC(1.2e9, 5.0e9, ..., dtype="half")` silently yields a NaN
+# phase accumulator, and tests asserting absolute rates work would pass
+# locally and fail in CI. A SHA is more reproducible than a tag, not less;
+# move back to a tag at the next upstream release.
+set(MPDSP_DSP_PIN       "ee5da9e80b1e4f73bdf99c03e39a9214d775b461" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the
@@ -308,6 +314,7 @@ nanobind_add_module(_core
   src/instrument_bindings.cpp
   src/spectrum_bindings.cpp
   src/math_bindings.cpp
+  src/multirate_bindings.cpp
 )
 target_link_libraries(_core PRIVATE sw_dsp)
 

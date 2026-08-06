@@ -184,19 +184,12 @@ def run_cascade(signal: np.ndarray, stages: list[np.ndarray], meta: dict,
     independent once the mixer has separated them.
 
     Rates are passed **normalized** (sample rate 1.0, carrier as a fraction
-    of it), not in Hz. This is not cosmetic. `NCO` and `DDC` take frequency
-    and sample rate as the configuration's state scalar and divide only
-    afterwards, so absolute GHz values overflow every narrow state type
-    before the division can bring them back into range. At 1.2 GHz / 5 GSPS
-    every type narrower than float fails: `fpga_fixed` (fixpnt<32,24>,
-    integer range +/-128) cannot hold the rate at all, and `cf24` and `half`
-    produce a non-finite phase increment.
-
-    Those now raise rather than returning silent NaN (the guard added in
-    mp-dsp-python#117), but raising is still a failure — normalized rates
-    are what actually works, and they mean the same thing, since an
-    oscillator only ever uses the ratio. The underlying fix is upstream
-    mixed-precision-dsp#207: divide in double and convert only the ratio.
+    of it) rather than in Hz. Absolute Hz work now — upstream #207 made
+    `NCO`/`DDC` form frequency/sample_rate in double before converting, so
+    every state type handles 1.2 GHz / 5 GSPS — but normalized rates remain
+    the better expression of what a DDC does: it only ever uses the ratio,
+    and nothing here depends on the absolute rate. The Hz values in
+    `simulate.py` are labels.
     """
     carrier_normalized = meta["carrier_hz"] / meta["sample_rate_hz"]
 

@@ -121,6 +121,34 @@ inline np_f64_2d make_f64_2d_array(std::size_t rows, std::size_t cols,
 }
 
 // ---------------------------------------------------------------------------
+// Single-pass split of a complex buffer into a (real, imag) tuple of float64
+// ndarrays — the convention every complex-valued binding in this package
+// returns (NCO.generate_block, NCO.mix_down, DDC.process_block,
+// Channelizer.process).
+//
+// Templated on the complex type rather than the underlying scalar, so the
+// same helper serves both std::complex<T> (T float/double) and
+// sw::universal::complex<T> (T posit/cfloat/...) — upstream's complex_for_t<T>
+// picks between them at instantiation.
+//
+// One pass over the source; both outputs are filled in lockstep.
+// ---------------------------------------------------------------------------
+
+template <typename CT>
+inline nb::tuple complex_split_to_numpy(const mtl::vec::dense_vector<CT>& v) {
+	std::size_t n = v.size();
+	double* re_ptr = nullptr;
+	double* im_ptr = nullptr;
+	auto re_arr = make_f64_array(n, re_ptr);
+	auto im_arr = make_f64_array(n, im_ptr);
+	for (std::size_t i = 0; i < n; ++i) {
+		re_ptr[i] = static_cast<double>(v[i].real());
+		im_ptr[i] = static_cast<double>(v[i].imag());
+	}
+	return nb::make_tuple(re_arr, im_arr);
+}
+
+// ---------------------------------------------------------------------------
 // 1D vector marshalling. T <-> double via static_cast at the boundary.
 // ---------------------------------------------------------------------------
 

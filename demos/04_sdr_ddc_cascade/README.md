@@ -131,18 +131,15 @@ to be unchanged, but the reason is now a design trade rather than a defect,
 and the prediction in the old text — that a working designer would make the
 cascade *shorter* — turned out to be wrong.)
 
-**`NCO` and `DDC` need normalized rates.** Both take frequency and sample
-rate as the configuration's state scalar and divide only afterwards, so
-absolute GHz values overflow every type narrower than float before the
-division can recover the ratio. At 1.2 GHz / 5 GSPS, `fpga_fixed` cannot hold
-the rate at all and `cf24` / `half` produce a non-finite phase increment.
-These raise now rather than returning silent NaN, but raising is still a
-failure — the demo passes `sample_rate=1.0` with the carrier as a fraction,
-which every dtype handles and which means the same thing to an oscillator.
-The underlying fix is
-[mixed-precision-dsp#207](https://github.com/stillwater-sc/mixed-precision-dsp/issues/207):
-divide in double and convert only the ratio, which would make absolute Hz
-work everywhere.
+**Rates are passed normalized, by choice rather than necessity.** Absolute Hz
+work at every dtype now — upstream
+[#207](https://github.com/stillwater-sc/mixed-precision-dsp/issues/207) made
+`NCO`/`DDC` form `frequency / sample_rate` in double before converting, where
+previously GHz values overflowed narrow state types at the argument boundary
+and `cf24` / `half` produced a silent NaN accumulator. The demo still passes
+`sample_rate=1.0` with the carrier as a fraction, because that is what a DDC
+actually uses and nothing here depends on the absolute rate. The Hz figures
+are labels.
 
 ## FPGA handoff
 

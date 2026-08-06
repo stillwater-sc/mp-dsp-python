@@ -634,68 +634,68 @@ class TestDesignCICCompensator:
 # Phase-accumulator overflow guard (Issue #117)
 # =============================================================================
 
-class TestPhaseOverflowGuard:
-    """NCO/DDC must not silently produce a NaN phase increment.
+class TestAbsoluteRateHandling:
+    """Absolute RF rates must work at every dtype (upstream #207).
 
-    Upstream holds `frequency` and `sample_rate` at the configuration's state
-    scalar and divides only afterwards, so absolute RF-scale rates overflow
-    narrow state types before `frequency / sample_rate` is evaluated. fixpnt
-    trips upstream's own positivity check; the cfloat types used to construct
-    successfully and then emit NaN for every sample, which is far worse.
+    They did not, and the failure was the worst kind: `NCO`/`DDC` took
+    frequency and sample rate as the configuration's state scalar and
+    divided only afterwards, so GHz values overflowed narrow types at the
+    argument boundary. `cf24` and `half` constructed successfully and then
+    emitted NaN forever.
+
+    Upstream now forms the ratio in double before converting. This package
+    had to stop casting to T at the binding boundary for that to take
+    effect — the premature cast overflowed before upstream ever saw the
+    values, which defeated the fix entirely. The binding-side guard remains
+    as a backstop against any non-finite accumulator from another cause.
     """
 
-    # Rates that overflow a 16- or 24-bit float significand's exponent range.
     _RF_CARRIER = 1.2e9
     _RF_RATE = 5.0e9
 
-    # These configurations hold the ratio fine but not the absolute rates.
-    _NARROW = ["cf24", "half"]
+    _ALL = ["reference", "gpu_baseline", "posit_full", "cf24", "half",
+            "fpga_fixed"]
 
-    @pytest.mark.parametrize("dtype", _NARROW)
-    def test_nco_rejects_absolute_rf_rates(self, dtype):
-        with pytest.raises((ValueError, RuntimeError)) as excinfo:
-            mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype=dtype)
-        # The message has to name the workaround; the symptom does not imply it.
-        assert "normalized" in str(excinfo.value)
-
-    @pytest.mark.parametrize("dtype", _NARROW)
-    def test_ddc_rejects_absolute_rf_rates(self, dtype):
-        with pytest.raises((ValueError, RuntimeError)) as excinfo:
-            mpdsp.DDC(self._RF_CARRIER, self._RF_RATE,
-                      mpdsp.design_halfband(11, 0.1), 2, dtype=dtype)
-        assert "normalized" in str(excinfo.value)
-
-    @pytest.mark.parametrize("dtype", _NARROW)
-    def test_retuning_is_guarded_too(self, dtype):
-        """set_frequency can push a healthy oscillator into NaN."""
-        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
-        assert np.isfinite(nco.phase_increment)
-        with pytest.raises((ValueError, RuntimeError)):
-            nco.set_frequency(self._RF_CARRIER, self._RF_RATE)
-
-    @pytest.mark.parametrize("dtype", _NARROW)
-    def test_ddc_retuning_is_guarded(self, dtype):
-        ddc = mpdsp.DDC(0.24, 1.0, mpdsp.design_halfband(11, 0.1), 2,
-                        dtype=dtype)
-        with pytest.raises((ValueError, RuntimeError)):
-            ddc.set_center_frequency(self._RF_CARRIER)
-
-    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline",
-                                       "posit_full", "cf24", "half",
-                                       "fpga_fixed"])
-    def test_normalized_rates_work_for_every_dtype(self, dtype):
-        """The documented workaround has to actually work everywhere."""
-        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
+    @pytest.mark.parametrize("dtype", _ALL)
+    def test_nco_accepts_absolute_rf_rates(self, dtype):
+        nco = mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype=dtype)
         assert np.isfinite(nco.phase_increment)
         assert nco.phase_increment == pytest.approx(0.24, abs=1e-3)
 
-        ddc = mpdsp.DDC(0.24, 1.0, mpdsp.design_halfband(11, 0.1), 2,
-                        dtype=dtype)
+    @pytest.mark.parametrize("dtype", _ALL)
+    def test_ddc_accepts_absolute_rf_rates(self, dtype):
+        ddc = mpdsp.DDC(self._RF_CARRIER, self._RF_RATE,
+                        mpdsp.design_halfband(11, 0.1), 2, dtype=dtype)
         assert np.isfinite(ddc.nco_phase_increment)
+        assert ddc.nco_phase_increment == pytest.approx(0.24, abs=1e-3)
 
-    @pytest.mark.parametrize("dtype", ["reference", "gpu_baseline",
-                                       "posit_full"])
-    def test_wide_dtypes_still_accept_absolute_rates(self, dtype):
-        """The guard must not reject configurations that were always fine."""
-        nco = mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype=dtype)
-        assert nco.phase_increment == pytest.approx(0.24, abs=1e-6)
+    @pytest.mark.parametrize("dtype", _ALL)
+    def test_retuning_to_an_absolute_rate_works(self, dtype):
+        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
+        nco.set_frequency(self._RF_CARRIER, self._RF_RATE)
+        assert np.isfinite(nco.phase_increment)
+
+        ddc = mpdsp.DDC(self._RF_CARRIER, self._RF_RATE,
+                        mpdsp.design_halfband(11, 0.1), 2, dtype=dtype)
+        ddc.set_center_frequency(2.0e9)
+        assert ddc.nco_phase_increment == pytest.approx(0.4, abs=1e-3)
+
+    @pytest.mark.parametrize("dtype", _ALL)
+    def test_normalized_rates_still_work(self, dtype):
+        """The old workaround must keep working — demos and docs use it."""
+        nco = mpdsp.NCO(0.24, 1.0, dtype=dtype)
+        assert nco.phase_increment == pytest.approx(0.24, abs=1e-3)
+
+    @pytest.mark.parametrize("dtype", ["reference", "half"])
+    def test_nonpositive_sample_rate_still_raises(self, dtype):
+        for bad in (0.0, -5.0e9):
+            with pytest.raises((ValueError, RuntimeError)):
+                mpdsp.NCO(self._RF_CARRIER, bad, dtype=dtype)
+
+    def test_generated_samples_are_finite_at_an_rf_rate(self):
+        """The point of the whole exercise: a narrow dtype at an absolute
+        rate must produce real samples, not a NaN stream."""
+        nco = mpdsp.NCO(self._RF_CARRIER, self._RF_RATE, dtype="half")
+        real, imag = nco.generate_block(256)
+        assert np.all(np.isfinite(real)) and np.all(np.isfinite(imag))
+        np.testing.assert_allclose(np.hypot(real, imag), 1.0, atol=1e-2)

@@ -23,6 +23,7 @@ the note at the bottom.
 - [Spectrum analyzer — detectors, peaks, markers](#spectrum-analyzer--detectors-peaks-markers)
 - [Numerical utilities — polynomial, quadratic, elliptic](#numerical-utilities--polynomial-quadratic-elliptic)
 - [Analog prototypes — s-plane pole/zero constellations](#analog-prototypes--s-plane-polezero-constellations)
+- [Multirate — channelizer and fractional delay](#multirate--channelizer-and-fractional-delay)
 - [Acquisition — high-rate ADC → baseband pipeline](#acquisition--high-rate-adc--baseband-pipeline)
 - [Image — generators](#image--generators)
 - [Image — processing](#image--processing)
@@ -53,6 +54,8 @@ the note at the bottom.
   - [`PolyphaseInterpolator`](#polyphaseinterpolator)
   - [`DDC`](#ddc)
   - [`DecimationChain`](#decimationchain)
+  - [`Channelizer`](#channelizer)
+  - [`FractionalDelay`](#fractionaldelay)
   - [`PoleZeroPlot`](#polezeroplot)
   - [`BodeResult`](#boderesult)
   - [`KalmanFilter`](#kalmanfilter)
@@ -341,6 +344,16 @@ plot = mpdsp.apply_bilinear(
 | `lp_to_bs` | `(plot: mpdsp._core.PoleZeroPlot, low_hz: float, high_hz: float) -> mpdsp._core.PoleZeroPlot` | Lowpass -> bandstop frequency transformation. Returns a new plot; the input is left unchanged. Order doubles, as with lp_to_bp. Requires 0 < low_hz < high_hz. |
 | `apply_bilinear` | `(plot: mpdsp._core.PoleZeroPlot, sample_rate_hz: float) -> mpdsp._core.PoleZeroPlot` | Map the s-plane constellation to the z-plane via the bilinear transform, populating z_poles / z_zeros and sample_rate_hz. Returns a new plot; the input is left unchanged. Every stable analog pole (Re < 0) maps inside the unit circle. |
 | `sweep_bode` | `(filt: mpdsp._core.IIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> mpdsp._core.BodeResult` | sweep_bode(filt: mpdsp._core.FIRFilter, sample_rate: float, freq_min_hz: float, freq_max_hz: float, num_points: int = 200, settle_samples: int = 512, target_cycles: float = 32.0, max_measure_samples: int = 32768, dtype: str = 'reference') -> mpdsp._core.BodeResult |
+
+## Multirate — channelizer and fractional delay
+
+Upstream's `sw::dsp::multirate` module. `Channelizer` splits a wideband input into M uniformly-spaced complex baseband channels for about one prototype-filter evaluation per input sample — the whole reason to build a channelizer rather than M independent down-converters. `FractionalDelay` resamples at an arbitrary sub-sample offset. Both classes are in the [Classes](#classes) section; the prototype-bank helper is here.
+
+`FractionalDelay`'s `taps_per_phase` must be **odd**, and this package defaults it to 11 rather than mirroring upstream's 12 — that default is even and upstream's own validator rejects it ([mixed-precision-dsp#208](https://github.com/stillwater-sc/mixed-precision-dsp/issues/208)).
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `channelizer_prototype_bank` | `(num_channels: int, taps_per_phase: int = 16, kaiser_beta: float = 8.0, dtype: str = 'reference') -> list[ndarray]` | The polyphase decomposition of a Channelizer's shared prototype, as a list of num_channels sub-filter tap arrays.\n\nExposed so an analysis bank and a synthesis bank can be built on the *same* prototype. Mismatching the two halves of such a pair destroys reconstruction rather than merely degrading it, so there is deliberately no second copy of this design to drift out of step. |
 
 ## Acquisition — high-rate ADC → baseband pipeline
 
@@ -783,6 +796,42 @@ At most **6 stages** — each additional arity is a separate template instantiat
 | `.stage_rates` | `(self) -> list[float]` — Sample rate at the *output* of each stage, in input order. The last element equals output_rate. |
 | `.stage_ratios` | `(self) -> list[int]` — Per-stage decimation ratios, in input order. HalfBandFilter reports 2 (it is structurally fixed at 2:1). |
 | `.total_decimation` | Product of the per-stage decimation ratios. |
+
+### `Channelizer`
+
+Bellanger polyphase channelizer. `num_channels` must be a power of two (library FFT constraint) and the output rate is the input rate divided by it. `process` takes exactly one `num_channels`-sample block; `process_block` consumes whole blocks from a longer signal and returns `(num_blocks, num_channels)` arrays, dropping a trailing partial block rather than zero-padding it.
+
+Measured with 16 taps per phase and `kaiser_beta=8`: about 100 dB of out-of-band rejection. Note that a *real* input puts equal energy in channels c and M-c — the second is the negative-frequency image, not leakage.
+
+> Bellanger polyphase channelizer: splits a wideband input into num_channels uniformly-spaced complex baseband channels at 1/num_channels of the input rate.\n\nEach block of num_channels input samples advances the polyphase sub-filters once and is then inverse-transformed, so the whole bank costs about one prototype-filter evaluation per input sample rather than one per channel — which is the entire reason to build a channelizer instead of num_channels independent down-converters.\n\nnum_channels must be a power of two (the library FFT requires it). Longer taps_per_phase sharpens the channel edges and deepens adjacent-channel rejection, at the cost of compute and (taps_per_phase-1)/2 samples of group delay. kaiser_beta sets the prototype window: 8 gives roughly -58 dB, 12 roughly -115 dB.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.num_channels` | (self) -> int |
+| `.num_taps` | Total prototype length, num_channels * taps_per_phase. |
+| `.process` | `(self, block: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple` — Push exactly num_channels input samples through the bank. Returns a (real, imag) tuple of length-num_channels float64 arrays — one complex sample per channel. |
+| `.process_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> tuple` — Consume floor(len(signal) / num_channels) whole blocks. Returns a (real, imag) tuple of (num_blocks, num_channels) float64 arrays, so row b column c is channel c at output-rate sample b. Combine with `real + 1j*imag`. A trailing partial block is left unconsumed rather than… |
+| `.reset` | `(self) -> None` — Clear every sub-filter delay line. |
+| `.taps_per_phase` | (self) -> int |
+
+### `FractionalDelay`
+
+Polyphase fractional-sample delay, resolution 1/`num_phases`. The smallest offset it can serve is its intrinsic group delay, `(taps_per_phase - 1) / 2`; smaller requests round up to that floor rather than failing, since a filter cannot reconstruct samples from the future. Requests past `group_delay + max_int_delay` raise, because the ring buffer no longer holds the history.
+
+Measured at `num_phases=64`, `taps_per_phase=11`: delay accurate to better than 0.01 samples with unity passband gain.
+
+> Polyphase fractional-sample delay line: resamples the input at an arbitrary sub-sample offset, with resolution 1/num_phases.\n\nThe filter has an intrinsic group delay of (taps_per_phase-1)/2 input samples, and that is the *smallest* offset it can serve — a filter cannot reconstruct samples from the future, so requests below the floor round up to it rather than failing silently. Requests beyond group_delay + max_int_delay raise, because the ring buffer no longer holds the history they need.\n\nHigher num_phases buys finer offset resolution at the cost of coefficient memory; longer taps_per_phase buys in-band flatness and stopband depth. It must be odd and >= 3, which keeps the group delay an integer.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.base_group_delay_samples` | (taps_per_phase - 1) / 2 — the smallest offset this filter can serve. Smaller requests round up to it. |
+| `.delay` | `(self, input: float, offset_samples: float) -> float` — Push one sample and return the interpolated output at offset_samples measured back from it. |
+| `.delay_block` | `(self, signal: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False], offset_samples: float) -> numpy.ndarray[dtype=float64]` — Apply a constant offset across a whole signal. Equivalent to calling delay() per sample, without the per-sample binding crossing. |
+| `.max_int_delay` | (self) -> int |
+| `.num_phases` | Offset resolution is 1 / num_phases samples. |
+| `.num_taps` | Total prototype length, num_phases * taps_per_phase. |
+| `.reset` | `(self) -> None` — Clear the delay line. |
+| `.taps_per_phase` | (self) -> int |
 
 ### `PoleZeroPlot`
 

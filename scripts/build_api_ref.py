@@ -220,6 +220,9 @@ CATEGORIES = [
         "chebyshev2_prototype", "bessel_prototype", "elliptic_prototype",
         "lp_to_hp", "lp_to_bp", "lp_to_bs", "apply_bilinear", "sweep_bode",
     ]),
+    ("Multirate — channelizer and fractional delay", [
+        "channelizer_prototype_bank",
+    ]),
     ("Acquisition — high-rate ADC → baseband pipeline", [
         "design_halfband", "polyphase_decompose",
         "design_cic_compensator",
@@ -284,7 +287,7 @@ CLASSES = [
     "PeakEnvelope", "RMSEnvelope", "Compressor", "AGC",
     "NCO", "CICDecimator", "CICInterpolator", "HalfBandFilter",
     "PolyphaseDecimator", "PolyphaseInterpolator", "DDC",
-    "DecimationChain",
+    "DecimationChain", "Channelizer", "FractionalDelay",
     "PoleZeroPlot", "BodeResult",
     "KalmanFilter", "ExtendedKalmanFilter", "UnscentedKalmanFilter",
     "LMSFilter", "NLMSFilter", "RLSFilter",
@@ -344,6 +347,20 @@ INTROS = {
         "    mpdsp.lp_to_bp(mpdsp.butterworth_prototype(4, 1.0), 300.0, 3000.0),\n"
         "    48000.0)\n"
         "```"
+    ),
+    "Multirate — channelizer and fractional delay": (
+        "Upstream's `sw::dsp::multirate` module. `Channelizer` splits a "
+        "wideband input into M uniformly-spaced complex baseband channels "
+        "for about one prototype-filter evaluation per input sample — the "
+        "whole reason to build a channelizer rather than M independent "
+        "down-converters. `FractionalDelay` resamples at an arbitrary "
+        "sub-sample offset. Both classes are in the "
+        "[Classes](#classes) section; the prototype-bank helper is here.\n\n"
+        "`FractionalDelay`'s `taps_per_phase` must be **odd**, and this "
+        "package defaults it to 11 rather than mirroring upstream's 12 — "
+        "that default is even and upstream's own validator rejects it "
+        "([mixed-precision-dsp#208](https://github.com/stillwater-sc/"
+        "mixed-precision-dsp/issues/208))."
     ),
     "Acquisition — high-rate ADC → baseband pipeline": (
         "Multirate primitives for the high-rate data-acquisition pipeline "
@@ -589,6 +606,28 @@ CLASS_INTROS = {
         "At most **6 stages** — each additional arity is a separate "
         "template instantiation per dtype, so the cap is a compile-time "
         "budget rather than an algorithmic limit."
+    ),
+    "Channelizer": (
+        "Bellanger polyphase channelizer. `num_channels` must be a power of "
+        "two (library FFT constraint) and the output rate is the input rate "
+        "divided by it. `process` takes exactly one `num_channels`-sample "
+        "block; `process_block` consumes whole blocks from a longer signal "
+        "and returns `(num_blocks, num_channels)` arrays, dropping a "
+        "trailing partial block rather than zero-padding it.\n\n"
+        "Measured with 16 taps per phase and `kaiser_beta=8`: about 100 dB "
+        "of out-of-band rejection. Note that a *real* input puts equal "
+        "energy in channels c and M-c — the second is the negative-frequency "
+        "image, not leakage."
+    ),
+    "FractionalDelay": (
+        "Polyphase fractional-sample delay, resolution 1/`num_phases`. The "
+        "smallest offset it can serve is its intrinsic group delay, "
+        "`(taps_per_phase - 1) / 2`; smaller requests round up to that floor "
+        "rather than failing, since a filter cannot reconstruct samples from "
+        "the future. Requests past `group_delay + max_int_delay` raise, "
+        "because the ring buffer no longer holds the history.\n\n"
+        "Measured at `num_phases=64`, `taps_per_phase=11`: delay accurate to "
+        "better than 0.01 samples with unity passband gain."
     ),
     "PoleZeroPlot": (
         "Analog (s-plane) prototype pole/zero constellation, optionally "
