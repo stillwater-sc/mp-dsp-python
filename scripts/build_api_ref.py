@@ -54,6 +54,54 @@ def slugify(title: str) -> str:
     return s
 
 
+def _canonical_typing(sig: str) -> str:
+    """Rewrite `typing.Optional[X]` / `typing.Union[A, B]` as `X | None` / `A | B`.
+
+    nanobind renders the same C++ type differently depending on the Python
+    it is imported under: `std::optional<T>` comes out as `T | None` on
+    3.10+ (PEP 604) but `typing.Optional[T]` on 3.9. Left alone, that makes
+    this generator's output interpreter-dependent, so the committed document
+    can only ever match one version — and cibuildwheel runs the test suite
+    on cp39 through cp312, so three of the four wheel jobs fail on a diff
+    that says nothing about the bindings.
+
+    Canonicalize on the PEP 604 spelling, which is what 3.10+ already emits
+    and what the committed document uses.
+    """
+    for prefix, joiner in (("typing.Optional[", None), ("typing.Union[", " | ")):
+        while (start := sig.find(prefix)) != -1:
+            # Scan for the bracket that closes this one; the argument may
+            # itself be a subscripted generic (`tuple[float, float]`).
+            depth, i = 0, start + len(prefix) - 1
+            for i in range(start + len(prefix) - 1, len(sig)):
+                if sig[i] == "[":
+                    depth += 1
+                elif sig[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            else:  # unbalanced — leave the signature alone rather than corrupt it
+                return sig
+            inner = sig[start + len(prefix):i]
+            if joiner is None:
+                replacement = f"{inner} | None"
+            else:
+                # Split on top-level commas only.
+                parts, depth, last = [], 0, 0
+                for j, ch in enumerate(inner):
+                    if ch == "[":
+                        depth += 1
+                    elif ch == "]":
+                        depth -= 1
+                    elif ch == "," and depth == 0:
+                        parts.append(inner[last:j].strip())
+                        last = j + 1
+                parts.append(inner[last:].strip())
+                replacement = joiner.join(parts)
+            sig = sig[:start] + replacement + sig[i + 1:]
+    return sig
+
+
 def sig_and_blurb(name: str, obj) -> tuple[str, str]:
     """Return (signature_str, one_line_blurb) for a binding.
 
@@ -86,7 +134,7 @@ def sig_and_blurb(name: str, obj) -> tuple[str, str]:
         blurb = paras[0].replace("\n", " ") if paras else ""
 
     blurb = _trim_shared_tails(" ".join(blurb.split()))
-    return sig, blurb
+    return _canonical_typing(sig), blurb
 
 
 # Docstring tails shared verbatim across a whole family of bindings, which a

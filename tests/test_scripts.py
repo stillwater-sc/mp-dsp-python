@@ -231,6 +231,52 @@ class TestBuildApiRef:
             f"UNDOCUMENTED_BY_DESIGN if it is not public API."
         )
 
+    def test_signature_typing_is_interpreter_independent(self):
+        """`typing.Optional[X]` must be canonicalized to `X | None`.
+
+        nanobind renders `std::optional<T>` as `T | None` on Python 3.10+
+        (PEP 604) but `typing.Optional[T]` on 3.9. Without normalization the
+        generator's output depends on the interpreter, so the committed
+        document matches exactly one version — and cibuildwheel runs this
+        suite on cp39 through cp312, which failed three of four wheel jobs
+        on a diff that said nothing about the bindings.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_build_api_ref", _API_REF_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        canon = module._canonical_typing
+
+        # The real case: PeakDetectDecimator.process, nested generic inside.
+        assert canon(
+            "process(self, sample: float) -> typing.Optional[tuple[float, float]]"
+        ) == "process(self, sample: float) -> tuple[float, float] | None"
+        # Several per signature, and Union too.
+        assert canon("f(x: typing.Optional[int]) -> typing.Optional[str]") == \
+            "f(x: int | None) -> str | None"
+        assert canon("g(x: typing.Union[tuple[int, int], str]) -> None") == \
+            "g(x: tuple[int, int] | str) -> None"
+        # Idempotent on the already-canonical spelling, and inert otherwise.
+        assert canon("h(x: int | None) -> float") == "h(x: int | None) -> float"
+        assert canon("plain(x: int) -> float") == "plain(x: int) -> float"
+        # Unbalanced brackets must leave the signature untouched, not corrupt it.
+        assert canon("broken(x: typing.Optional[int) -> None") == \
+            "broken(x: typing.Optional[int) -> None"
+
+    def test_committed_doc_has_no_version_dependent_typing(self):
+        """Belt and braces: the committed document itself must be clean.
+
+        `test_committed_doc_is_up_to_date` only compares against *this*
+        interpreter. This one fails on any Python if a `typing.` spelling
+        ever reaches the document.
+        """
+        committed = (_API_REF_SCRIPT.parents[1]
+                     / "docs" / "api_reference.md").read_text()
+        assert "typing.Optional[" not in committed
+        assert "typing.Union[" not in committed
+
     def test_generates_without_error(self, tmp_path):
         """End-to-end run. Executed in a temp cwd so the committed
         docs/api_reference.md is never rewritten as a test side effect."""
