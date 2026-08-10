@@ -70,10 +70,10 @@ sensitivity = filt.worst_case_sensitivity()
 `mp-dsp-python` exposes every module of the C++ library to Python. **The
 2026-08-02 bindings-gap roadmap (epic #100) closed 18 sub-issues across
 5 phases, bringing coverage from ~65% to ~93% of the v0.6.0 surface** —
-see [`docs/gap_analysis_2026-08-02.md`](docs/gap_analysis_2026-08-02.md)
+see [`docs/gap_analysis_2026-08-02.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/gap_analysis_2026-08-02.md)
 for the module-by-module state. For the complete enumeration of every
 public name with signatures and one-line descriptions, see
-[`docs/api_reference.md`](docs/api_reference.md).
+[`docs/api_reference.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/api_reference.md).
 
 | Module | C++ Headers | Python API | Description |
 |--------|-------------|------------|-------------|
@@ -220,7 +220,7 @@ streamlit run scripts/plot_dashboard.py
 
 Full walkthrough (install paths for local / SSH-tunnel / LAN, tab-by-tab
 tour, mixed-precision interpretation guide, export conventions) in
-[`docs/dashboard.md`](docs/dashboard.md).
+[`docs/dashboard.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/dashboard.md).
 
 ## How
 
@@ -424,7 +424,7 @@ C++ library. The C++ library implements 17 DSP modules with
 mixed-precision arithmetic; this repo makes essentially all of them
 accessible to Python researchers (~93% of the v0.6.0 surface after
 the 2026-08-02 bindings-gap roadmap; see
-[`docs/gap_analysis_2026-08-02.md`](docs/gap_analysis_2026-08-02.md)
+[`docs/gap_analysis_2026-08-02.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/gap_analysis_2026-08-02.md)
 for the current coverage state and residual gaps).
 
 ### Design Documents
