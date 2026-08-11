@@ -165,7 +165,7 @@ def run_all(reference: np.ndarray, primary: np.ndarray, meta: dict,
 def write_summary_csv(path: Path, results: list[TrainingResult],
                       meta: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["algorithm", "dtype", "sample_bits", "status",
                          "reduction_before_db", "reduction_after_db",

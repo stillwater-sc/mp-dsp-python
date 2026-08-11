@@ -300,7 +300,7 @@ def run_all(clip: np.ndarray, config: ChainConfig, dtypes: list[str]
 
 def write_summary_csv(path: Path, results: list[ChainResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["dtype", "sample_bits", "sqnr_db", "peak",
                          "clipped_samples", "max_gain_reduction_db"])

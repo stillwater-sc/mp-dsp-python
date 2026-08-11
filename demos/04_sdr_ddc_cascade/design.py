@@ -244,7 +244,7 @@ def run_all(signal: np.ndarray, stages: list[np.ndarray], meta: dict,
 def write_summary_csv(path: Path, analysis: dict, results: list[CascadeResult]
                       ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["dtype", "sample_bits", "output_snr_db"]
                         + [f"stage{i + 1}_snr_db" for i in range(NUM_STAGES)])

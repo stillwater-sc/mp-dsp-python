@@ -180,26 +180,6 @@ def _truncate_at_word(text: str, limit: int) -> str:
     return cut.rstrip(" ,.;:") + "…"
 
 
-def class_methods(cls) -> list[tuple[str, str, str]]:
-    """List (method_name, signature, blurb) for public methods of a class.
-
-    Skips dunder methods and properties that look like constant state
-    (dtype, num_taps, etc. — listed in the class's prose instead).
-    """
-    rows = []
-    for mname in sorted(m for m in dir(cls) if not m.startswith("_")):
-        member = getattr(cls, mname, None)
-        if member is None:
-            continue
-        doc = getattr(member, "__doc__", "") or ""
-        first = (doc.split("\n")[0] if doc else "").strip()
-        # Skip obvious noise — empty-doc properties just get listed in prose.
-        sig, blurb = sig_and_blurb(mname, member)
-        # Prefix with dot so it's clearly a method in the rendered table.
-        rows.append((f".{mname}", sig, blurb))
-    return rows
-
-
 # --- Category definitions ---
 # Each category is (title, [list of names]). The order of names within a
 # category is deliberate and the order of categories follows the README's
@@ -848,7 +828,11 @@ def render_class(name: str) -> str:
         first = mdoc.split("\n")[0].strip() if mdoc else ""
         # Render either the signature or "(property)" + first-line blurb.
         if first.startswith(f"{mname}("):
-            sig = " ".join(first.split())
+            # Canonicalize before splitting: this path builds the signature
+            # itself rather than going through sig_and_blurb, so it needs the
+            # interpreter-independence fix too. The only `typing.Optional` in
+            # the whole surface (PeakDetectDecimator.process) renders here.
+            sig = _canonical_typing(" ".join(first.split()))
             prefix = f"{mname}("
             sig_args = "(" + sig[len(prefix):] if sig.startswith(prefix) else sig
             # Remaining doc content after the first line (if any). Drop the
@@ -1043,7 +1027,10 @@ extension.
 """)
 
     out = "".join(parts)
-    with open("docs/api_reference.md", "w") as fh:
+    # encoding= is not optional: the document carries em dashes, arrows and
+    # Greek, and Windows defaults open() to cp1252, where those raise
+    # UnicodeEncodeError. That took every Windows CI run down from 2026-08-04.
+    with open("docs/api_reference.md", "w", encoding="utf-8") as fh:
         fh.write(out)
     print(f"wrote docs/api_reference.md ({len(out)} bytes, "
            f"{out.count(chr(10))} lines)")

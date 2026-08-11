@@ -265,6 +265,43 @@ class TestBuildApiRef:
         assert canon("broken(x: typing.Optional[int) -> None") == \
             "broken(x: typing.Optional[int) -> None"
 
+    def test_class_method_rendering_canonicalizes_typing(self):
+        """The *pipeline* must canonicalize, not just the helper.
+
+        The first attempt at this fix patched sig_and_blurb and shipped —
+        but render_class builds class-method signatures itself and never
+        calls it, so class tables stayed interpreter-dependent and cp39 kept
+        failing. (The helper-only test passed, and regenerating on 3.11 was
+        a no-op because 3.11 needs no normalization, so nothing caught it.)
+        Drive the real rendering path with a 3.9-style docstring.
+        """
+        import importlib.util
+        import types
+
+        spec = importlib.util.spec_from_file_location(
+            "_build_api_ref", _API_REF_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class _Stub:
+            pass
+
+        # Exactly what nanobind emits for std::optional<std::pair<...>> on 3.9.
+        _Stub.process = property(lambda self: None)
+        _Stub.process.__doc__ = (
+            "process(self, sample: float) -> typing.Optional[tuple[float, float]]"
+            "\n\nPush one sample."
+        )
+        module.mpdsp = types.SimpleNamespace(_Stub=_Stub)
+        module.CLASS_INTROS = {}
+
+        rendered = module.render_class("_Stub")
+        assert "typing.Optional[" not in rendered, (
+            "render_class leaked an interpreter-dependent signature:\n"
+            + rendered
+        )
+        assert "tuple[float, float] \\| None" in rendered
+
     def test_committed_doc_has_no_version_dependent_typing(self):
         """Belt and braces: the committed document itself must be clean.
 

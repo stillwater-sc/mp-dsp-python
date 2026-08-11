@@ -183,7 +183,7 @@ def sweep(point: DesignPoint, dtypes: list[str], motor: Motor | None = None,
 
 def write_summary_csv(path: Path, results: list[SweepResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["design_point", "dtype", "sample_bits", "status",
                          "max_pole", "notch_depth_db", "notch_pole_displacement",
@@ -205,7 +205,7 @@ def write_step_csv(path: Path, results: list[SweepResult],
     """Per-dtype step response, as the issue asks for."""
     path.parent.mkdir(parents=True, exist_ok=True)
     length = max(len(r.step) for r in results)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["time_ms"] + [f"{r.design_point}:{r.dtype}"
                                        for r in results])

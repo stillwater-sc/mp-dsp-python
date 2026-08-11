@@ -115,7 +115,7 @@ def smallest_passing_width(rows: list[dict]) -> int | None:
 def write_csv(path: Path, bit_rows: list[dict], dtype_rows: list[dict]
               ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["sweep", "key", "sample_bits_or_rom_bits",
                          "passband_ripple_db", "alias_attenuation_db",

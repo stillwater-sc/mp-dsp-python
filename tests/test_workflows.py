@@ -12,11 +12,25 @@ using GitHub's documented filter-pattern semantics and matched locally.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# release.yml's classification step runs on `ubuntu-latest`, so POSIX bash is
+# the only shell whose behaviour this assertion is about. On Windows `bash`
+# resolves to whatever happens to be on PATH — a WSL shim, Git Bash, or
+# nothing — and none of those is the shell GitHub will use. Running the check
+# there tests the developer's machine, not the workflow, so skip it rather
+# than assert against an irrelevant interpreter. The pure-Python
+# `test_classification` cases below still run everywhere.
+_POSIX_SHELL_ONLY = pytest.mark.skipif(
+    os.name != "posix",
+    reason="release.yml runs on ubuntu-latest; bash semantics off POSIX "
+           "say nothing about it",
+)
 
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _RELEASE_YML = _WORKFLOWS / "release.yml"
@@ -202,6 +216,7 @@ class TestReleasePrereleaseClassification:
         # The new rule catches it.
         assert not re.compile(self._workflow_regex()).match("0.8.0rc1")
 
+    @_POSIX_SHELL_ONLY
     @pytest.mark.parametrize("version,is_prerelease", _EXPECTED)
     def test_shell_implementation_agrees(self, version, is_prerelease):
         """Run the actual bash conditional, not a Python transliteration.

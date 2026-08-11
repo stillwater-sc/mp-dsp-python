@@ -120,8 +120,11 @@ def main() -> int:
           f"{[round(f * meta['speed_change'], 1) for f in meta['tones_hz']]} "
           f"Hz at sample {meta['speed_change_at']}")
     print(f"  primary path {len(meta['primary_path'])} taps")
+    # ASCII arrow deliberately: Windows consoles default to cp1252, which
+    # has no U+2192, so a Unicode arrow here crashes the script on a plain
+    # `python simulate.py` run. Keep printed output inside ASCII.
     print(f"  sensor floor {meta['sensor_snr_db']:.0f} dB SNR "
-          f"→ cancellation cannot exceed ~{meta['sensor_snr_db']:.0f} dB")
+          f"-> cancellation cannot exceed ~{meta['sensor_snr_db']:.0f} dB")
     print(f"  reference    rms {np.sqrt(np.mean(reference ** 2)):.3f}")
     print(f"  primary      rms {np.sqrt(np.mean(primary ** 2)):.3f}")
     return 0
