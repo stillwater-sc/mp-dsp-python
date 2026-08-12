@@ -353,7 +353,7 @@ Upstream's `sw::dsp::multirate` module. `Channelizer` splits a wideband input in
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `channelizer_prototype_bank` | `(num_channels: int, taps_per_phase: int = 16, kaiser_beta: float = 8.0, dtype: str = 'reference') -> list[ndarray]` | The polyphase decomposition of a Channelizer's shared prototype, as a list of num_channels sub-filter tap arrays.\n\nExposed so an analysis bank and a synthesis bank can be built on the *same* prototype. Mismatching the two halves of such a pair destroys reconstruction rather than merely degrading it, so there is deliberately no second copy of this design to drift out of step. |
+| `channelizer_prototype_bank` | `(num_channels: int, taps_per_phase: int = 16, kaiser_beta: float = 8.0, dtype: str = 'reference') -> list[ndarray]` | The polyphase decomposition of a Channelizer's shared prototype, as a list of num_channels sub-filter tap arrays. |
 
 ## Acquisition — high-rate ADC → baseband pipeline
 
@@ -803,7 +803,7 @@ Bellanger polyphase channelizer. `num_channels` must be a power of two (library 
 
 Measured with 16 taps per phase and `kaiser_beta=8`: about 100 dB of out-of-band rejection. Note that a *real* input puts equal energy in channels c and M-c — the second is the negative-frequency image, not leakage.
 
-> Bellanger polyphase channelizer: splits a wideband input into num_channels uniformly-spaced complex baseband channels at 1/num_channels of the input rate.\n\nEach block of num_channels input samples advances the polyphase sub-filters once and is then inverse-transformed, so the whole bank costs about one prototype-filter evaluation per input sample rather than one per channel — which is the entire reason to build a channelizer instead of num_channels independent down-converters.\n\nnum_channels must be a power of two (the library FFT requires it). Longer taps_per_phase sharpens the channel edges and deepens adjacent-channel rejection, at the cost of compute and (taps_per_phase-1)/2 samples of group delay. kaiser_beta sets the prototype window: 8 gives roughly -58 dB, 12 roughly -115 dB.
+> Bellanger polyphase channelizer: splits a wideband input into num_channels uniformly-spaced complex baseband channels at 1/num_channels of the input rate.
 
 | Member | Signature / description |
 |--------|-------------------------|
@@ -820,7 +820,7 @@ Polyphase fractional-sample delay, resolution 1/`num_phases`. The smallest offse
 
 Measured at `num_phases=64`, `taps_per_phase=11`: delay accurate to better than 0.01 samples with unity passband gain.
 
-> Polyphase fractional-sample delay line: resamples the input at an arbitrary sub-sample offset, with resolution 1/num_phases.\n\nThe filter has an intrinsic group delay of (taps_per_phase-1)/2 input samples, and that is the *smallest* offset it can serve — a filter cannot reconstruct samples from the future, so requests below the floor round up to it rather than failing silently. Requests beyond group_delay + max_int_delay raise, because the ring buffer no longer holds the history they need.\n\nHigher num_phases buys finer offset resolution at the cost of coefficient memory; longer taps_per_phase buys in-band flatness and stopband depth. It must be odd and >= 3, which keeps the group delay an integer.
+> Polyphase fractional-sample delay line: resamples the input at an arbitrary sub-sample offset, with resolution 1/num_phases.
 
 | Member | Signature / description |
 |--------|-------------------------|
