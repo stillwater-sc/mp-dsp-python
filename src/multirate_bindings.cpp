@@ -275,7 +275,7 @@ void bind_multirate(nb::module_& m) {
 		}, nb::arg("num_channels"), nb::arg("taps_per_phase") = 16,
 		   nb::arg("kaiser_beta") = 8.0, nb::arg("dtype") = "reference",
 		"The polyphase decomposition of a Channelizer's shared prototype, as "
-		"a list of num_channels sub-filter tap arrays.\\n\\n"
+		"a list of num_channels sub-filter tap arrays.\n\n"
 		"Exposed so an analysis bank and a synthesis bank can be built on the "
 		"*same* prototype. Mismatching the two halves of such a pair destroys "
 		"reconstruction rather than merely degrading it, so there is "
@@ -285,12 +285,12 @@ void bind_multirate(nb::module_& m) {
 	nb::class_<PyChannelizer>(m, "Channelizer",
 		"Bellanger polyphase channelizer: splits a wideband input into "
 		"num_channels uniformly-spaced complex baseband channels at "
-		"1/num_channels of the input rate.\\n\\n"
+		"1/num_channels of the input rate.\n\n"
 		"Each block of num_channels input samples advances the polyphase "
 		"sub-filters once and is then inverse-transformed, so the whole bank "
 		"costs about one prototype-filter evaluation per input sample rather "
 		"than one per channel — which is the entire reason to build a "
-		"channelizer instead of num_channels independent down-converters.\\n\\n"
+		"channelizer instead of num_channels independent down-converters.\n\n"
 		"num_channels must be a power of two (the library FFT requires it). "
 		"Longer taps_per_phase sharpens the channel edges and deepens "
 		"adjacent-channel rejection, at the cost of compute and "
@@ -320,21 +320,26 @@ void bind_multirate(nb::module_& m) {
 	// ---- FractionalDelay -----------------------------------------------
 	nb::class_<PyFractionalDelay>(m, "FractionalDelay",
 		"Polyphase fractional-sample delay line: resamples the input at an "
-		"arbitrary sub-sample offset, with resolution 1/num_phases.\\n\\n"
+		"arbitrary sub-sample offset, with resolution 1/num_phases.\n\n"
 		"The filter has an intrinsic group delay of "
 		"(taps_per_phase-1)/2 input samples, and that is the *smallest* "
 		"offset it can serve — a filter cannot reconstruct samples from the "
 		"future, so requests below the floor round up to it rather than "
 		"failing silently. Requests beyond group_delay + max_int_delay raise, "
-		"because the ring buffer no longer holds the history they need.\\n\\n"
+		"because the ring buffer no longer holds the history they need.\n\n"
 		"Higher num_phases buys finer offset resolution at the cost of "
 		"coefficient memory; longer taps_per_phase buys in-band flatness and "
-		"stopband depth. It must be odd and >= 3, which keeps the group "
-		"delay an integer.\n\n"
-		"taps_per_phase defaults to 11, not to upstream's 12: that default "
-		"is even and its own validator rejects it, so constructing the C++ "
-		"class with documented defaults throws "
-		"(mixed-precision-dsp#208). 11 is the nearest usable value.")
+		"stopband depth. It must be odd and >= 3.\n\n"
+		"Odd is not a formality. It keeps the group delay (taps_per_phase-1)/2 "
+		"an integer, which makes phase 0 a sinc sampled on the integers — one "
+		"non-zero tap, an unfiltered passthrough — so an integer-sample "
+		"request costs nothing at all. An even length puts the floor on a "
+		"half-integer, and then every output is interpolated, including a "
+		"nominally integer delay.\n\n"
+		"taps_per_phase defaults to 11, matching upstream. It defaulted to an "
+		"even 12 there until mixed-precision-dsp#208, a value its own "
+		"validator rejected, so this binding used 11 ahead of the fix; the "
+		"two now agree.")
 		.def(nb::init<std::size_t, std::size_t, std::size_t, double,
 		              const std::string&>(),
 		     nb::arg("num_phases"), nb::arg("taps_per_phase") = 11,

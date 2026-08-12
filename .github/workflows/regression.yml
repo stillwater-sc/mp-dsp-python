@@ -10,7 +10,6 @@ on:
 
 env:
   BUILD_TYPE: Release
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   regression:
@@ -40,7 +39,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 

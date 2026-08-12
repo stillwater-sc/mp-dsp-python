@@ -16,9 +16,6 @@ on:
 permissions:
   contents: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   # First, run the full test suite to gate the release
   test:
@@ -40,7 +37,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -105,7 +102,7 @@ jobs:
           git log $RANGE --pretty=format:"- %s (%h)" --no-merges >> release_notes.md
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: "v${{ steps.version.outputs.VERSION }}"
           body_path: release_notes.md
