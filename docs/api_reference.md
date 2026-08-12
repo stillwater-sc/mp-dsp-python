@@ -1,8 +1,8 @@
 # `mpdsp` API reference
 
 Complete enumeration of every public name in the `mpdsp` package, grouped
-by subsystem. Generated from `0.9.0` (upstream `sw::dsp
-0.9.0`) via `inspect` and the nanobind-attached
+by subsystem. Generated from `0.10.0.dev0` (upstream `sw::dsp
+0.10.0`) via `inspect` and the nanobind-attached
 `__doc__` strings. Keep this in sync by re-running the generator — see
 the note at the bottom.
 
@@ -137,8 +137,8 @@ precision-cost frontier.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.9.0"`. |
-| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.9.0"`. |
+| `mpdsp.__version__` | `str` | The installed wheel version (PEP 440). Current: `"0.10.0.dev0"`. |
+| `mpdsp.__dsp_version__` | `str` | The upstream `sw::dsp` C++ library version the wheel was built against. Current: `"0.10.0"`. |
 | `mpdsp.__dsp_version_info__` | `tuple` | `(major, minor, patch)` tuple of ints for `__dsp_version__`. |
 | `mpdsp.HAS_CORE` | `bool` | `True` when the nanobind extension imported cleanly. `False` in unbuilt source checkouts, and (pre-0.4.1.post1) indicated a packaging bug before we hardened the import. |
 | `mpdsp.HAS_PLOT` | `bool` | `True` when matplotlib is importable — gates the `plot_*` helpers. |
@@ -349,7 +349,7 @@ plot = mpdsp.apply_bilinear(
 
 Upstream's `sw::dsp::multirate` module. `Channelizer` splits a wideband input into M uniformly-spaced complex baseband channels for about one prototype-filter evaluation per input sample — the whole reason to build a channelizer rather than M independent down-converters. `FractionalDelay` resamples at an arbitrary sub-sample offset. Both classes are in the [Classes](#classes) section; the prototype-bank helper is here.
 
-`FractionalDelay`'s `taps_per_phase` must be **odd**, and this package defaults it to 11 rather than mirroring upstream's 12 — that default is even and upstream's own validator rejects it ([mixed-precision-dsp#208](https://github.com/stillwater-sc/mixed-precision-dsp/issues/208)).
+`FractionalDelay`'s `taps_per_phase` must be **odd**, which keeps the group delay an integer and makes phase 0 an unfiltered passthrough. This package and upstream both default it to 11. Upstream defaulted to an even 12 — a value its own validator rejected — until [mixed-precision-dsp#208](https://github.com/stillwater-sc/mixed-precision-dsp/issues/208).
 
 | Name | Signature | Description |
 |------|-----------|-------------|

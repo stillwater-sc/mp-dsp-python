@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.22)
 # the regex provider configured in pyproject.toml — do not hardcode
 # it anywhere else.
 project(mp-dsp-python
-	VERSION 0.9.0
+	VERSION 0.10.0
 	LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -33,25 +33,29 @@ project(mp-dsp-python
 #   -DMPDSP_REQUIRED_DSP_VERSION=0.5.0   (lower floor for experimentation)
 #   -DMPDSP_DSP_PIN=main                 (build against unreleased upstream)
 # ---------------------------------------------------------------------------
-set(MPDSP_REQUIRED_DSP_VERSION       "0.9.0"  CACHE STRING
+set(MPDSP_REQUIRED_DSP_VERSION       "0.10.0" CACHE STRING
 	"Minimum mixed-precision-dsp version required at configure time")
 set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
 	"Minimum universal version required at configure time")
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
 	"Minimum mtl5 version required at configure time")
 
-# Pinned past v0.9.0 to a SHA, deliberately. v0.9.0 closed upstream
-# #203-#206 (the Parks-McClellan exchange, the half-band designer, the
-# Constantinides band transformations) and this package's tests assert
-# that fixed behaviour. But #207 — NCO/DDC forming frequency/sample_rate
-# in double *before* converting, so absolute RF rates work for narrow
-# state types — landed after the tag and is untagged.
+# Back on a tag, as the SHA pin's own note said to do at the next upstream
+# release. That pin existed because #207 — NCO/DDC forming frequency and
+# sample_rate in double *before* converting, so absolute RF rates survive
+# narrow state types — landed after v0.9.0 and was untagged; without it
+# `DDC(1.2e9, 5.0e9, ..., dtype="half")` silently yields a NaN phase
+# accumulator. #207 is inside v0.10.0, so the reason to pin past a tag is
+# gone.
 #
-# Without it, `DDC(1.2e9, 5.0e9, ..., dtype="half")` silently yields a NaN
-# phase accumulator, and tests asserting absolute rates work would pass
-# locally and fail in CI. A SHA is more reproducible than a tag, not less;
-# move back to a tag at the next upstream release.
-set(MPDSP_DSP_PIN       "ee5da9e80b1e4f73bdf99c03e39a9214d775b461" CACHE STRING
+# v0.10.0 is the Software Defined Radio release: the whole sw::dsp::sdr
+# module (constellation, RRC, metrics, AGC, timing and carrier recovery,
+# OFDM, channelizer) plus upstream #208, which fixed
+# multirate::FractionalDelay's default taps_per_phase — an even 12 its own
+# validator rejected. This package defaulted that argument to 11 ahead of
+# the fix; upstream now agrees, and test_multirate.py guards the shared
+# value.
+set(MPDSP_DSP_PIN       "v0.10.0" CACHE STRING
 	"mixed-precision-dsp git tag / branch / SHA to fetch")
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the

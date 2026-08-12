@@ -203,9 +203,10 @@ class TestFractionalDelay:
     def test_construction_with_defaults(self, dtype):
         """Defaults must be usable.
 
-        They are not upstream: `taps_per_phase` defaults to 12 there, which
-        its own validator rejects for being even (mixed-precision-dsp#208).
-        This binding defaults to 11.
+        They were not upstream until mixed-precision-dsp#208: `taps_per_phase`
+        defaulted to 12 there, which its own validator rejects for being even.
+        This binding used 11 ahead of that fix; upstream now defaults to 11
+        too, so the two agree and this test guards the shared value.
         """
         fd = mpdsp.FractionalDelay(num_phases=64, dtype=dtype)
         assert fd.num_phases == 64

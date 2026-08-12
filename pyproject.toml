@@ -93,7 +93,9 @@ wheel.install-dir = "mpdsp"
 provider = "scikit_build_core.metadata.regex"
 input = "CMakeLists.txt"
 regex = '(?i)project\s*\(\s*mp-dsp-python[^)]*VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
-result = "{value}"
+# .dev0: tracking upstream's v0.10.0 minor, binding release not yet cut.
+# Drop the suffix to publish. See the lifecycle note above.
+result = "{value}.dev0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

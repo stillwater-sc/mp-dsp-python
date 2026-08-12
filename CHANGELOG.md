@@ -10,6 +10,49 @@ Python-only patches ship as PEP 440 post-releases. See `docs/publishing.md`.
 Releases before 0.9.0 were tagged without a changelog file; this file starts
 with the 0.9.0 cycle.
 
+## [Unreleased] — 0.10.0.dev0
+
+Tracking upstream `mixed-precision-dsp` v0.10.0 (#129). `project(VERSION)` is
+bumped and the version template carries `.dev0` until the binding release is
+cut, per the lifecycle note in `pyproject.toml`.
+
+### Changed
+
+- **Upstream pin moves from a SHA back to a tag** (#129): `v0.10.0`, and the
+  version floor with it. The SHA pin existed because upstream #207 (NCO/DDC forming
+  frequency and sample_rate in double *before* converting, so absolute RF
+  rates survive narrow state types) landed after v0.9.0 and was untagged. It
+  is inside v0.10.0, so the reason to pin past a tag is gone — as the pin's
+  own comment said it would be.
+
+  v0.10.0 is upstream's Software Defined Radio release: the whole
+  `sw::dsp::sdr` module — constellation mapping and demapping, RRC pulse
+  shaping, EVM/MER/BER metrics, AGC, symbol-timing and carrier recovery, OFDM,
+  and an oversampled channelizer. None of it has Python entry points yet.
+
+- **`FractionalDelay` docstrings no longer describe `taps_per_phase = 11` as a
+  divergence.** Upstream defaulted to an even 12, which its own validator
+  rejected, so this package used 11 ahead of the fix; upstream
+  [#208](https://github.com/stillwater-sc/mixed-precision-dsp/issues/208)
+  moved it to 11 and the two now agree. This also resolves the caveat recorded
+  in 75a75bf: the 0.9.0 wheel's prose claimed agreement with upstream while
+  still pinned to a SHA where upstream defaulted to 12, so the wording was
+  ahead of its own pin. Moving the pin makes it accurate.
+  The note became a rationale instead:
+  odd lengths keep the group delay an integer, which makes phase 0 a sinc
+  sampled on the integers — one non-zero tap, an unfiltered passthrough — so
+  an integer-sample request costs nothing. An even length puts the floor on a
+  half-integer and every output is interpolated. Updated in the binding
+  docstring, `test_multirate.py`, and the API-reference intro.
+
+### Fixed
+
+- **Docstring paragraph breaks in `multirate_bindings.cpp`.** Ten `\n`
+  sequences were written `\\n`, which emits a literal backslash-n rather than
+  a newline — visible in `help(mpdsp.FractionalDelay)` and in the generated
+  `docs/api_reference.md`. It was the only binding source in the package with
+  this defect; every other file already used `\n`.
+
 ## [0.9.0] - 2026-08-06
 
 ### Added

@@ -384,11 +384,13 @@ INTROS = {
         "down-converters. `FractionalDelay` resamples at an arbitrary "
         "sub-sample offset. Both classes are in the "
         "[Classes](#classes) section; the prototype-bank helper is here.\n\n"
-        "`FractionalDelay`'s `taps_per_phase` must be **odd**, and this "
-        "package defaults it to 11 rather than mirroring upstream's 12 — "
-        "that default is even and upstream's own validator rejects it "
-        "([mixed-precision-dsp#208](https://github.com/stillwater-sc/"
-        "mixed-precision-dsp/issues/208))."
+        "`FractionalDelay`'s `taps_per_phase` must be **odd**, which keeps "
+        "the group delay an integer and makes phase 0 an unfiltered "
+        "passthrough. This package and upstream both default it to 11. "
+        "Upstream defaulted to an even 12 — a value its own validator "
+        "rejected — until "
+        "[mixed-precision-dsp#208](https://github.com/stillwater-sc/"
+        "mixed-precision-dsp/issues/208)."
     ),
     "Acquisition — high-rate ADC → baseband pipeline": (
         "Multirate primitives for the high-rate data-acquisition pipeline "
