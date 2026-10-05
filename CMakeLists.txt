@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-# Version tracks the mixed-precision-dsp C++ library in lockstep (see
+# Version tracks the mixed-precision DSP C++ library in lockstep (see
 # docs convention matching mtl5 / mtl5-python). Python-only patches
 # ship as PEP 440 post-releases (e.g. 0.4.1.post1) without bumping
 # this value. scikit-build-core reads the version from this line via
@@ -34,11 +34,11 @@ project(mp-dsp-python
 #   -DMPDSP_DSP_PIN=main                 (build against unreleased upstream)
 # ---------------------------------------------------------------------------
 set(MPDSP_REQUIRED_DSP_VERSION       "0.10.0" CACHE STRING
-	"Minimum mixed-precision-dsp version required at configure time")
+	"Minimum mixed-precision DSP version required at configure time")
 set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
-	"Minimum universal version required at configure time")
+	"Minimum Universal Number Libraryversion required at configure time")
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
-	"Minimum mtl5 version required at configure time")
+	"Minimum MTL5 version required at configure time")
 
 # Back on a tag, as the SHA pin's own note said to do at the next upstream
 # release. That pin existed because #207 — NCO/DDC forming frequency and
@@ -56,11 +56,11 @@ set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
 # the fix; upstream now agrees, and test_multirate.py guards the shared
 # value.
 set(MPDSP_DSP_PIN       "v0.10.0" CACHE STRING
-	"mixed-precision-dsp git tag / branch / SHA to fetch")
+	"mp-dsp git tag / branch / SHA to fetch")
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the
 # sibling-path floor.
-set(MPDSP_UNIVERSAL_PIN "v4.6.11" CACHE STRING
+set(MPDSP_UNIVERSAL_PIN "v5.1.0" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
 set(MPDSP_MTL5_PIN      "v5.7.0"  CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
@@ -191,19 +191,19 @@ function(mpdsp_check_version_from_git NAME DIR REQUIRED CACHE_VAR)
 	message(STATUS "${NAME} version: ${_VERSION} (required >= ${REQUIRED})")
 endfunction()
 
-# Find or fetch mixed-precision-dsp (header-only)
-# Try peer directory (../dsp or ../mixed-precision-dsp), then FetchContent
+# Find or fetch mixed-precision DSP (header-only)
+# Try peer directory (../dsp or ../mp-dsp), then FetchContent
 add_library(sw_dsp INTERFACE)
 
 set(_DSP_CANDIDATES
   "${CMAKE_CURRENT_SOURCE_DIR}/../dsp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../mixed-precision-dsp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../mp-dsp"
 )
 set(_DSP_FOUND FALSE)
 foreach(_DIR IN LISTS _DSP_CANDIDATES)
   if(EXISTS "${_DIR}/include/sw/dsp/dsp.hpp")
-    message(STATUS "Found mixed-precision-dsp at: ${_DIR}")
-    mpdsp_check_version_from_header("mixed-precision-dsp" "${_DIR}"
+    message(STATUS "Found mixed-precision DSP at: ${_DIR}")
+    mpdsp_check_version_from_header("mp-dsp" "${_DIR}"
       "include/sw/dsp/version.hpp" "${MPDSP_REQUIRED_DSP_VERSION}"
       "MPDSP_REQUIRED_DSP_VERSION")
     target_include_directories(sw_dsp INTERFACE "${_DIR}/include")
@@ -213,10 +213,10 @@ foreach(_DIR IN LISTS _DSP_CANDIDATES)
 endforeach()
 
 if(NOT _DSP_FOUND)
-  message(STATUS "mixed-precision-dsp not found locally, fetching from GitHub")
+  message(STATUS "mixed-precision DSP not found locally, fetching from GitHub")
   include(FetchContent)
   FetchContent_Declare(dsp
-    GIT_REPOSITORY https://github.com/stillwater-sc/mixed-precision-dsp.git
+    GIT_REPOSITORY https://github.com/stillwater-sc/mp-dsp.git
     GIT_TAG ${MPDSP_DSP_PIN}
     GIT_SHALLOW ${_MPDSP_DSP_SHALLOW}
   )

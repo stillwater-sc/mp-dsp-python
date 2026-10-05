@@ -1,13 +1,13 @@
 # mp-dsp-python
 
 Python integration layer for the
-[mixed-precision-dsp](https://github.com/stillwater-sc/mixed-precision-dsp)
+[mixed-precision DSP](https://github.com/stillwater-sc/mp-dsp)
 C++ library, providing nanobind bindings, matplotlib visualizations,
 and Jupyter notebooks for the full DSP domain.
 
 ## Why
 
-The [mixed-precision-dsp](https://github.com/stillwater-sc/mixed-precision-dsp)
+The [mixed-precision DSP](https://github.com/stillwater-sc/mp-dsp)
 library is a C++20 header-only DSP library covering signals, windows,
 quantization, IIR/FIR filtering, spectral analysis, signal conditioning,
 estimation (Kalman/LMS/RLS), image processing, and numerical analysis
@@ -167,7 +167,7 @@ showing ES's effect on SQNR.
 
 Coefficients are designed in `double` by default — design-time precision is
 what keeps an IIR cascade well-conditioned (see the
-[educational guide](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/topics/mixed-precision-iir-filter-design.md)).
+[educational guide](https://github.com/stillwater-sc/mp-dsp/blob/main/docs/topics/mixed-precision-iir-filter-design.md)).
 The classical IIR families (Butterworth, Chebyshev, Bessel, Legendre,
 Elliptic) design in `double` unconditionally; `dtype=` on those filters
 selects the *processing* path only.
@@ -310,10 +310,9 @@ cmake --build build
 pip install -e .
 ```
 
-The build system resolves `mixed-precision-dsp`, Universal, and MTL5 in this
-order:
+The build system resolves `mp-dsp`, Universal, and MTL5 in this order:
 
-1. **Sibling clone** — if a checkout exists at `../mixed-precision-dsp`,
+1. **Sibling clone** — if a checkout exists at `../mp-dsp`,
    `../universal`, or `../mtl5`, it is used directly. This is the recommended
    workflow when iterating across the C++ stack and the Python bindings
    together.
@@ -327,8 +326,8 @@ needed to fix them):
 
 | Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
-| `mixed-precision-dsp` | ≥ 0.6.0 | `v0.6.0` |
-| `universal` | ≥ 4.6.11 | `v4.6.11` |
+| `mp-dsp` | ≥ 0.6.0 | `v0.6.0` |
+| `universal` | ≥ 5.1.0 | `v5.1.0` |
 | `mtl5` | ≥ 5.7.0 | `v5.7.0` |
 
 _Note: the MTL5 floor was bumped from 5.2.1 → 5.7.0 in 2026-08-02 as
@@ -353,7 +352,7 @@ The plotting scripts work immediately with CSV output from the C++
 precision sweep, without building any nanobind module:
 
 ```bash
-# In the mixed-precision-dsp repo:
+# In the mixed-precision DSP repo:
 cd build && ./applications/mp_comparison/iir_precision_sweep /tmp/csv_output
 
 # In this repo:
@@ -416,10 +415,10 @@ print(f"  Condition number: {filt.condition_number():.2e}")
 print(f"  Worst sensitivity: {filt.worst_case_sensitivity():.4f}")
 ```
 
-## Relationship to mixed-precision-dsp
+## Relationship to mixed-precision DSP (mp-dsp)
 
 This repository is the **Python integration layer** for the full
-[stillwater-sc/mixed-precision-dsp](https://github.com/stillwater-sc/mixed-precision-dsp)
+[stillwater-sc/mp-dsp](https://github.com/stillwater-sc/mp-dsp)
 C++ library. The C++ library implements 17 DSP modules with
 mixed-precision arithmetic; this repo makes essentially all of them
 accessible to Python researchers (~93% of the v0.6.0 surface after
@@ -429,16 +428,16 @@ for the current coverage state and residual gaps).
 
 ### Design Documents
 
-- [Python integration architecture](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/designs/python-integration.md) — dispatch mechanism, pre-instantiated configs
-- [Projection/embedding generalization](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/designs/projection-embedding-generalization.md) — type conversion across domains
-- [Mixed-precision IIR guide](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/topics/mixed-precision-iir-filter-design.md) — numerical sensitivity primer
-- [OpenCV API comparison](https://github.com/stillwater-sc/mixed-precision-dsp/blob/main/docs/assessments/image-api-opencv-comparison.md) — image processing design rationale
+- [Python integration architecture](https://github.com/stillwater-sc/mp-dsp/blob/main/docs/designs/python-integration.md) — dispatch mechanism, pre-instantiated configs
+- [Projection/embedding generalization](https://github.com/stillwater-sc/mp-dsp/blob/main/docs/designs/projection-embedding-generalization.md) — type conversion across domains
+- [Mixed-precision IIR guide](https://github.com/stillwater-sc/mp-dsp/blob/main/docs/topics/mixed-precision-iir-filter-design.md) — numerical sensitivity primer
+- [OpenCV API comparison](https://github.com/stillwater-sc/mp-dsp/blob/main/docs/assessments/image-api-opencv-comparison.md) — image processing design rationale
 
 ## Dependencies
 
 | Library | Purpose | Repository |
 |---------|---------|------------|
-| [mixed-precision-dsp](https://github.com/stillwater-sc/mixed-precision-dsp) | C++ DSP algorithms (all 12 modules) | `stillwater-sc/mixed-precision-dsp` |
+| [mp-dsp](https://github.com/stillwater-sc/mp-dsp) | C++ DSP algorithms (all 12 modules) | `stillwater-sc/mp-dsp` |
 | [Universal](https://github.com/stillwater-sc/universal) | Number type arithmetic (posit, cfloat, fixpnt, ...) | `stillwater-sc/universal` |
 | [MTL5](https://github.com/stillwater-sc/mtl5) | Dense/sparse linear algebra | `stillwater-sc/mtl5` |
 | [nanobind](https://github.com/wjakob/nanobind) | C++ ↔ Python bindings | `wjakob/nanobind` |
