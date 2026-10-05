@@ -30,12 +30,12 @@ project(mp-dsp-python
 #       pin can lag the floor during a development cycle.
 #
 # Override at configure time:
-#   -DMPDSP_REQUIRED_DSP_VERSION=0.5.0   (lower floor for experimentation)
+#   -DMPDSP_REQUIRED_DSP_VERSION=0.10.0   (lower floor for experimentation)
 #   -DMPDSP_DSP_PIN=main                 (build against unreleased upstream)
 # ---------------------------------------------------------------------------
 set(MPDSP_REQUIRED_DSP_VERSION       "0.10.0" CACHE STRING
 	"Minimum mixed-precision DSP version required at configure time")
-set(MPDSP_REQUIRED_UNIVERSAL_VERSION "4.6.11" CACHE STRING
+set(MPDSP_REQUIRED_UNIVERSAL_VERSION "5.1.0" CACHE STRING
 	"Minimum Universal Number Libraryversion required at configure time")
 set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
 	"Minimum MTL5 version required at configure time")
