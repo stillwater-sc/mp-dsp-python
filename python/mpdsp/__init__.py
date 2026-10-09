@@ -163,6 +163,8 @@ try:
         TraceAverager, WaterfallBuffer,
         Marker, DeltaMarker,
         find_peaks, harmonic_markers, make_delta_marker,
+        # Precision profiles — decimals of accuracy (#133)
+        PrecisionProfile, precision_profile, available_profile_types,
         # Introspection
         available_dtypes, bits_of,
     )
@@ -196,6 +198,7 @@ try:
         plot_signal, plot_spectrum, plot_signal_and_spectrum,
         plot_quantization_comparison, plot_sqnr_comparison,
         plot_window_comparison, plot_spectrogram, plot_psd,
+        plot_precision_profiles,
     )
     HAS_PLOT = True
 except ImportError:
@@ -209,6 +212,13 @@ if HAS_CORE:
 # Analysis helpers (pure Python; build only on stdlib + numpy + _core methods)
 from mpdsp.analysis import (biquad_poles, cascade_condition_number,
                               is_stable, max_pole_radius)
+
+# Precision-profile reductions (pure Python over mpdsp.PrecisionProfile)
+if HAS_CORE:
+    from mpdsp.precision import (
+        share_in_roi, min_decimals_over, min_fraction_bits,
+        summary_table, range_fit_table,
+    )
 
 # Estimation helpers (pure Python; plotting needs matplotlib)
 if HAS_CORE:

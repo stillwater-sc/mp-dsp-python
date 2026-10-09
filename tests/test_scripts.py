@@ -188,6 +188,30 @@ def test_plot_pole_zero_new_cli_flags(csv_dir):
                     f"Missing {stem}.{ext}")
 
 
+def test_plot_decimals_of_accuracy_generates_output():
+    """Issue #133: one run regenerates the tutorial's figures and tables."""
+    pytest.importorskip("matplotlib")
+    mpdsp = pytest.importorskip("mpdsp")
+    if not mpdsp.HAS_CORE:
+        pytest.skip("mpdsp._core not available")
+    script_path = (Path(__file__).parent.parent / "scripts"
+                   / "plot_decimals_of_accuracy.py")
+    with tempfile.TemporaryDirectory() as outdir:
+        result = subprocess.run(  # noqa: S603 - test-controlled script + tempdirs
+            [sys.executable, str(script_path), "--output-dir", outdir],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        for stem in ("16bit-full-range", "16bit-region-of-interest",
+                     "16bit-bposit-fit", "32bit-bposit-fit"):
+            for ext in ("png", "pdf"):
+                assert os.path.exists(os.path.join(outdir, f"{stem}.{ext}")), (
+                    f"Missing {stem}.{ext}")
+        # the tables print the tutorial's headline numbers
+        assert "| `bposit<16,6,5>` | -192 .. 192 | 21.1 % |" in result.stdout
+        assert ("| `bposit<16,4,2>` | -16 .. 16 | 92.2 % | 3.61 | 3.01 | 9 |"
+                in result.stdout)
+
+
 # ---------------------------------------------------------------------------
 # build_api_ref.py (Issue #116)
 #
