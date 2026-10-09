@@ -35,9 +35,9 @@ project(mp-dsp-python
 # ---------------------------------------------------------------------------
 set(MPDSP_REQUIRED_DSP_VERSION       "0.6.0" CACHE STRING
 	"Minimum mixed-precision DSP version required at configure time")
-set(MPDSP_REQUIRED_UNIVERSAL_VERSION "5.1.0" CACHE STRING
+set(MPDSP_REQUIRED_UNIVERSAL_VERSION "5.2.0" CACHE STRING
 	"Minimum Universal Number Libraryversion required at configure time")
-set(MPDSP_REQUIRED_MTL5_VERSION      "5.7.0"  CACHE STRING
+set(MPDSP_REQUIRED_MTL5_VERSION      "5.12.0" CACHE STRING
 	"Minimum MTL5 version required at configure time")
 
 # Back on a tag, as the SHA pin's own note said to do at the next upstream
@@ -60,9 +60,9 @@ set(MPDSP_DSP_PIN       "v0.10.0" CACHE STRING
 # universal and mtl5 pins move freely (only DSP is in the lockstep test);
 # track the latest released versions of both so CI matches the
 # sibling-path floor.
-set(MPDSP_UNIVERSAL_PIN "v5.1.0" CACHE STRING
+set(MPDSP_UNIVERSAL_PIN "v5.2.0" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
-set(MPDSP_MTL5_PIN      "v5.7.0"  CACHE STRING
+set(MPDSP_MTL5_PIN      "v5.12.0" CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
 
 # Shallow-fetch is a big speedup for tags and branches, but git's shallow

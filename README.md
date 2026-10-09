@@ -326,9 +326,9 @@ needed to fix them):
 
 | Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
-| `mp-dsp` | ≥ 0.6.0 | `v0.6.0` |
-| `universal` | ≥ 5.1.0 | `v5.1.0` |
-| `mtl5` | ≥ 5.7.0 | `v5.7.0` |
+| `mp-dsp` | ≥ 0.6.0 | `v0.10.0` |
+| `universal` | ≥ 5.2.0 | `v5.2.0` |
+| `mtl5` | ≥ 5.12.0 | `v5.12.0` |
 
 _Note: the MTL5 floor was bumped from 5.2.1 → 5.7.0 in 2026-08-02 as
 prep for `UnscentedKalmanFilter`, which uses `mtl::ldlt_factor` (landed
