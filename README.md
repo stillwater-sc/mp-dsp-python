@@ -326,7 +326,7 @@ needed to fix them):
 
 | Peer | Floor (sibling-path) | FetchContent pin |
 |---|---|---|
-| `mp-dsp` | ≥ 0.6.0 | `v0.10.0` |
+| `mp-dsp` | ≥ 0.10.0 | `v0.10.0` |
 | `universal` | ≥ 5.2.0 | `v5.2.0` |
 | `mtl5` | ≥ 5.12.0 | `v5.12.0` |
 

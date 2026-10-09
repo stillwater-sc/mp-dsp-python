@@ -33,7 +33,7 @@ project(mp-dsp-python
 #   -DMPDSP_REQUIRED_DSP_VERSION=0.6.0   (lower floor for experimentation)
 #   -DMPDSP_DSP_PIN=main                  (build against unreleased upstream)
 # ---------------------------------------------------------------------------
-set(MPDSP_REQUIRED_DSP_VERSION       "0.6.0" CACHE STRING
+set(MPDSP_REQUIRED_DSP_VERSION       "0.10.0" CACHE STRING
 	"Minimum mixed-precision DSP version required at configure time")
 set(MPDSP_REQUIRED_UNIVERSAL_VERSION "5.2.0" CACHE STRING
 	"Minimum Universal Number Libraryversion required at configure time")
