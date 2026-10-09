@@ -328,3 +328,77 @@ def plot_psd(freqs, power, title="Power Spectral Density", ax=None, **kwargs):
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     return ax
+
+
+def plot_precision_profiles(profiles, dsp=False, xmin=None, xmax=None,
+                            title="Decimals of accuracy, -log10(ulp / (2|x|))",
+                            ax=None):
+    """Overlay precision-vs-magnitude profiles (decimals of accuracy).
+
+    Reproduces the figures of Universal's decimals-of-accuracy tutorial
+    (``tools/notebooks/plot_precision_profiles.py``): one curve per
+    profile, closed to 0 decimals at both ends of the type's range, with
+    sampled (wider than 16-bit) profiles drawn as steps.
+
+    Parameters
+    ----------
+    profiles : iterable of mpdsp.PrecisionProfile
+        From ``mpdsp.precision_profile(type)``. Up to five read best.
+    dsp : bool
+        Add the DSP markers: the signal band [2^-15, 1) shaded, FFT growth
+        to 2^log2(N) for N = 256, 1024 and 4096, and an SQNR axis at
+        6.02 dB per fraction bit.
+    xmin, xmax : float, optional
+        log2-magnitude limits, to zoom into a region of interest.
+    title : str
+        Plot title.
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on. Creates an 11x6 figure if None.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        So measured accuracy (for example an FFT's) can be drawn on top.
+    """
+    import math
+
+    _require_matplotlib()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(11, 6))
+
+    for p in profiles:
+        log2m = p.log2_magnitude
+        if log2m.size == 0:
+            continue
+        # 0 decimals outside the type's range: close the curve at both ends
+        xs = np.concatenate(([log2m[0]], log2m, [log2m[-1]]))
+        ys = np.concatenate(([0.0], p.decimals, [0.0]))
+        ax.plot(xs, ys, linewidth=1.2, label=p.label,
+                drawstyle="default" if p.exhaustive else "steps-post")
+
+    if dsp:
+        ax.axvspan(-15, 0, color="0.85", zorder=0,
+                   label="signal band [2^-15, 1)")
+        for n in (256, 1024, 4096):
+            g = math.log2(n)
+            ax.axvline(g, color="0.5", linestyle=":", linewidth=1)
+            ax.text(g, ax.get_ylim()[1] * 0.98, f" N={n}", rotation=90,
+                    va="top", fontsize=8, color="0.35")
+        # decimals d at the start of a binade = log10(2) * (bits + 1)
+        # ->  SQNR = 6.02 * bits
+        log10_2 = math.log10(2.0)
+        sqnr = ax.secondary_yaxis(
+            "right",
+            functions=(lambda d: 6.02 * (d / log10_2 - 1.0),
+                       lambda s: (s / 6.02 + 1.0) * log10_2))
+        sqnr.set_ylabel("SQNR (dB), 6.02 dB per fraction bit")
+
+    if xmin is not None or xmax is not None:
+        ax.set_xlim(xmin, xmax)
+    ax.set_ylim(bottom=0.0)
+    ax.set_xlabel("log2 magnitude")
+    ax.set_ylabel("decimals of accuracy")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+    return ax

@@ -222,6 +222,22 @@ Full walkthrough (install paths for local / SSH-tunnel / LAN, tab-by-tab
 tour, mixed-precision interpretation guide, export conventions) in
 [`docs/dashboard.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/dashboard.md).
 
+### Choosing a Number System: Decimals of Accuracy
+
+`mpdsp.precision_profile(type)` profiles how many decimal digits a number
+system keeps at every magnitude (Gustafson's *decimals of accuracy*), and
+`mpdsp.plot_precision_profiles()` overlays them with DSP markers: the
+signal band, FFT growth, and an SQNR axis. One command reproduces
+Universal's decimals-of-accuracy tutorial, from the full range of five
+16-bit formats to a b-posit fitted to a DSP pipeline's region of interest:
+
+```bash
+python scripts/plot_decimals_of_accuracy.py --output-dir figures/
+```
+
+Walkthrough in
+[`docs/decimals_of_accuracy.md`](https://github.com/stillwater-sc/mp-dsp-python/blob/main/docs/decimals_of_accuracy.md).
+
 ## How
 
 ### Repository Structure
@@ -290,6 +306,7 @@ mp-dsp-python/
 ├── docs/
 │   ├── api_reference.md
 │   ├── dashboard.md
+│   ├── decimals_of_accuracy.md     # Precision-profile tutorial (+ img/)
 │   ├── publishing.md
 │   ├── gap_analysis_2026-08-01.md  # Pre-roadmap coverage snapshot
 │   └── gap_analysis_2026-08-02.md  # Post-roadmap coverage snapshot

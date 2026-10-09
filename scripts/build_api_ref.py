@@ -295,6 +295,11 @@ CATEGORIES = [
     ("Mixed-precision helpers", [
         "available_dtypes", "bits_of", "compare_filters",
     ]),
+    ("Precision profiles — decimals of accuracy", [
+        "precision_profile", "available_profile_types",
+        "share_in_roi", "min_decimals_over", "min_fraction_bits",
+        "summary_table", "range_fit_table",
+    ]),
     ("CSV + image-pipeline helpers (pure Python)", [
         "load_sweep", "apply_per_channel", "collect_adaptive_weights",
     ]),
@@ -305,6 +310,7 @@ CATEGORIES = [
         "plot_filter_comparison",
         "plot_kalman_tracking", "plot_adaptive_convergence",
         "plot_image", "plot_image_grid", "plot_pipeline",
+        "plot_precision_profiles",
     ]),
 ]
 
@@ -329,12 +335,25 @@ CLASSES = [
     "CICBitGrowthReport", "AcquisitionPrecisionRow",
     "ComplexPair", "PoleZeroPair", "BiquadCoefficients",
     "TransferFunction", "ContinuousTransferFunction",
+    "PrecisionProfile",
 ]
 
 
 # --- Category prose intros ---
 
 INTROS = {
+    "Precision profiles — decimals of accuracy": (
+        "Choose a number system by where it spends its bits. "
+        "`precision_profile(type)` binds Universal's "
+        "`precision_profile_of<T>()`: the decimals of accuracy "
+        "-log10(ulp / (2|x|)) at every magnitude, exhaustive for types of "
+        "up to 16 bits and sampled per binade above. The reductions "
+        "(`share_in_roi`, `range_fit_table`, ...) read a profile against a "
+        "DSP region of interest, [2^-15, 2^12] by default, and "
+        "`plot_precision_profiles` overlays profiles. See "
+        "`docs/decimals_of_accuracy.md`, which reproduces Universal's "
+        "tutorial."
+    ),
     "Instrument — oscilloscope-style measurement": (
         "Stateless measurements over a captured buffer, in the idiom a "
         "bench scope presents. `mean` and `rms` carry an `instrument_` "
@@ -897,6 +916,7 @@ def render_attributes_section() -> str:
 UNDOCUMENTED_BY_DESIGN = {
     "HAS_CORE", "HAS_PLOT",
     "io", "plotting", "filters", "analysis", "estimation", "image",
+    "precision",
 }
 
 

@@ -34,6 +34,7 @@ the note at the bottom.
 - [Numerical analysis — pure-Python helpers](#numerical-analysis--pure-python-helpers)
 - [Numerical analysis — free-function primitives (bound)](#numerical-analysis--free-function-primitives-bound)
 - [Mixed-precision helpers](#mixed-precision-helpers)
+- [Precision profiles — decimals of accuracy](#precision-profiles--decimals-of-accuracy)
 - [CSV + image-pipeline helpers (pure Python)](#csv--image-pipeline-helpers-pure-python)
 - [Matplotlib plotting helpers](#matplotlib-plotting-helpers)
 - [Classes](#classes)
@@ -87,6 +88,7 @@ the note at the bottom.
   - [`BiquadCoefficients`](#biquadcoefficients)
   - [`TransferFunction`](#transferfunction)
   - [`ContinuousTransferFunction`](#continuoustransferfunction)
+  - [`PrecisionProfile`](#precisionprofile)
 
 ---
 
@@ -497,6 +499,20 @@ Coefficient-level analysis that doesn't require a constructed IIRFilter — usef
 | `bits_of` | `(dtype: str) -> int` | Return the sample-scalar bit width for `dtype`. Use this to label a precision-vs-cost axis instead of hardcoding the mapping. Raises ValueError for unknown dtype strings. |
 | `compare_filters` | `(filt, signal, dtypes=None)` | Process `signal` through `filt` at multiple dtypes and report error metrics. |
 
+## Precision profiles — decimals of accuracy
+
+Choose a number system by where it spends its bits. `precision_profile(type)` binds Universal's `precision_profile_of<T>()`: the decimals of accuracy -log10(ulp / (2|x|)) at every magnitude, exhaustive for types of up to 16 bits and sampled per binade above. The reductions (`share_in_roi`, `range_fit_table`, ...) read a profile against a DSP region of interest, [2^-15, 2^12] by default, and `plot_precision_profiles` overlays profiles. See `docs/decimals_of_accuracy.md`, which reproduces Universal's tutorial.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `precision_profile` | `(type: str, samples_per_binade: int = 4) -> mpdsp._core.PrecisionProfile` | Profile a number system's decimals of accuracy across its range. `type` is one of `available_profile_types()`: the tutorial set (int16, Q15, fp16, lns<16,10>, bposit<16,rs,es>, and their 32-bit counterparts) plus the scalars behind every `dtype=` config. `samples_per_binade` applies only to sampled (wider than 16-bit) types. |
+| `available_profile_types` | `() -> list[str]` | Type keys accepted by `precision_profile()`, in table order. `half` is an alias for `fp16`. |
+| `share_in_roi` | `(profile, lo: 'int' = -15, hi: 'int' = 12) -> 'float \| None'` | Fraction of the positive encodings whose magnitude is in [2^lo, 2^hi]. |
+| `min_decimals_over` | `(profile, lo: 'int' = -15, hi: 'int' = 12) -> 'float'` | Worst decimals of accuracy at the binade boundaries 2^lo .. 2^hi. |
+| `min_fraction_bits` | `(profile) -> 'float'` | The precision floor: the fewest fraction bits at any magnitude. |
+| `summary_table` | `(profiles: 'Iterable') -> 'list[dict]'` | The numbers a DSP designer reads off the curves, one row per type. |
+| `range_fit_table` | `(profiles: 'Iterable', lo: 'int' = -15, hi: 'int' = 12) -> 'list[dict]'` | How well each type fits the region of interest [2^lo, 2^hi]. |
+
 ## CSV + image-pipeline helpers (pure Python)
 
 `load_sweep` reads the CSV emitted by upstream `iir_precision_sweep`. `apply_per_channel` maps a single-channel function across a multi-channel image. `collect_adaptive_weights` drives an `LMSFilter` / `NLMSFilter` / `RLSFilter` and returns the weight trajectory.
@@ -527,6 +543,7 @@ All optional — require `mpdsp[plot]`. Return `matplotlib.figure.Figure` object
 | `plot_image` | `(img: numpy.ndarray, title: str = '', ax=None, cmap: str = 'gray', vmin: Optional[float] = None, vmax: Optional[float] = None, colorbar: bool = True, figsize=(6, 5))` | Display a 2D grayscale image with an optional colorbar. |
 | `plot_image_grid` | `(images: Sequence[numpy.ndarray], titles: Optional[Sequence[str]] = None, ncols: int = 4, cmap: str = 'gray', figsize: Optional[Tuple[float, float]] = None, colorbar: bool = False, suptitle: Optional[str] = None)` | Display a sequence of images in a grid layout. |
 | `plot_pipeline` | `(stages: Sequence[numpy.ndarray], titles: Optional[Sequence[str]] = None, cmap: str = 'gray', figsize: Optional[Tuple[float, float]] = None, suptitle: Optional[str] = None)` | Display a pipeline's successive stages in a single row. |
+| `plot_precision_profiles` | `(profiles, dsp=False, xmin=None, xmax=None, title='Decimals of accuracy, -log10(ulp / (2\|x\|))', ax=None)` | Overlay precision-vs-magnitude profiles (decimals of accuracy). |
 
 ## Classes
 Stateful objects. All carry a `.dtype` string attribute reflecting the arithmetic they were constructed with, and a `.reset()` method where meaningful. Process methods come in per-sample (`.process(x)`) and block (`.process_block(signal)`) variants except on the filter classes, which are block-only.
@@ -1300,6 +1317,24 @@ Analog (continuous-time) rational H(s) = N(s)/D(s) with coefficients in ascendin
 | `.frequency_response` | `(self, omega: float) -> complex` — Evaluate H(j*omega) at angular frequency omega (rad/s). |
 | `.frequency_response_many` | `(self, omegas: numpy.ndarray[dtype=float64, shape=(*), order='C', writable=False]) -> numpy.ndarray[dtype=complex128]` — Vectorized frequency_response(...) over a float64 ndarray of angular frequencies. Returns complex128. |
 | `.numerator` | Numerator coefficients in ascending powers of s. |
+
+### `PrecisionProfile`
+
+> Precision as a function of magnitude for one number system: the decimals of accuracy -log10(ulp / (2|x|)) and the fraction bits log2(|x| / ulp) at every positive encoding x (Gustafson, *The End of Error*). Types of up to 16 bits are profiled exhaustively; wider types are sampled a few points per binade. Create with `precision_profile(type)`.
+
+| Member | Signature / description |
+|--------|-------------------------|
+| `.decimals` | Decimals of accuracy -log10(ulp / (2\|x\|)) at each x. |
+| `.decimals_at` | `(self, magnitude: float) -> float` — Decimals of accuracy at `magnitude`: those of the largest profiled encoding <= magnitude, and 0 outside [minpos, maxpos]. |
+| `.exhaustive` | True when every positive encoding was decoded; False when the profile is sampled per binade. |
+| `.fraction_bits` | Fraction bits log2(\|x\| / ulp) at each x. |
+| `.label` | Short name for tables and plot legends. |
+| `.log2_magnitude` | log2(x) for each profiled magnitude. |
+| `.magnitude` | Profiled magnitudes x, ascending. |
+| `.maxpos` | Largest positive value; 0 decimals above it. |
+| `.minpos` | Smallest positive value; 0 decimals below it. |
+| `.type` | Universal's type_tag for the profiled type. |
+| `.write_csv` | `(self, path: str) -> None` — Write the profile in Universal's CSV layout, readable by universal/tools/notebooks/plot_precision_profiles.py. |
 
 ---
 
