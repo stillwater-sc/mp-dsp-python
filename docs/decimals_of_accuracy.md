@@ -124,6 +124,37 @@ rows = mpdsp.range_fit_table([mpdsp.precision_profile(t) for t in fit])
 | **`bposit<16,4,2>`** | **-16 .. 16** | **92.2 %** | **3.61** | **3.01** | **9** |
 | `bposit<16,3,1>` | -6 .. 6 | 100.0 % | 3.91 | 0.00 | 11 |
 
+### Reading the table: "worst in the region"
+
+The region is the same for every row: the region of interest, [2^-15, 2^12]. "Worst in the region" is the fewest decimals of accuracy the type keeps at **any** magnitude inside it. It is a guarantee: whatever value the pipeline produces, the type rounds it with at least this much precision. "Floor (bits)" is the same kind of minimum, taken over the type's entire range rather than the region. Together the two columns separate the precision where the workload lives from the precision anywhere at all.
+
+At the start of a binade, decimals and fraction bits are tied by decimals = log10(2) (fraction bits + 1). So the values in the table are a ladder of whole bits, 0.30 decimals (6 dB of SQNR) apart:
+
+| decimals | fraction bits | worst-case relative rounding error |
+|---|---|---|
+| 2.71 | 8 | 2^-9 ≈ 0.20 % |
+| 3.01 | 9 | 2^-10 ≈ 0.10 % |
+| 3.31 | 10 | 2^-11 ≈ 0.05 % |
+| 3.61 | 11 | 2^-12 ≈ 0.024 % |
+| 3.91 | 12 | 2^-13 ≈ 0.012 % |
+
+A worst of 2.71 reads "at least 8 fraction bits everywhere in the region", and 3.01 reads "at least 9".
+
+`mpdsp.min_decimals_over()` computes the column by evaluating each binade start 2^k, for k = -15 .. 12. That is enough. Within a binade the precision is lowest at its start, where the spacing has just doubled, so the binade starts are the bottoms of the sawtooth. Over every encoding in the region, the exhaustive minimum is the same value for every type in the table.
+
+Where each configuration reaches its worst case explains the ranking:
+
+| type | worst | where in [2^-15, 2^12] |
+|---|---|---|
+| `bposit<16,6,5>` | 2.71 (8 bits) | **everywhere.** With eS = 5 the regime steps only every 32 binades, so the whole region sits on the 2-bit regime around 1.0: 16 - 1 (sign) - 2 (regime) - 5 (exponent) = 8 fraction bits, flat. |
+| `bposit<16,6,3>` | 3.01 (9 bits) | the outer binades, 2^-15 .. 2^-9 and 2^8 .. 2^12 |
+| `bposit<16,6,2>` | 2.71 (8 bits) | only the extreme edges, 2^-15 .. 2^-13 and 2^12, where the regime has grown to 5 bits |
+| `bposit<16,5,2>` | 2.71 (8 bits) | the same edges: rS = 5 permits the same 5-bit regime there |
+| `bposit<16,4,2>` | 3.01 (9 bits) | the outer binades, 2^-15 .. 2^-9 and 2^8 .. 2^12, where rS = 4 caps the regime at 4 bits: 16 - 1 - 4 - 2 = 9, never 8 |
+| `bposit<16,3,1>` | 0.00 | 2^-15 .. 2^-6 and 2^6 .. 2^12, which lie outside its 2^±6 range |
+
+So `bposit<16,4,2>` matches `bposit<16,5,2>` and `bposit<16,6,2>` near 1.0, at 3.61 decimals in [0.5, 1). Its capped regime then buys one more bit at the edges of the region, where small coefficients and the top of an FFT's growth land.
+
 - **`bposit<16,4,2>` is the best fit.** Its range, 2^±16, just covers the region. It puts 92% of its encodings there and keeps at least 3.01 decimals across all of it. It never drops below 9 fraction bits, against 4 for the standard configuration.
 - **`bposit<16,5,2>`** buys four more binades of headroom, up to 2^20 (million-point FFTs), for one bit of floor. It is the choice if the growth budget is uncertain.
 - **`bposit<16,3,1>`** shows the limit. All its encodings fall inside the region, but its 2^±6 range does not cover it: 0 decimals at 2^-15 and at 2^10. A fit must cover the region, not just sit inside it.

@@ -199,6 +199,51 @@ def test_range_fit_table(profile, expected):
     assert row["floor_bits"] == pytest.approx(floor, abs=1e-9)
 
 
+@pytest.mark.parametrize("name", [
+    "bposit<16,6,5>", "bposit<16,6,3>", "bposit<16,6,2>",
+    "bposit<16,5,2>", "bposit<16,4,2>", "fp16", "lns<16,10>",
+])
+def test_binade_starts_find_the_exhaustive_minimum(profile, name):
+    """min_decimals_over() samples only 2^k; the page claims that suffices.
+
+    Within a binade precision is lowest at its start, so the minimum over
+    the binade starts equals the minimum over every encoding in the region.
+    """
+    p = profile(name)
+    m = p.magnitude
+    inside = (m >= 2.0 ** -15) & (m <= 2.0 ** 12)
+    assert p.decimals[inside].min() == pytest.approx(pr.min_decimals_over(p))
+
+
+# Where in the region each configuration reaches its worst case, as the
+# "Reading the table" section of docs/decimals_of_accuracy.md states.
+WORST_BINADES = [
+    ("bposit<16,6,5>", 8, list(range(-15, 13))),
+    ("bposit<16,6,3>", 9, list(range(-15, -8)) + list(range(8, 13))),
+    ("bposit<16,6,2>", 8, [-15, -14, -13, 12]),
+    ("bposit<16,5,2>", 8, [-15, -14, -13, 12]),
+    ("bposit<16,4,2>", 9, list(range(-15, -8)) + list(range(8, 13))),
+]
+
+
+@pytest.mark.parametrize("name, bits, binades", WORST_BINADES,
+                         ids=lambda e: e if isinstance(e, str) else "")
+def test_where_the_worst_case_lands(profile, name, bits, binades):
+    p = profile(name)
+    worst = pr.min_decimals_over(p)
+    # decimals at a binade start = log10(2) * (fraction bits + 1)
+    assert worst == pytest.approx(math.log10(2.0) * (bits + 1))
+    at = [k for k in range(-15, 13)
+          if p.decimals_at(2.0 ** k) == pytest.approx(worst)]
+    assert at == binades
+
+
+def test_narrow_bposit_is_zero_outside_its_range(profile):
+    p = profile("bposit<16,3,1>")
+    at = [k for k in range(-15, 13) if p.decimals_at(2.0 ** k) == 0.0]
+    assert at == list(range(-15, -5)) + list(range(6, 13))
+
+
 def test_tutorial_assertions(profile):
     """The checks Universal's dsp_precision_profiles application asserts."""
     q15, q31, fp16 = profile("Q15"), profile("Q31"), profile("fp16")
