@@ -37,7 +37,7 @@ set(MPDSP_REQUIRED_DSP_VERSION       "0.10.0" CACHE STRING
 	"Minimum mixed-precision DSP version required at configure time")
 set(MPDSP_REQUIRED_UNIVERSAL_VERSION "5.2.0" CACHE STRING
 	"Minimum Universal Number Libraryversion required at configure time")
-set(MPDSP_REQUIRED_MTL5_VERSION      "5.12.0" CACHE STRING
+set(MPDSP_REQUIRED_MTL5_VERSION      "5.22.0" CACHE STRING
 	"Minimum MTL5 version required at configure time")
 
 # Back on a tag, as the SHA pin's own note said to do at the next upstream
@@ -62,7 +62,7 @@ set(MPDSP_DSP_PIN       "v0.10.0" CACHE STRING
 # sibling-path floor.
 set(MPDSP_UNIVERSAL_PIN "v5.2.0" CACHE STRING
 	"universal git tag / branch / SHA to fetch")
-set(MPDSP_MTL5_PIN      "v5.12.0" CACHE STRING
+set(MPDSP_MTL5_PIN      "v5.22.0" CACHE STRING
 	"mtl5 git tag / branch / SHA to fetch")
 
 # Shallow-fetch is a big speedup for tags and branches, but git's shallow

@@ -18,6 +18,13 @@ cut, per the lifecycle note in `pyproject.toml`.
 
 ### Changed
 
+- **MTL5 floor and FetchContent pin move from 5.12.0 to 5.22.0**, the latest
+  release, as the pin's comment asks. The bindings reach MTL5 only through
+  mp-dsp's headers: dense containers, `inv`, `trans` and `ldlt`. Of the work
+  between 5.12 and 5.22 that changes results, only `ldlt_factor`'s default
+  path (last bits, MTL5 #421) is on that path, through the UKF. 5.22.0's
+  `dlarfg`-signed `householder()` and scaled Givens rotation are not. The
+  suite passes unchanged.
 - **Upstream pin moves from a SHA back to a tag** (#129): `v0.10.0`, and the
   version floor with it. The SHA pin existed because upstream #207 (NCO/DDC forming
   frequency and sample_rate in double *before* converting, so absolute RF
